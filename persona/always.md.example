@@ -1,0 +1,10 @@
+# always.md — the map of this box  (box-local: the real paths live here)
+
+Copy to always.md and fill in the real addresses. Every line is a static
+anchor; anything that changes daily belongs in the store, not here.
+
+Server: address and port; where the memory pages ride; the served model id.
+Paths: repo (and branch), store, slot vault, bench records, journal.
+The standing cart: which files stand on this box and the rotation law.
+Other boxes: separate stores; never cross-write; the sweep sits out of venue days.
+Open queue: what waits for a quiet night — this line ages; rewrite or delete it.

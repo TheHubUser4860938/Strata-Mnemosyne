@@ -13,6 +13,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve.memory import SOUL_BUDGET, compose_soul, prepend_head, request_state, soul_boot
@@ -45,13 +46,27 @@ class Compose(unittest.TestCase):
         self.assertIn("Know your dress", b)
         self.assertLess(b.index("Who I am"), b.index("dressed mind"), "A before B, always")
 
-    def test_over_budget_fails_closed(self):
-        # Budget-relative on purpose (the tripwire moved 6k->12k->14k->16k): "over" is the
-        # constant + 1, never a hardcoded size that would need surgery at every move.
-        b, v, why = compose_soul("# x\n" + "y" * (SOUL_BUDGET + 1), False)
+    def test_over_budget_fails_closed_when_armed(self):
+        # The budget is retired (SOUL_BUDGET = None, no cap) but the tripwire MECHANISM survives:
+        # arm it with an integer and an over-budget soul still fails closed. Patch the module
+        # global so the test proves both halves - armed fails, unarmed (the default) does not.
+        import serve.memory as _m
+        big = "# x\n" + "y" * 999
+        with mock.patch.object(_m, "SOUL_BUDGET", 100):
+            b, v, why = _m.compose_soul(big, False)
         self.assertEqual(b, "")
         self.assertEqual(v, "off")
         self.assertIn("budget", why)
+
+    def test_default_budget_is_none_a_big_soul_composes(self):
+        # The owner's 2026-10-24 order: no load-time cap. A soul far past the old 16k gate must
+        # compose, not fail closed - the cap that would have dropped it to the pre-soul path is gone.
+        import serve.memory as _m
+        self.assertIsNone(_m.SOUL_BUDGET, "the default budget is retired (None = no cap)")
+        huge = "# x\n" + "z" * 40000
+        b, v, _ = _m.compose_soul(huge, False)
+        self.assertEqual(v, "A", "a 40k soul composes; the load-time limit is lifted")
+        self.assertGreater(len(b), 39000)
 
     def test_all_comment_soul_fails_closed(self):
         b, v, why = compose_soul("<!-- nothing but instructions -->", True)
@@ -186,12 +201,16 @@ class Inject(unittest.TestCase):
                          "muted means muted: no memory bytes AND no soul bytes")
 
     def test_over_budget_soul_leaves_the_box_pre_soul(self):
+        # Boot law with the tripwire ARMED (the default is None - see the Compose class): an
+        # over-budget file logs, the box serves today's bytes, and recall keeps working.
         big = self.soulfile.name + ".big"
         with open(big, "w", encoding="utf-8") as f:
-            f.write("z" * (SOUL_BUDGET + 1))
+            f.write("z" * 300)
+        import serve.memory as _m
         try:
-            self.svc.reason_enabled = False
-            soul_boot(self.svc, {"memory": {"soul": big}})
+            with mock.patch.object(_m, "SOUL_BUDGET", 200):
+                self.svc.reason_enabled = False
+                soul_boot(self.svc, {"memory": {"soul": big}})
             self.assertEqual(self.svc.soul, "")
             self.assertEqual(self.svc.soul_variant, "off")
             st, body = self.ask("what is my launch ritual?")
