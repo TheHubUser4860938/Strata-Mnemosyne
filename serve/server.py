@@ -6566,8 +6566,21 @@ class Cartridges:
         # a full 6.3k-token re-prefill + 333 MB save per turn. New facts are NOT lost: the shelves
         # not in the applied text ride the recall block until the window expires and one seed
         # catches the cart up. The re-seed op and a pin rotation bypass the window; 0 disables it.
-        self.min_reseed_s = max(0, int(cfg.get("min_reseed_s") or 600))
+        # THE 0 MEANS ZERO (review 2026-10-24): `cfg.get(...) or 600` read a configured 0 as MISSING,
+        # because 0 is falsy - so the sentence two lines up ("0 disables it") was false and the window
+        # could not be turned off at all. The same trap sits in tool_rounds, which already spells the
+        # test as `is not None`; the two now agree.
+        _rs = cfg.get("min_reseed_s")
+        self.min_reseed_s = 600 if _rs is None else max(0, int(_rs))
         self.applied_at = 0.0                             # when the applied text last stood
+        self.applied_gen = -1              # WHICH ENGINE PROCESS the applied K/V stands in (-1: none).
+        # The window's promise is "the slot already holds these bytes" - and an engine that restarted
+        # or came back from idle-unload holds NOTHING (slots live in the engine process). Without the
+        # generation the fast path kept answering "seeded" while the slot was empty, and under steady
+        # traffic the window never lapsed, so the cart's one job - a warm prefix in the slot - stayed
+        # lost until someone edited a persona file. Correctness never broke: the standing text rides
+        # the prompt as bytes either way (law 2 above); only the speedup died, silently. (Review
+        # 2026-10-24, FRAGILE-5 of the server.py memory-wiring pass.)
         self.text, self.n_facts, self.n_left = "", 0, 0
         self.standing, self.soul_chars = "", 0            # the seeded prefix: soul + facts, one string
         self.file, self.applied, self.bytes = None, None, 0
@@ -6619,6 +6632,15 @@ class Cartridges:
                 names.append(os.path.basename(fp))
         return "\n\n".join(docs), names
 
+    def describe(self) -> str:
+        """One honest noun for what the cart carries. In store mode that is standing FACTS; in
+        static mode build() puts the SOURCE COUNT in n_facts (the counter the page's "facts" field
+        reads), so a log line saying "7 standing facts" for seven persona files is a number wearing
+        somebody else's clothes. (Review 2026-10-24, cosmetic-but-load-bearing: these two lines are
+        what the owner reads at boot to decide what stands.)"""
+        return (f"{self.n_facts} standing facts" if self.facts
+                else f"{len(self.sources)} standing files")
+
     def standing_rides(self) -> bool:
         """True when the standing text is on its way into the prompt WITH the soul inside it: the
         slot-0 prepend must then be SKIPPED, or the soul bytes ride twice. Gated on the applied
@@ -6649,7 +6671,9 @@ class Cartridges:
         Inside the re-seed window of a standing cart it reads NOTHING and asks NOTHING of the
         engine: the applied bytes keep serving, the store keeps growing, one seed catches up."""
         with self.lock:
+            gen = int(getattr(self.svc.engine, "gen", 0) or 0)     # which engine process we'd be riding
             if (self.state in ("loaded", "seeded") and self.file == self.applied
+                    and gen == self.applied_gen
                     and time.time() - self.applied_at < self.min_reseed_s):
                 return
             self.build()
@@ -6657,12 +6681,16 @@ class Cartridges:
                 self.state = ("failed: no shelved facts to stand" if self.facts
                               else "failed: nothing to stand - soul off and no readable files")
                 return
-            if self.state in ("loaded", "seeded") and self.file == self.applied:
+            if (self.state in ("loaded", "seeded") and self.file == self.applied
+                    and gen == self.applied_gen):
                 # the text came back to, or stayed at, what stands: extend the window, ask the
                 # engine NOTHING. (Before the window this was the per-request fast path; keeping
                 # it after build() is what stops a pointless restore on every window expiry.)
                 self.applied_at = time.time()
                 return
+            if self.applied and gen != self.applied_gen and self.file == self.applied:
+                print(f"[strata] cartridge: engine gen {self.applied_gen} -> {gen}, the slot is empty "
+                      f"- re-installing {self.file}", flush=True)
             svc = self.svc
             if getattr(svc.engine, "batch", 0):
                 self.state = "failed: slot save is off with parallel requests"
@@ -6677,7 +6705,8 @@ class Cartridges:
                 if code == 200:
                     self.state, self.applied, self.bytes = "loaded", self.file, os.path.getsize(path)
                     self.applied_at = time.time()
-                    print(f"[strata] cartridge: restored {self.file} ({self.n_facts} standing facts, "
+                    self.applied_gen = gen              # these bytes now stand in THIS engine process
+                    print(f"[strata] cartridge: restored {self.file} ({self.describe()}, "
                           f"{self.bytes:,} B)", flush=True)
                     self.gc()
                     return
@@ -6704,8 +6733,12 @@ class Cartridges:
             return
         self.state, self.applied = "seeded", self.file
         self.applied_at = time.time()
+        # the generation the saved bytes stand in: seed() is only ever reached from ensure(), and
+        # ensure() holds self.lock across the whole seed/restore, so its local `gen` cannot be stale
+        # (a second ensure() would have to wait for this one to drop the lock).
+        self.applied_gen = getattr(self.svc.engine, "gen", 0)
         self.bytes = os.path.getsize(path) if os.path.exists(path) else 0
-        print(f"[strata] cartridge: seeded {self.file} ({self.n_facts} standing facts, {self.bytes:,} B; "
+        print(f"[strata] cartridge: seeded {self.file} ({self.describe()}, {self.bytes:,} B; "
               f"{self.n_left} left for the recall block)", flush=True)
         self.gc()
 
@@ -6755,6 +6788,12 @@ class Cartridges:
         return {"shelves": self.prefixes, "max_chars": self.max_chars, "facts": self.n_facts,
                 "left_for_block": self.n_left, "file": self.applied, "bytes": self.bytes,
                 "state": self.state, "soul_chars": self.soul_chars, "files": files,
+                # IS THE SPEEDUP REAL RIGHT NOW (review 2026-10-24): "seeded" alone used to
+                # survive an engine restart, because the K/V lives in the ENGINE process and the
+                # re-seed window kept renewing itself under steady traffic - so the page could
+                # report a warm prefix that no slot held. kv_standing answers for the pair.
+                "kv_standing": (self.state in ("loaded", "seeded")
+                                and self.applied_gen == int(getattr(self.svc.engine, "gen", 0) or 0)),
                 "sources": self.sources, "facts_mode": self.facts,
                 "reseed_in_s": max(0, int(self.min_reseed_s - (time.time() - self.applied_at)))
                 if self.applied_at else 0}
@@ -8127,8 +8166,11 @@ def make_handler(svc: Service):
             elif op == "turns":
                 r = {"turns": svc.memory.pending_turns(int(req.get("limit") or 50))}
             else:
-                raise ValueError('op: one of "remember", "forget", "invalidate", "correct", "classify", '
-                                 '"search", "turn", "turns"')
+                # the menu lists every op the route actually answers (review 2026-10-24: purge and
+                # cartridge had both shipped and neither was named here, so an operator who guessed
+                # wrong got a menu that taught them the wrong verb set)
+                raise ValueError('op: one of "remember", "forget", "purge", "invalidate", "correct", '
+                                 '"classify", "search", "turn", "turns", "cartridge"')
             self._json(200, {"ok": True, **r})
         def _images(self, req):
             """POST /v1/images/generations (serve/images.py): one sd-cli job in the GPU's turn."""
@@ -8718,7 +8760,17 @@ def make_handler(svc: Service):
             # reads - with memory on, the injected block is bytes in that prompt, and a client that
             # budgets by this number (Claude Code's context bar) deserves the honest figure.
             messages, mem_ctx_ct = memory_api.request_state(svc.memory, messages, self.headers, req)
-            if svc.soul and mem_ctx_ct is not None:               # the count must include the slot-0
+            # THE SAME MIRROR AS THE ROUTE ITSELF (review 2026-10-24): /v1/messages renders standing
+            # (soul + files, one string when the cart rides) -> block -> client, and this count carried
+            # soul -> block -> client. Claude Code budgets by this number, so its context bar lay by
+            # exactly the FILES leg (~9.1k chars of persona on this box, and the whole text leg on a
+            # facts-mode box) - the failure the comment below was written to prevent, re-introduced one
+            # feature later. No ensure(): a token count asks nothing of the slot, and if the cart has not
+            # stood yet the real request would not prepend it either, so the count stays honest.
+            if svc.cartridges is not None and svc.cartridges.state in ("loaded", "seeded"):
+                messages = svc.cartridges.prepend(messages)
+            if svc.soul and mem_ctx_ct is not None and not (svc.cartridges
+                                                            and svc.cartridges.standing_rides()):
                 messages = memory_api.prepend_head(messages, svc.soul)   # bytes too, or the context bar
                                                                          # lies by exactly the soul
             stop_strings(req)                                 # the same 400 as the request itself would get
@@ -9942,8 +9994,22 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     mcfg = cfg.get("memory")
     if isinstance(mcfg, str):
         mcfg = {"dir": mcfg}
-    mem_off = mcfg is False or (isinstance(mcfg, dict) and
-                                mcfg.get("enabled") in (False, 0, "", "off", "false"))
+
+    def _memory_switch_off(v) -> bool:
+        """One honest reading of the opt-out (review 2026-10-24): the old test was a case-sensitive
+        tuple, so a hand-written `"enabled": "OFF"` in strata-*.json left the memory system ON - the
+        byte-identical escape hatch failing on the one value a person types by hand. false, 0, or any
+        spelling of off/false/no/none/empty means OFF; absent or true means ON (the fork default)."""
+        if isinstance(v, bool):
+            return not v
+        if isinstance(v, (int, float)):
+            return v == 0
+        if isinstance(v, str):
+            return v.strip().lower() in ("", "0", "off", "false", "no", "none")
+        return False
+
+    mem_off = mcfg is False or (isinstance(mcfg, dict) and "enabled" in mcfg
+                                and _memory_switch_off(mcfg["enabled"]))
     if a.memory or not mem_off:
         mcfg = mcfg if isinstance(mcfg, dict) else {}
         # the embedder fork-default: no key and the model setup fetched is on disk -> the hybrid arm

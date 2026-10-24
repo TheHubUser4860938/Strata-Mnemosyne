@@ -287,6 +287,15 @@ escalation path. One sentence of honesty ships with it: when the block is off, t
 so, because a hidden store that never announces itself buys free "idk"s — two revisions of that
 sentence moved the 20-question pilot 0.25 -> 0.70.
 
+**Reviewed line by line (2026-10-24):** an outside model's read of this branch was checked against
+the code rather than the prose, and ten fixes came out of it — the router's demote arm now honours
+the shelf-boundary law instead of `startswith`, the `hits` ledger counts the lines a model actually
+read instead of every candidate a search returned, an address that names no shelf stops quietly
+widening to the whole store, the long-scope and deep-call-number columns stop being cut in half
+inside the vector matrix, and the standing cartridge re-installs its prefix when the engine process
+behind the slot changes instead of reporting a warm prefix no slot holds. Receipts, with the numbers
+and the two doc claims the review got wrong: `docs/MEMORY_CORE.md`, "The 2026-10-24 review round".
+
 **What it measures like, on LongMemEval-V1 (oracle, 500 questions × 3 repeats):** the built-in
 memory answers **0.72** correctly at the shipped budget. The control line is the one to trust:
 with memory muted, **98.4–98.7% of answers are `idk`** and gold leaks 2 in 1,500 — the model is
@@ -474,10 +483,15 @@ memory-and-tooling line shipped six releases on October 17 alone: pairs, thinkin
 autonomous mode, the Settings menu, auto-pick observability and the store purge above. The
 full-size intelligence run — five published suites at full size, 21,336 generations, temperature
 1.0, three repeats — was launched on 2026-10-22 and has not landed a number yet. The server's own
-test suite — 1,156 tests under this repo's runner, no GPU and no downloads needed — passes on this
-box except two timing tests, both upstream's own files and both environmental: the
-`test_lifeline` watcher, and `test_keepawake`, which fails only inside the full run and passes when
-run by itself.
+test suite — 1,163 tests under this repo's runner, no GPU and no downloads needed — passes clean on
+this box: measured 2026-10-24, `python -m pytest serve/` gives 1,163 passed, 20 skipped, 10,856
+subtests in 6 m 06 s. The note this sentence carried for a week — two environmental timing tests,
+the `test_lifeline` watcher and `test_keepawake` inside a full run — did not reproduce that day, so
+it is now recorded as what it is: a flake on a loaded box, not a fixture of the suite. The suite also
+leaks one 2 GB Postgres cluster per test process into `$TMPDIR` (its atexit cleanup stopped the
+cluster and never deleted the directory); 48 of them filled this box's 63 GiB `/tmp` to 100% and
+killed a run with `psycopg.errors.DiskFull`. Fixed 2026-10-24: the fixture now stops the cluster and
+deletes the directory, and the box came back from 11 MB free to 61 GB.
 
 Engine and server changes live on the `memory-core` branch; `main` stays a near-mirror of
 [upstream Strata](https://github.com/Niko1221/Strata) (MIT, by Niko1221). MAM-derived code
