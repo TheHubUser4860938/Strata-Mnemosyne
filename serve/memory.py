@@ -1606,7 +1606,10 @@ class MemoryService:
         night: reuse dies at the first differing token). Returns (text, n_facts, n_left_out); the
         left-out rows still ride the tier-3 block, so a small budget costs standing status, never
         knowledge. Unclassified rows match no prefix: the cartridge holds shelved facts on purpose -
-        the call number IS the graduation criterion."""
+        the call number IS the graduation criterion. ANNOTATION 2026-10-24 night: the standing cart
+        retired this text (the owner's facts:false law - the cart is the static soul/files now);
+        the function stays, because the per-domain MAM cartridges to come inherit this same
+        shelved-row-to-text law: deterministic, confidence-first, bounded, never by hits."""
         ok = [c for c in (class_name(p, quiet=True) for p in prefixes) if c]
         if not ok:
             return "", 0, 0
