@@ -613,6 +613,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8005")
     ap.add_argument("--limit", type=int, default=0, help="max turns this run (0 = all pending)")
+    ap.add_argument("--window", type=int, default=60,
+                    help="turns per extract-score-mark window (card and crash radius advance one window at a time)")
     ap.add_argument("--passes", type=int, default=3, help="cold passes per candidate (>= 3 protocol)")
     ap.add_argument("--max-facts", type=int, default=2, help="candidate facts extracted per turn")
     ap.add_argument("--sweep", action="store_true", help="idle-gated batches (hot-loop shape)")
@@ -732,13 +734,203 @@ def main():
             rec({"kind": "law_err", "err": str(e)[:120]})
             return None
 
-    # ---- extraction ----------------------------------------------------------------------
+    # ---- the window law (2026-10-24 night) -------------------------------------------------
+    # Turns are marked processed per WINDOW (extract -> cold-score -> store -> mark), not at
+    # run end. The old tail-mark made the Curation card a cliff: a 1,000-turn drain showed no
+    # movement until it showed everything (owner's screenshot, twice tonight). Per-window marks
+    # make the card honest AND shrink the crash radius from the whole backlog to one window -
+    # the exact hole the 12:47 restart ate 93 turns through: extraction succeeded, the mark
+    # waited for the run, scoring died on the restart, the turns were eaten blind. The blind-
+    # gate law rides along: a window whose candidates ALL come back UNSCORED is not marked -
+    # an instrument that cannot see does not eat the week's turns twice.
+    # SELF-MEASURED GEOMETRY (instrument fix 2026-10-24, found by the venue drain): ask() sends
+    # "{REASON:off}\n\n" as a text prefix, but want below is rendered WITHOUT it - so the exact-
+    # equality geometry gate passes only while the boot consumes the directive template-side at
+    # zero tokens, which is what the banked C-series channel measured. The fork's reason-modes
+    # update (2026-10-17) moved to boots that COUNT the directive literally (+7 measured, prod
+    # and venue alike) - every cold pass since has voided: 484 candidates UNSCORED, 987 void
+    # passes, zero scored classes from 2026-10-17 08:10 to tonight, turns marked processed the
+    # whole time while the harvest was discarded. The channel bytes stay banked; want now grows
+    # by whatever THIS boot charges, probed twice per run. A consuming boot measures 0 and prod
+    # geometry law survives byte-identical; a counting boot gets honest geometry back.
+    def directive_delta():
+        def ptok_of(content):
+            body = {"model": model, "messages": [{"role": "user", "content": content}],
+                    "temperature": 0.8, "reasoning_effort": "off", "max_tokens": 1, "stream": False}
+            st, r = http(url + "/v1/chat/completions", body,
+                         headers={"X-Strata-Memory": "off"}, timeout=30)
+            return (r.get("usage") or {}).get("prompt_tokens") if st == 200 else None
+        plain, with_d = ptok_of("hi"), ptok_of("{REASON:off}\n\nhi")
+        if plain is None or with_d is None:
+            print("[geom] directive probe failed (transport) - want stays banked", flush=True)
+            return 0
+        return with_d - plain
+
+    stored = {"FILL": 0, "STABILIZE": 0, "CORRECT": 0, "DONT-STORE": 0}
+    unscored = 0
+    ddelta = 0 if (a.dry_run or a.extract_only) else directive_delta()
+    print(f"[geom] directive overhead measured this boot: {ddelta:+d} tok", flush=True)
+    review: list[str] = []
+    store_dir = stats.get("dir") or (os.path.dirname(db_path) if db_path else "")
+
+    def mark_ids(ids):
+        if a.no_store or not ids:
+            return
+        if not store_dir:
+            raise SystemExit("stats.dir missing - cannot mark turns processed")
+        from serve.memory import attach                        # the ATTACH law (measured, R0b):
+        with attach(store_dir, autocommit=True) as con:        # safe mid-server-run, never a stop
+            with con.cursor() as cur:
+                cur.executemany("update turns set processed=1 where id = %s",
+                                [(int(i),) for i in ids])
+
+    def score_batch(cands):
+        scored_here = unscored_here = 0
+        for c in cands:
+            text = f"{COLD_PREAMBLE}\n{c['probe']}"
+            ids, _ = live_render(tok, tpl, [{"role": "user", "content": text}], "off")
+            want = len(ids) + ddelta
+            cold = []
+            for p in range(a.passes):
+                ans, ptok, geom = ask(text, 24, want_geom=want, kind="cold")
+                if ans is None:
+                    rec({"kind": "cold", "turn_id": c["turn_id"], "pass": p + 1, "transport": "fail"})
+                    continue
+                if not geom:                                   # per-ask VOID (V3 precedent): the
+                    rec({"kind": "cold", "turn_id": c["turn_id"], "pass": p + 1, "void": True,
+                         "ptok": ptok, "expect": want})        # candidate's band needs >= 3 alive
+                    continue
+                g = bool(hit(ans, c["gold"]))
+                cold.append({"gold_hit": g, "idk": idk_p(ans), "answer": scrub(ans)[:90],
+                             "ptok": ptok})
+            if len(cold) < a.passes:
+                unscored += 1
+                cls, mixed, full = "UNSCORED", False, None
+            else:
+                cls, mixed = classify(cold)
+                full = cold
+            c["cls"], c["mixed"], c["cold"] = cls, mixed, full
+            scored_here += cls != "UNSCORED"
+            unscored_here += cls == "UNSCORED"
+            if cls == "CORRECT" and c.get("turn_probe"):
+                # trust-axis policy (measured 2026-10-12): probe-shaped traffic - quiz question in,
+                # <=12-word answer out - RESTATES the gold sheet, it does not correct the world. Its
+                # CORRECT verdict demotes to FILL: stored, shelved, journaled, but it never gets a
+                # supersede target - that is how turn 565 retired turn 564's 40-second-old row. The
+                # venue's original call survives in the review line and the probe_demote record.
+                rec({"kind": "probe_demote", "turn_id": c["turn_id"], "fact": c["fact"][:80]})
+                cls = "FILL"
+                c["demoted"] = "probe"
+            # JOURNAL, NOT STORE (2026-10-17 shelving audit): counters, commit snapshots and
+            # in-progress analysis are work-state - the journal already carries them, and stored
+            # they become tomorrow's stale "facts": the store-381 fossil, the 2,655-row counter,
+            # the "95% too coarse" claim extracted from this audit's own mid-flight words, all
+            # retired by hand the day they were filed. The turn still counts as curated and the
+            # review line still shows the candidate - it just does not become durable memory.
+            work_state = cls not in ("UNSCORED", "DONT-STORE") and bool(WORK_STATE.search(c["fact"]))
+            if work_state:
+                rec({"kind": "work_state_skip", "turn_id": c["turn_id"], "fact": c["fact"][:90]})
+            if cls not in ("UNSCORED", "DONT-STORE") and not a.no_store and not work_state:
+                # §11: DONT-STORE is "log noise, not memory" - the review list carries it, the
+                # store does not. (drain409e audit found 5 DONT-STOREs stored by the pre-fix
+                # code; they were forgotten by hand the same night, source-tag verified.)
+                fields = {"text": c["fact"], "scope": c["scope"],
+                          "source": f"curation-{datetime.date.today().isoformat()}",
+                          "class": fact_class(c["fact"], c["scope"], c.get("lane", "fact")),
+                          # PHASE 4.5: shelf at store time; the lanes (item 4, 2026-10-23) shelve first
+                          "provenance": {"turn_id": c["turn_id"], "probe": c["probe"], "gold": c["gold"],
+                                         "cls": cls, "mixed": mixed, "passes": cold, "model": model,
+                                         # audit 09 finding 4 (Grok Q3): whose words + the verbatim span
+                                         # the fact came from - a row without these is unverified by
+                                         # construction, and tools/retro_audit.py measures the older ones
+                                         "attribution": c.get("attr", "unverified"),
+                                         "source_quote": c.get("quote", ""),
+                                         "quote_ok": c.get("quote_ok", False),
+                                         "quote_side": c.get("quote_side", "none"),
+                                         # the lane rides the provenance jsonb: no schema change, and
+                                         # the state_key is what the same-key supersede matches on later
+                                         "lane": c.get("lane", "fact"),
+                                         "state_key": c.get("state_key", "")}}
+                body = {"op": "remember", **fields}
+                stored_now = False
+                if cls == "CORRECT":
+                    # job 7 routing: a correction SUPERSEDES the fact it contradicts (found by content
+                    # address) instead of parking a 121st near-dupe beside it in recall. The supersession
+                    # law's second half (fact 3820): the survivor is AMENDED to carry the trail.
+                    old, old_text = supersede_id(url, c["fact"], c["scope"], rec, min_created=batch_start)
+                    if old:
+                        amended = amend_with_history(ask, c["fact"], old_text)
+                        if amended:
+                            fields = {**fields, "text": amended}
+                            c["amended"] = True
+                        body = {"op": "correct", "id": old, **fields}
+                        c["supersedes"] = old
+                elif c.get("lane") == "state" and c.get("state_key"):
+                    # the machine-state lane's durability law (item 4, 2026-10-23): state supersedes
+                    # BY KEY before any cosine law runs - the stale value retires the moment the fresh
+                    # observation stores, and the two never coexist for recall to confuse.
+                    old = state_supersede_id(url, c["state_key"], c["scope"], rec, min_created=batch_start)
+                    if old:
+                        body = {"op": "correct", "id": old, **fields}
+                        c["supersedes"] = old
+                elif not a.no_law and not c.get("turn_probe"):
+                    # the law's first half: a NEW fact near-identical (cos >= LAW_TH) to an active row
+                    # gets a judgment BEFORE it stores - restatements retire the older, corrections
+                    # land amended, DIFFERENT verdicts store both. Probe-shaped traffic is exempt (the
+                    # 2026-10-12 cascade law: quiz echoes do not correct the world).
+                    law = law_check(c["fact"], c["scope"])
+                    if law and law[0] == "CORRECTS":
+                        amended = amend_with_history(ask, c["fact"], law[2])
+                        if amended:
+                            fields = {**fields, "text": amended}
+                            c["amended"] = True
+                        body = {"op": "correct", "id": law[1], **fields}
+                        c["supersedes"] = law[1]
+                    elif law and law[0] == "RESTATED":
+                        st, r = http(url + "/memory", body, timeout=60)
+                        stored_now = True
+                        c["mem_id"] = (r or {}).get("id")
+                        if c["mem_id"] and c["mem_id"] != law[1] and not (r or {}).get("deduped"):
+                            http(url + "/memory", {"op": "invalidate", "id": law[1], "by": c["mem_id"]},
+                                 timeout=60)
+                            c["supersedes"] = law[1]      # newer stands; older retires into the chain
+                if not stored_now:
+                    st, r = http(url + "/memory", body, timeout=60)
+                    if st == 400 and body["op"] == "correct":     # server predates op=correct: plain store
+                        st, r = http(url + "/memory", {"op": "remember", **fields}, timeout=60)
+                        c["supersedes"] = "deferred:server-predates-correct"
+                    c["mem_id"] = (r or {}).get("id")
+                if st != 200:
+                    rec({"kind": "remember", "turn_id": c["turn_id"], "http": st,
+                         "err": str(r)[:120]})
+                if not a.no_law and law_rows is not None and c.get("mem_id") \
+                        and st == 200 and not (r or {}).get("deduped"):
+                    try:                                            # keep the matrix current WITHIN
+                        import numpy as _np                         # the run: the manual drain of
+                        sv = law_emb.embed_docs([fields["text"]])[0]  # 2026-10-17 minted two RTX-4090
+                        sv = sv / (_np.linalg.norm(sv) + 1e-9)      # twins 19 s apart that could not
+                        law_rows.append((c["mem_id"], fields["text"], c["scope"], sv))  # see each
+                    except Exception:                               # noqa: BLE001 - freshness is a
+                        pass                                        # bonus, never a risk to the store
+            stored[cls] = stored.get(cls, 0) + 1
+            rec({"kind": "score", "turn_id": c["turn_id"], "cls": cls, "mixed": mixed,
+                 "fact": c["fact"][:90], "gold": c["gold"][:40], "supersedes": c.get("supersedes"),
+                 "hits": [x["gold_hit"] for x in cold]})
+            review.append(f"[{cls}{'/mixed' if mixed else ''}] (turn {c['turn_id']}) {c['fact']}\n"
+                          f"    probe: {c['probe']}  gold: {c['gold']}  "
+                          f"attr: {c.get('attr', 'unverified')}  quote_ok: {c.get('quote_ok', False)}  "
+                          f"cold: {' | '.join(x['answer'][:40] for x in cold)}")
+        return scored_here, unscored_here
+
+    # ---- extraction windows ----------------------------------------------------------------
     processed_ids: list[int] = []
-    handled: set[int] = set()      # ids processed THIS run: turns are only marked processed at
-    candidates: list[dict] = []    # the END, so op=turns keeps returning them mid-run - without
-    seen: set[str] = set()         # this filter the fetch loop re-extracts the same 50 forever
+    handled: set[int] = set()      # ids skipped ONCE this run (transport/render deaths): the
+    candidates: list[dict] = []    # op=turns keeps returning unmarked turns, and the fetch
+    seen: set[str] = set()         # loop must not re-extract the same window forever
     drained = fails = 0
     batch = 0
+    marked_total = 0
+    wmark_c = wmark_t = 0          # window watermarks into candidates / processed_ids
     batch_start = time.time()     # sibling protection for supersede: a correction's target must
     while True:                   # predate this batch - candidates from one sweep must not eat
                                   # each other's fresh rows (the 2026-10-12 turn-565-ate-564 bug)
@@ -763,12 +955,13 @@ def main():
                       f"- sweep waits", flush=True)
                 time.sleep(a.interval)
                 continue
-        st, r = http(url + "/memory", {"op": "turns", "limit": 1000}, timeout=60)
-        # limit 1000 = the endpoint's cap (memory.py:368): marking lands only at run end, so a
-        # 50-fetch would make batch 2 re-see batch 1's still-unmarked turns and the handled-
-        # filter would end the run at the first window (drain409d stopped at exactly 50 this
-        # way). One big fetch drains the backlog in one pass; >1000 pending spills to the
-        # NEXT run (the handled-filter ends this one), which is what --sweep exists for.
+        st, r = http(url + "/memory", {"op": "turns", "limit": min(1000, a.window)}, timeout=60)
+        # the window (2026-10-24 night): the old law was FETCH-1000-BECAUSE-MARKS-COME-
+        # AT-THE-END (a 50-fetch made batch 2 re-see batch 1's still-unmarked turns and
+        # the handled-filter ended the run at the first window - drain409d stopped at
+        # exactly 50 that way). Marks now land per window, so the fetch shrinks to the
+        # unit of work: the card falls in view and a dead run re-extracts at most one
+        # window. The endpoint's own cap (memory.py:368) stays the hard ceiling.
         turns = (r.get("turns") or []) if st == 200 else []
         if a.limit:
             turns = turns[:max(0, a.limit - drained)]
@@ -820,6 +1013,22 @@ def main():
             drained += 1
             rec({"kind": "extract", "turn_id": t["id"], "cands": n, "ptok": ptok,
                  "facts": new_facts})
+        win_c, win_t = candidates[wmark_c:], processed_ids[wmark_t:]
+        wmark_c, wmark_t = len(candidates), len(processed_ids)
+        if not (a.dry_run or a.extract_only):
+            s_ok, s_void = score_batch(win_c)
+            unscored += s_void
+            if win_t and (not win_c or s_ok):
+                mark_ids(win_t)
+                marked_total += len(win_t)
+                note_mark = f"marked {len(win_t)}"
+            elif win_t:
+                note_mark = ('LEFT PENDING - all ' + str(len(win_c)) + ' candidates '
+                             'UNSCORED (blind-gate law: an unscored window eats no turns)')
+            else:
+                note_mark = ""
+            print(f"window {batch + 1}: +{len(win_t)} turns, {len(win_c)} candidates, "
+                  f"{s_ok} scored, {s_void} unscored; {note_mark}", flush=True)
         batch += 1
         if a.dry_run or (a.batches and batch >= a.batches) or (a.limit and drained >= a.limit):
             break
@@ -834,186 +1043,12 @@ def main():
             print(f"  [{c['turn_id']}] {c['fact'][:100]}")
         return 0
 
-    # SELF-MEASURED GEOMETRY (instrument fix 2026-10-24, found by the venue drain): ask() sends
-    # "{REASON:off}\n\n" as a text prefix, but want below is rendered WITHOUT it - so the exact-
-    # equality geometry gate passes only while the boot consumes the directive template-side at
-    # zero tokens, which is what the banked C-series channel measured. The fork's reason-modes
-    # update (2026-10-17) moved to boots that COUNT the directive literally (+7 measured, prod
-    # and venue alike) - every cold pass since has voided: 484 candidates UNSCORED, 987 void
-    # passes, zero scored classes from 2026-10-17 08:10 to tonight, turns marked processed the
-    # whole time while the harvest was discarded. The channel bytes stay banked; want now grows
-    # by whatever THIS boot charges, probed twice per run. A consuming boot measures 0 and prod
-    # geometry law survives byte-identical; a counting boot gets honest geometry back.
-    def directive_delta():
-        def ptok_of(content):
-            body = {"model": model, "messages": [{"role": "user", "content": content}],
-                    "temperature": 0.8, "reasoning_effort": "off", "max_tokens": 1, "stream": False}
-            st, r = http(url + "/v1/chat/completions", body,
-                         headers={"X-Strata-Memory": "off"}, timeout=30)
-            return (r.get("usage") or {}).get("prompt_tokens") if st == 200 else None
-        plain, with_d = ptok_of("hi"), ptok_of("{REASON:off}\n\nhi")
-        if plain is None or with_d is None:
-            print("[geom] directive probe failed (transport) - want stays banked", flush=True)
-            return 0
-        return with_d - plain
-
-    # ---- cold score ----------------------------------------------------------------------
-    stored = {"FILL": 0, "STABILIZE": 0, "CORRECT": 0, "DONT-STORE": 0}
-    unscored = 0
-    ddelta = 0 if a.dry_run else directive_delta()
-    print(f"[geom] directive overhead measured this boot: {ddelta:+d} tok", flush=True)
-    review: list[str] = []
-    for c in candidates:
-        text = f"{COLD_PREAMBLE}\n{c['probe']}"
-        ids, _ = live_render(tok, tpl, [{"role": "user", "content": text}], "off")
-        want = len(ids) + ddelta
-        cold = []
-        for p in range(a.passes):
-            ans, ptok, geom = ask(text, 24, want_geom=want, kind="cold")
-            if ans is None:
-                rec({"kind": "cold", "turn_id": c["turn_id"], "pass": p + 1, "transport": "fail"})
-                continue
-            if not geom:                                   # per-ask VOID (V3 precedent): the
-                rec({"kind": "cold", "turn_id": c["turn_id"], "pass": p + 1, "void": True,
-                     "ptok": ptok, "expect": want})        # candidate's band needs >= 3 alive
-                continue
-            g = bool(hit(ans, c["gold"]))
-            cold.append({"gold_hit": g, "idk": idk_p(ans), "answer": scrub(ans)[:90],
-                         "ptok": ptok})
-        if len(cold) < a.passes:
-            unscored += 1
-            cls, mixed, full = "UNSCORED", False, None
-        else:
-            cls, mixed = classify(cold)
-            full = cold
-        c["cls"], c["mixed"], c["cold"] = cls, mixed, full
-        if cls == "CORRECT" and c.get("turn_probe"):
-            # trust-axis policy (measured 2026-10-12): probe-shaped traffic - quiz question in,
-            # <=12-word answer out - RESTATES the gold sheet, it does not correct the world. Its
-            # CORRECT verdict demotes to FILL: stored, shelved, journaled, but it never gets a
-            # supersede target - that is how turn 565 retired turn 564's 40-second-old row. The
-            # venue's original call survives in the review line and the probe_demote record.
-            rec({"kind": "probe_demote", "turn_id": c["turn_id"], "fact": c["fact"][:80]})
-            cls = "FILL"
-            c["demoted"] = "probe"
-        # JOURNAL, NOT STORE (2026-10-17 shelving audit): counters, commit snapshots and
-        # in-progress analysis are work-state - the journal already carries them, and stored
-        # they become tomorrow's stale "facts": the store-381 fossil, the 2,655-row counter,
-        # the "95% too coarse" claim extracted from this audit's own mid-flight words, all
-        # retired by hand the day they were filed. The turn still counts as curated and the
-        # review line still shows the candidate - it just does not become durable memory.
-        work_state = cls not in ("UNSCORED", "DONT-STORE") and bool(WORK_STATE.search(c["fact"]))
-        if work_state:
-            rec({"kind": "work_state_skip", "turn_id": c["turn_id"], "fact": c["fact"][:90]})
-        if cls not in ("UNSCORED", "DONT-STORE") and not a.no_store and not work_state:
-            # §11: DONT-STORE is "log noise, not memory" - the review list carries it, the
-            # store does not. (drain409e audit found 5 DONT-STOREs stored by the pre-fix
-            # code; they were forgotten by hand the same night, source-tag verified.)
-            fields = {"text": c["fact"], "scope": c["scope"],
-                      "source": f"curation-{datetime.date.today().isoformat()}",
-                      "class": fact_class(c["fact"], c["scope"], c.get("lane", "fact")),
-                      # PHASE 4.5: shelf at store time; the lanes (item 4, 2026-10-23) shelve first
-                      "provenance": {"turn_id": c["turn_id"], "probe": c["probe"], "gold": c["gold"],
-                                     "cls": cls, "mixed": mixed, "passes": cold, "model": model,
-                                     # audit 09 finding 4 (Grok Q3): whose words + the verbatim span
-                                     # the fact came from - a row without these is unverified by
-                                     # construction, and tools/retro_audit.py measures the older ones
-                                     "attribution": c.get("attr", "unverified"),
-                                     "source_quote": c.get("quote", ""),
-                                     "quote_ok": c.get("quote_ok", False),
-                                     "quote_side": c.get("quote_side", "none"),
-                                     # the lane rides the provenance jsonb: no schema change, and
-                                     # the state_key is what the same-key supersede matches on later
-                                     "lane": c.get("lane", "fact"),
-                                     "state_key": c.get("state_key", "")}}
-            body = {"op": "remember", **fields}
-            stored_now = False
-            if cls == "CORRECT":
-                # job 7 routing: a correction SUPERSEDES the fact it contradicts (found by content
-                # address) instead of parking a 121st near-dupe beside it in recall. The supersession
-                # law's second half (fact 3820): the survivor is AMENDED to carry the trail.
-                old, old_text = supersede_id(url, c["fact"], c["scope"], rec, min_created=batch_start)
-                if old:
-                    amended = amend_with_history(ask, c["fact"], old_text)
-                    if amended:
-                        fields = {**fields, "text": amended}
-                        c["amended"] = True
-                    body = {"op": "correct", "id": old, **fields}
-                    c["supersedes"] = old
-            elif c.get("lane") == "state" and c.get("state_key"):
-                # the machine-state lane's durability law (item 4, 2026-10-23): state supersedes
-                # BY KEY before any cosine law runs - the stale value retires the moment the fresh
-                # observation stores, and the two never coexist for recall to confuse.
-                old = state_supersede_id(url, c["state_key"], c["scope"], rec, min_created=batch_start)
-                if old:
-                    body = {"op": "correct", "id": old, **fields}
-                    c["supersedes"] = old
-            elif not a.no_law and not c.get("turn_probe"):
-                # the law's first half: a NEW fact near-identical (cos >= LAW_TH) to an active row
-                # gets a judgment BEFORE it stores - restatements retire the older, corrections
-                # land amended, DIFFERENT verdicts store both. Probe-shaped traffic is exempt (the
-                # 2026-10-12 cascade law: quiz echoes do not correct the world).
-                law = law_check(c["fact"], c["scope"])
-                if law and law[0] == "CORRECTS":
-                    amended = amend_with_history(ask, c["fact"], law[2])
-                    if amended:
-                        fields = {**fields, "text": amended}
-                        c["amended"] = True
-                    body = {"op": "correct", "id": law[1], **fields}
-                    c["supersedes"] = law[1]
-                elif law and law[0] == "RESTATED":
-                    st, r = http(url + "/memory", body, timeout=60)
-                    stored_now = True
-                    c["mem_id"] = (r or {}).get("id")
-                    if c["mem_id"] and c["mem_id"] != law[1] and not (r or {}).get("deduped"):
-                        http(url + "/memory", {"op": "invalidate", "id": law[1], "by": c["mem_id"]},
-                             timeout=60)
-                        c["supersedes"] = law[1]      # newer stands; older retires into the chain
-            if not stored_now:
-                st, r = http(url + "/memory", body, timeout=60)
-                if st == 400 and body["op"] == "correct":     # server predates op=correct: plain store
-                    st, r = http(url + "/memory", {"op": "remember", **fields}, timeout=60)
-                    c["supersedes"] = "deferred:server-predates-correct"
-                c["mem_id"] = (r or {}).get("id")
-            if st != 200:
-                rec({"kind": "remember", "turn_id": c["turn_id"], "http": st,
-                     "err": str(r)[:120]})
-            if not a.no_law and law_rows is not None and c.get("mem_id") \
-                    and st == 200 and not (r or {}).get("deduped"):
-                try:                                            # keep the matrix current WITHIN
-                    import numpy as _np                         # the run: the manual drain of
-                    sv = law_emb.embed_docs([fields["text"]])[0]  # 2026-10-17 minted two RTX-4090
-                    sv = sv / (_np.linalg.norm(sv) + 1e-9)      # twins 19 s apart that could not
-                    law_rows.append((c["mem_id"], fields["text"], c["scope"], sv))  # see each
-                except Exception:                               # noqa: BLE001 - freshness is a
-                    pass                                        # bonus, never a risk to the store
-        stored[cls] = stored.get(cls, 0) + 1
-        rec({"kind": "score", "turn_id": c["turn_id"], "cls": cls, "mixed": mixed,
-             "fact": c["fact"][:90], "gold": c["gold"][:40], "supersedes": c.get("supersedes"),
-             "hits": [x["gold_hit"] for x in cold]})
-        review.append(f"[{cls}{'/mixed' if mixed else ''}] (turn {c['turn_id']}) {c['fact']}\n"
-                      f"    probe: {c['probe']}  gold: {c['gold']}  "
-                      f"attr: {c.get('attr', 'unverified')}  quote_ok: {c.get('quote_ok', False)}  "
-                      f"cold: {' | '.join(x['answer'][:40] for x in cold)}")
-    if processed_ids and not a.no_store:                   # the store's own hygiene flag
-        from serve.memory import attach
-        store_dir = stats.get("dir") or (os.path.dirname(db_path) if db_path else "")
-        if not store_dir:
-            raise SystemExit("stats.dir missing - cannot mark turns processed")
-        # ADR-002: the PG twin of the old sqlite3.connect - and the ATTACH law (measured, R0b)
-        # is what makes this safe mid-server-run: the sweep never stops a live cluster.
-        with attach(store_dir, autocommit=True) as con:
-            with con.cursor() as cur:
-                cur.executemany("update turns set processed=1 where id = %s",
-                                [(int(i),) for i in processed_ids])
-
-    # ---- verdict block (the part that is safe to commit: counts, no personal text) --------
     pend_after = (http(url + "/memory", timeout=15)[1].get("stats") or {}).get("turns_pending")
     lines = [f"curate verdict tag={a.tag} channel=off/temp0.8 muted passes={a.passes} "
              f"stored={'off' if a.no_store else 'on'}",
              f"  drained={drained} extract_fails={fails} candidates={len(candidates)} "
              + " ".join(f"{k}={v}" for k, v in stored.items()) + f" UNSCORED={unscored}",
-             f"  marked_processed={len(processed_ids) if not a.no_store else 0} "
+             f"  marked_processed={marked_total} "
              f"db_pending_after={pend_after}"]
     txt = "\n".join(lines)
     print("\n" + scrub(txt))
