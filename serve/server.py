@@ -6684,9 +6684,30 @@ class Cartridges:
         return self.view()
 
     def view(self):
+        files = []
+        try:      # the vault inventory for the page's tier-2 view (2026-10-24 night, owner's
+                  # ask: multiple cartridges are coming, they get their own sub page): the slot
+                  # dir IS the shelf - one standing cartridge per engine pin plus the bench
+                  # saves the C-series and venue days left. Newest first; the applied file is
+                  # flagged; a vault the server cannot read is a reportable absence, not a
+                  # crash - view() answers for the page, and the page must never take the box.
+            entries = [e for e in os.scandir(self.svc.slot_save_path or "")
+                       if e.is_file(follow_symlinks=False)]
+            entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
+            for e in entries[:24]:
+                nm = e.name.split("_", 1)[0]
+                files.append({"name": e.name, "mb": round(e.stat().st_size / 1048576, 1),
+                              "mtime": int(e.stat().st_mtime),
+                              "kind": ("standing" if e.name.startswith("MEM-CRG-") else
+                                       "bench" if nm in ("c1", "c2", "c3", "c3v2", "c3v3",
+                                                         "c4", "c5", "venue", "spikea") else
+                                       "slot"),
+                              "live": e.name == self.applied})
+        except OSError:
+            pass
         return {"shelves": self.prefixes, "max_chars": self.max_chars, "facts": self.n_facts,
                 "left_for_block": self.n_left, "file": self.applied, "bytes": self.bytes,
-                "state": self.state, "soul_chars": self.soul_chars,
+                "state": self.state, "soul_chars": self.soul_chars, "files": files,
                 "reseed_in_s": max(0, int(self.min_reseed_s - (time.time() - self.applied_at)))
                 if self.applied_at else 0}
 

@@ -33,8 +33,9 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
   <div class="card"><div class="label">Facts</div><div class="value" id="rows">-</div><div class="small" id="rowsub"></div></div>
   <div class="card"><div class="label">Curation</div><div class="value" id="pending">-</div><div class="small" id="pendsub"></div></div>
   <div class="card"><div class="label">At rest</div><div class="value" id="rest">-</div><div class="small" id="restsub"></div></div>
-  <div class="card"><div class="label">Cartridge</div><div class="value" id="cart">-</div><div class="small" id="cartsub"></div></div>
+  <div class="card"><div class="label">View</div><div class="value" style="display:flex;gap:8px;padding-top:4px"><button id="t3btn" class="primary">Text</button><button id="t2btn">Cartridges</button></div><div class="small" id="viewsub">flip: tier-3 recall text, or the tier-2 cartridge system</div></div>
 </div>
+<div id="t3wrap">
 <div class="panel">
   <div class="panel-bar">
     <input id="q" placeholder="Search the store - words of the question">
@@ -57,7 +58,24 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
     </div>
   </div>
 </div>
-<footer>Every operation here is the same <code>/memory</code> API any client uses. <button id="reseed" hidden>Reseed cartridge</button></footer>
+</div><!-- /t3wrap -->
+<div id="t2wrap" hidden>
+<div class="cards">
+  <div class="card"><div class="label">Cartridge</div><div class="value" id="c-state">-</div><div class="small" id="c-sub"></div></div>
+  <div class="card"><div class="label">Standing text</div><div class="value" id="c-facts">-</div><div class="small" id="c-factsub"></div></div>
+  <div class="card"><div class="label">Index</div><div class="value" id="c-index">-</div><div class="small" id="c-indexsub"></div></div>
+  <div class="card"><div class="label">Re-seed window</div><div class="value" id="c-window">-</div><div class="small" id="c-windowsub"></div></div>
+</div>
+<div class="panel">
+  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Slot vault</h2><button id="reseed" hidden>Reseed cartridge</button><span class="small">one standing cartridge per engine pin; the rest are bench slot saves</span></div>
+  <ul class="facts" id="files"><li class="empty">Loading...</li></ul>
+</div>
+<div class="panel">
+  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Index labels (MEM/CAT)</h2><span class="small">the card catalog of the browsable shelves - written by the catalog tick</span></div>
+  <ul class="facts" id="catlog"><li class="empty">-</li></ul>
+</div>
+</div>
+<footer>Every operation here is the same <code>/memory</code> API any client uses. The Cartridges view shows the tier-2 standing system and the engine's slot vault.</footer>
 </main>
 </body>
 </html>
