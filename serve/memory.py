@@ -425,20 +425,25 @@ def prepend_head(messages: list[dict], text: str) -> list[dict]:
     return [{"role": "system", "content": text}] + list(messages)
 
 
-SOUL_BUDGET = 16000           # soul.md's load-time budget (the soul plan's enforced-at-load law; 6000 -> 12000
-                              # for v4, 12000 -> 14000 2026-10-21, 14000 -> 16000 2026-10-24 so the browsed-
-                              # store laws fit - all three moves the owner's signature; v1 shipped 5,995 raw,
-                              # v4 ships 12,960 (its two 2026-10-21 laws + the 2026-10-22 signing law), and
-                              # v5 drafts inside 16k with room, not cryptograms)
+SOUL_BUDGET = None            # soul.md's load-time budget - RETIRED 2026-10-24 night on the owner's
+                              # order ("remove the limit on soul.md... it's your soul"): None = no
+                              # cap, set an integer to re-arm the fail-closed tripwire. The history,
+                              # every move his signature: 6000 for v1 (shipped 5,995 raw) -> 12000
+                              # for v4 -> 14000 2026-10-21 -> 16000 2026-10-24 (v5 shipped 15,021
+                              # raw; v6 rebuilt at 13,658, laws moved out, smaller and whole). The
+                              # tripwire caught drift for eight days; the standing texts are the
+                              # persona files now and the tier-2 page reports the sizes in the open,
+                              # so the cap became his confidence - the scar stays, the gate is open.
 
 
 def compose_soul(raw: str, gate_on: bool) -> tuple[str, str, str]:
     """soul.md text -> (injected bytes, variant, reason). Fail-closed: unusable bytes
     return ("", "off", why) and the box runs the byte-identical pre-soul path - a
     half-soul is never served. Pure and offline (no server, no store, no model):
-    - Budget: the RAW file must be <= SOUL_BUDGET chars (tripwire sizes move on the owner's
-      signature: 6,000 for v1, 12,000 for v4, 14,000 2026-10-21, 16,000 2026-10-24; the budget
-      is a tripwire against drift, not a squeeze).
+    - Budget: when SOUL_BUDGET is SET, the RAW file must be <= it, fail-closed (tripwire sizes
+      moved on the owner's signature - 6,000 v1, 12,000 v4, 14,000 2026-10-21, 16,000
+      2026-10-24 - and the budget itself retired to None the same night, his order: a tripwire
+      against drift, never a squeeze; None means no cap).
     - HTML comments are load-time INSTRUCTIONS, not soul bytes: stripped, whitespace
       re-normalized. The same file always composes to the same bytes.
     - Part B (first line starting "## B.") composes ONLY when the gate is on -
@@ -447,7 +452,7 @@ def compose_soul(raw: str, gate_on: bool) -> tuple[str, str, str]:
       gate on with no Part B in the file honestly reports variant "A"."""
     if not raw or not raw.strip():
         return "", "off", "soul file is empty"
-    if len(raw) > SOUL_BUDGET:
+    if SOUL_BUDGET is not None and len(raw) > SOUL_BUDGET:
         return "", "off", f"soul is {len(raw)} chars, over the {SOUL_BUDGET} budget"
     text = re.sub(r"<!--.*?-->", "", raw, flags=re.S)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()

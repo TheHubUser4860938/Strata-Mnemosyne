@@ -103,3 +103,10 @@ node_modules/
 # screenshots and checkpoints from the Mac rebuild live outside git (StrataSplit\evidence-archive)
 /apps/host/docs/evidence/
 /apps/host/docs/checkpoints/
+
+# persona/ — the standing texts. Only the PII-free core (soul.md at repo root,
+# persona/agent.md, persona/skill.md, persona/README.md, the *.example templates)
+# is tracked. user.md (the owner's name) and always.md (real /home paths) carry
+# personal data and are generated per box from their .example, like strata-*.json.
+/persona/user.md
+/persona/always.md

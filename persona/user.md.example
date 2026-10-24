@@ -1,0 +1,11 @@
+# user.md — the human  (box-local: personal data stays out of git)
+
+Copy to user.md and fill in. Keep it under ~400 words: every word rides
+every prompt. No secrets — this text is model-visible and log-adjacent.
+
+Name: the display name the agent may speak.
+Role: who they are to this agent and to the project.
+How they work: session tempo, what "done" means to them, who restarts what.
+What they value: what earns trust; what burns it.
+Hard rules: the non-negotiables, one line each.
+In conversation: how to read their terseness; the humor calibration.

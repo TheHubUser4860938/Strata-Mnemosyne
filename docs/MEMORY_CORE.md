@@ -556,6 +556,20 @@ seed's leading bytes right; cashing the speed on live traffic needs one more own
 SHAPE of the standing conversation (where the block rides, and whether the ack round replays),
 not another encoding fix.
 
+**The cart became the persona's own house (owner's law, 2026-10-24 night).** The standing
+text is now the STATIC texts: the soul plus a configured `files` list - on the fork's box,
+`persona/agent.md` (how Clio works), `persona/skill.md` (the kit), `persona/user.md` (the
+human) and `persona/always.md` (the box map). `facts: false` retired the shelved rows from
+the cart: they ride the tier-3 block instead (standing status lost, knowledge kept), so the
+harvest can no longer rotate it - a rotation now means a hand edited a source file, and
+daily life writes zero (the NVMe-wear law; measured: 343 MB per rotation). The soul's
+load-time budget retired the same night (`SOUL_BUDGET = None`; set an integer to re-arm the
+tripwire). Personal data stays out of git: `user.md` and `always.md` are box-local, generated
+from their `.example` templates like the `strata-*.json` configs; only the PII-free core is
+tracked. Composed for the next boot: 20,435 standing chars (~5.7k tokens estimated) across
+five sources - a richer persona in a smaller cart than the 7,009-token soul+facts era. `GET
+/memory` reports `sources` and `facts_mode`, and the tier-2 page names what actually stands.
+
 **The store's own page (item D).** `GET /memory-ui` (only when memory is on) serves a panel:
 stats cards (rows/cap/pressure, pending turns, at-rest seal, cartridge state), search with
 scope/class filters, the fifty most recent facts with per-row **Forget**, an **Add a fact** box
