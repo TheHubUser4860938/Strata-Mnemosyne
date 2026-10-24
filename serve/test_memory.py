@@ -35,10 +35,27 @@ _CLUSTER = None
 def _cluster_uri() -> str:
     global _CLUSTER
     if _CLUSTER is None:
-        import embedded_postgres as ep
-        d = Path(tempfile.mkdtemp(prefix="strata-test-pg-")) / "pgdata"
-        _CLUSTER = ep.get_server(d)
-        atexit.register(_CLUSTER.cleanup)
+        import shutil
+
+        try:                                    # the same per-OS branch production takes (ADR-002)
+            import embedded_postgres as ep      # Linux / macOS wheel
+        except ImportError:                     # noqa: E402 - the suite must run on Windows too,
+            import pixeltable_pgserver as ep    # type: ignore  # where only this wheel exists
+        root = Path(tempfile.mkdtemp(prefix="strata-test-pg-"))
+        _CLUSTER = ep.get_server(root / "pgdata")
+
+        def _drop():
+            # ADR-002 R3 stopped the cluster at exit and left the DIRECTORY: one leaked 2 GB
+            # cluster per test process, 48 of them on this box, and on 2026-10-24 the tmpfs under
+            # /tmp hit 100% (63 GiB) - the next suite died mid-run on
+            # "psycopg.errors.DiskFull: could not write to file pg_wal/xlogtemp". Stop first, then
+            # delete; a stop that throws must not spare the disk the litter is sitting on.
+            try:
+                _CLUSTER.cleanup()
+            finally:
+                shutil.rmtree(root, ignore_errors=True)
+
+        atexit.register(_drop)
     return _CLUSTER.get_uri()
 
 
@@ -1109,6 +1126,42 @@ class Cartridge(unittest.TestCase):
         cart = stats["stats"]["cartridges"]
         self.assertEqual(cart["state"], "seeded")
         self.assertEqual(cart["facts"], 1)
+
+    def test_min_reseed_s_zero_means_zero(self):
+        # `cfg.get("min_reseed_s") or 600` read a configured 0 as MISSING, because 0 is falsy - so the
+        # window the comment above it says "0 disables it" could not be disabled at all. The fix
+        # spells the test the way tool_rounds already does. (Review 2026-10-24.)
+        self.assertEqual(Cartridges(self.svc, {"enabled": True, "min_reseed_s": 0}).min_reseed_s, 0,
+                         "0 disables the re-seed window; it does not mean 600")
+        self.assertEqual(Cartridges(self.svc, {"enabled": True}).min_reseed_s, 600,
+                         "absent still means the shipped 600")
+        self.assertEqual(Cartridges(self.svc, {"enabled": True, "min_reseed_s": 30}).min_reseed_s, 30,
+                         "and a real number still means itself")
+
+    def test_an_engine_restart_re_installs_the_standing_kv(self):
+        # The re-seed window's promise is "the slot already holds these bytes". An engine that came
+        # back holds NOTHING - the slots live in the engine process - and under steady traffic the
+        # window renewed itself on every request, so the cart never noticed and the page went on
+        # saying "seeded". FRAGILE-5 of the 2026-10-24 server.py pass: correctness never broke (the
+        # standing text rides the prompt either way); only the speedup died, quietly.
+        st, body = self.ask("first question")
+        self.assertEqual(st, 200, body)
+        self.assertEqual(self.calls, {"save": 1, "restore": 0}, "seeded once, then left alone")
+        st, stats = self.http("GET", "/memory")
+        self.assertTrue(stats["stats"]["cartridges"]["kv_standing"],
+                        "the page answers for the K/V that actually stands, not the state string")
+        self.engine.gen = getattr(self.engine, "gen", 0) + 1        # an engine process came and went
+        st, stats = self.http("GET", "/memory")
+        self.assertFalse(stats["stats"]["cartridges"]["kv_standing"],
+                         "and it stops claiming a warm prefix the moment the engine is a new process")
+        self.assertEqual(stats["stats"]["cartridges"]["state"], "seeded",
+                         "the state alone is the lie this fix retires - it still said seeded")
+        st, body = self.ask("second question")
+        self.assertEqual(st, 200, body)
+        self.assertEqual(self.calls["restore"], 1,
+                         "the next standing request re-installed the prefix instead of trusting the window")
+        st, stats = self.http("GET", "/memory")
+        self.assertTrue(stats["stats"]["cartridges"]["kv_standing"], "the cart is warm again")
 
     def test_muted_request_does_not_chase_the_slot_back(self):
         # Law 5 as flipped 2026-10-23: a muted conversation replaces the slot's state, and the
@@ -2542,6 +2595,186 @@ class StoreIdentityAndHealing(unittest.TestCase):
                 mem.close()
         finally:
             tmp.cleanup()
+
+
+class ReviewFixes2026_10_24(unittest.TestCase):
+    """The 2026-10-24 code review of memory-core (the Grok round, checked line by line against the
+    tree). Every test here pins a fix that came out of that pass: the shelf law the DEMOTE arm was
+    breaking, the sentinel that widened when an address named no shelf, the two fixed-width numpy
+    columns that silently cut a long scope or call number, the hits ledger that counted candidates
+    instead of serves, the bm25 stats cache keyed on a count a supersede leaves unmoved, an armed
+    cap that could be silently unreachable, and the write paths that still lacked _heals."""
+
+    LONG_SCOPE = "project-scope-longer-than-twenty-four"      # SCOPE_RE allows 40; the matrix cut at 24
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _svc(self, **kw):
+        m = MemoryService(self.tmp.name, **kw)
+        self.addCleanup(m.close)
+        return m
+
+    def test_shelf_covers_is_the_sql_law_not_a_prefix(self):
+        # shelf_sql's law, spelled in Python (2026-10-15): a child is X.Y or X/Y, NEVER Xyz. The
+        # router's demote arm used bare startswith, so a pick of MEM/CRG covered MEM/CRGX and the
+        # sibling escaped its penalty - while the filter arm, the lexical SQL and the cosine mask all
+        # said the two shelves are different sets. route_demote is live on this box (0.5), so the
+        # arms were disagreeing on a running store, not in a dead branch.
+        self.assertTrue(_memory_mod.shelf_covers("MEM/CRG", "MEM/CRG"), "a shelf covers itself")
+        self.assertTrue(_memory_mod.shelf_covers("MEM/CRG", "MEM/CRG.3.431"), "dotted child")
+        self.assertTrue(_memory_mod.shelf_covers("OPS", "OPS/LEAVE"), "slashed child")
+        self.assertFalse(_memory_mod.shelf_covers("QA76.9", "QA76.95"),
+                         "the decimal that made shelf_sql exist")
+        self.assertFalse(_memory_mod.shelf_covers("MEM/CRG", "MEM/CRGX"),
+                         "a sibling is not a child - the demote arm's old bug")
+
+    def test_demote_arm_demotes_the_sibling_it_used_to_cover(self):
+        m = self._svc(route_shelves=True, route_demote=0.5)
+        gold = m.remember("the cartridge bank holds one hundred rows", scope="ops",
+                          klass="MEM/CRG")["id"]
+        sib = m.remember("the cartridge crates hold one hundred jars", scope="ops",
+                         klass="MEM/CRGX")["id"]
+        kid = m.remember("a cartridge reel catalogue for the depot", scope="ops",
+                         klass="MEM/CRG.3")["id"]
+        q = "cartridge bank rows"
+        raw = {h["id"]: h["score"] for h in m.search(q, scope="ops", semantic=False, credit=False)}
+        got = {h["id"]: (h["score"], h["class"]) for h in
+               m._router_search(q, "ops", None, False, pick=["MEM/CRG"])}
+        self.assertEqual(got[gold][0], raw[gold], "a picked shelf pays nothing")
+        self.assertEqual(got[kid][0], raw[kid], "a CHILD of the pick pays nothing (boundary law)")
+        self.assertEqual(got[sib][0], round(raw[sib] * 0.5, 6),
+                         "a sibling whose name merely STARTS like the pick is demoted, not covered")
+
+    def test_an_address_that_names_no_shelf_holds_nothing(self):
+        # class_list's fail-closed law (2026-10-15, measured on the live store: a hyphenated name
+        # came back with 96 rows off OTHER shelves) applied to the two call sites that still widened:
+        # the browse map (`cls or None` threw the sentinel away) and op=list.
+        m = self._svc()
+        m.remember("the zygost scale reads 41.2 after calibration", scope="fw", klass="USR/PREF")
+        bad = "TECH/strata-mam"                       # CLASS_RE rejects it for its hyphen
+        sentinel = _memory_mod.class_list([bad])
+        self.assertEqual(sentinel, [], "the sentinel is an empty list, not None")
+        self.assertEqual(m.browse("fw", prefixes=sentinel)["shelves"], [],
+                         "the map of a shelf that does not exist shows no shelves")
+        self.assertEqual(m.browse("fw", prefixes=sentinel)["total_rows"], 0, "...and no rows")
+        self.assertEqual(len(m.browse("fw", prefixes=None)["shelves"]), 1,
+                         "no address at all still means the whole card catalog")
+        self.assertEqual(m.list_memories(scope="fw", klass=bad), [],
+                         "a list filter that names no shelf answers nothing, not everything")
+        self.assertEqual(len(m.list_memories(scope="fw", klass="USR/PREF")), 1,
+                         "a real address still answers")
+        t = tool_result(m, {"catalog": True, "class": bad}, scope="fw")
+        self.assertEqual(json.loads(t["text"])["shelves"], [],
+                         "the TOOL's map verb fails closed too")
+
+    def test_class_length_and_scope_width_survive_the_vector_matrix(self):
+        # Fixed-width numpy columns are a law with a length: a too-long value used to be cut in half
+        # and then compared against the caller's full string, so the cosine arm simply stopped seeing
+        # the row - silently, with no error and no log line.
+        self.assertRaises(ValueError, _memory_mod.class_name, "M" * (_memory_mod.CLASS_MAX + 1))
+        self.assertEqual(_memory_mod.class_name("M" * _memory_mod.CLASS_MAX),
+                         "M" * _memory_mod.CLASS_MAX)
+        self.assertEqual(_memory_mod.class_list(["M" * 60]), [],
+                         "too long is the sentinel (names no shelf), never 'no filter'")
+        stub = StubEmbedder({"the archive catalogues comets at night": [1.0, 0.0],
+                             "vellichor zzz": [1.0, 0.0]})
+        m = self._svc(embedder=stub)
+        m.remember("the archive catalogues comets at night", scope=self.LONG_SCOPE, klass="MEM/GRAPH")
+        meta = m._vec_matrix()
+        self.assertEqual(list(meta["scope"])[0], self.LONG_SCOPE,
+                         f"the matrix must hold a {len(self.LONG_SCOPE)}-char scope whole "
+                         f"(U{_memory_mod.SCOPE_MAX})")
+        self.assertEqual(list(meta["class"])[0], "MEM/GRAPH", "and the call number whole (U48)")
+        # the arm that reads the column must reach the row: this query shares no word with the fact,
+        # so only the cosine arm can answer it - and it answers it only if the scope survived
+        hits = m.search("vellichor zzz", scope=self.LONG_SCOPE, limit=3)
+        self.assertTrue(hits, "a long scope must still be reachable by the cosine arm")
+        self.assertEqual(hits[0]["text"], "the archive catalogues comets at night")
+
+    def test_credit_counts_the_lines_the_model_read(self):
+        # hits/last_seen_at are the eviction guard's "never touch a served fact" and what the tool
+        # prints as "times served". search() used to credit every row it RETURNED; the block shows
+        # fewer (its budget, then the tail's own limit), and the filter arm's fail-open counted the
+        # same rows twice in one turn. The law the router test already names: the vote PROPOSES,
+        # only shown rows CREDIT.
+        m = self._svc(max_block_chars=400)            # a budget that MUST trim
+        ids = [m.remember(f"fact {n}: the zygost turbine needs {fluid}", scope="ops")["id"]
+               for n, fluid in enumerate(("oil", "coolant", "brake fluid", "grease", "air", "water"))]
+        block, shown, _ = m.block_for([{"role": "user", "content": "zygost turbine"}], "ops")
+        shown_ids = {h["id"] for h in shown}
+        self.assertTrue(block, "the small budget still stands a block")
+        self.assertTrue(0 < len(shown_ids) < len(ids),
+                        f"this test means nothing unless the budget trims (shown {len(shown_ids)}"
+                        f" of {len(ids)})")
+        for r in m.list_memories(scope="ops"):
+            want = 1 if r["id"] in shown_ids else 0
+            self.assertEqual(r["hits"], want,
+                             f"row {r['id']} {'rode the block' if want else 'was only proposed'}:"
+                             " the ledger must match the bytes")
+
+    def test_a_pinned_block_still_credits_what_it_shows(self):
+        # The head block is pinned, so search() never runs on the repeat turns - and the old code
+        # credited nothing at all after the first turn: a fact shown on forty turns read as served
+        # once. "Times served" now means that.
+        m = self._svc()
+        rid = m.remember("the oil change was due March 3", scope="ops")["id"]
+        msgs = [{"role": "user", "content": "when is the oil change due"}]
+        m.block_for(msgs, "ops")
+        first = m.conn.execute("select hits from memories where id=%s", (rid,)).fetchone()[0]
+        m.block_for(msgs, "ops")                      # the pin path: no search, same bytes shown
+        second = m.conn.execute("select hits from memories where id=%s", (rid,)).fetchone()[0]
+        self.assertEqual(second, first + 1, "a re-shown block is another serve")
+
+    def test_bm25_stats_rekey_on_supersede_not_on_count(self):
+        # avgdl is the length-normaliser every bm25 score divides by. The cache key was the active
+        # count; a correction retires one row and lands another, so the count sat still while the
+        # corpus changed shape and the ranking kept normalising against a table that no longer
+        # existed. The key is now (count, max id) - every insert moves max(id).
+        m = self._svc()
+        rid = m.remember("the ship sailed", scope="ops")["id"]
+        n0, avg0 = m._bm25_stats()
+        m.correct("the ship sailed at dawn with a full cargo of timber and three nervous pilots",
+                  rid, scope="ops")
+        n1, avg1 = m._bm25_stats()
+        self.assertEqual(n0, n1, "the correction nets out: same active count")
+        self.assertNotEqual(avg0, avg1, "so the stats must re-key on the row set, not on the count")
+
+    def test_an_armed_cap_reports_the_distance_it_cannot_close(self):
+        # Eviction only dares touch never-recalled rows, so a store where everything has been served
+        # sits over an armed cap with nothing to evict - quietly, until stats said so.
+        m = self._svc()
+        for i in range(4):
+            m.remember(f"a served fact {i} about the depot", scope="ops")
+        with m.lock:
+            m.conn.execute("update memories set hits = hits + 1")     # every row has been shown
+            m.conn.commit()
+        m.max_memories = 2                            # the cap is armed AFTER the serving
+        st = m.stats()
+        self.assertEqual(st["over_cap"], 2, "two rows over a cap the evictor cannot reach")
+        self.assertEqual(self._svc().stats()["over_cap"], 0, "no cap armed, nothing over")
+
+    def test_a_failed_write_heals_the_shared_connection(self):
+        # _heals was on every READ since the 2026-10-23 dict_snowball day; the write paths were
+        # still naked, so a failed write left the one shared connection in an aborted transaction
+        # and the NEXT request paid for it too - one bad query, two failed requests.
+        m = self._svc()
+        m.remember("a fact before the outage", scope="ops")
+        with m.lock:
+            try:
+                m.conn.execute("select * from no_such_table")
+            except _memory_mod.psycopg.Error:
+                pass
+        self.assertRaises(_memory_mod.psycopg.Error, m.remember, "the first write after",
+                          scope="ops")
+        r = m.remember("the second write lands", scope="ops")
+        self.assertGreater(r["id"], 0, "the failed write rolled back: the store is usable again")
+        self.assertNotEqual(int(m.conn.info.transaction_status), 3,
+                            "3 is INERROR - the aborted state that made every later request fail "
+                            "on 2026-10-23; 0 or 2 (a fresh transaction) both mean the store answers")
 
 
 if __name__ == "__main__":

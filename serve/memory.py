@@ -53,6 +53,13 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 SCOPE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}\Z")
+SCOPE_MAX = 40                          # SCOPE_RE's own ceiling, named: the vector matrix keeps scope
+                                        # in a fixed-width numpy column and a silent truncation there
+                                        # hides a whole scope from the cosine arm (see _vec_matrix)
+CLASS_MAX = 48                          # the same law for the call number: CLASS_RE has NO length
+                                        # bound of its own, so without this a deep mark longer than
+                                        # the matrix column truncates and stops answering its own
+                                        # shelf query (2026-10-24 review; U24→U48 bought time, not law)
 USER_SCOPE = "user"                     # the profile shared by every client and project
 CAT_CLASS = "MEM/CAT"                   # the index cartridges (2026-10-24): the browse map's label
                                         # shelf - rows of "SHELF - words", maintained by
@@ -106,8 +113,14 @@ CLASS_RE = re.compile(r"[A-Z][A-Z0-9]*(?:/[A-Z0-9]+)*(?:\.[A-Za-z0-9]+)*\Z")
 def class_name(value, *, quiet: bool = False) -> str:
     """A call number as stored: upper-cased, validated. Spaces are NOT stripped - "engine internals"
     must fail, not silently weld itself into ENGINEINTERNALS. quiet=True (request headers may carry
-    anything) drops junk to '' instead of raising."""
+    anything) drops junk to '' instead of raising. Over-long marks fail the same way: CLASS_RE bounds
+    the GRAMMAR and nothing else, and a name the matrix cannot hold (CLASS_MAX) would be stored whole
+    and answered for only half - fail closed at the door instead."""
     v = str(value or "").strip().upper()
+    if len(v) > CLASS_MAX:
+        if quiet:
+            return ""
+        raise ValueError(f'class must be {CLASS_MAX} characters or fewer (got {len(v)})')
     if not v or CLASS_RE.fullmatch(v):
         return v
     if quiet:
@@ -151,6 +164,18 @@ def shelf_sql(col: str, prefixes: list[str]) -> tuple[str, list[str]]:
         ors.append(f"({col} = %s or {col} like %s or {col} like %s)")
         params += [pre, pre + ".%", pre + "/%"]
     return "(" + " or ".join(ors) + ")", params
+
+
+def shelf_covers(prefix: str, klass: str) -> bool:
+    """ONE shelf over a row, spelled in Python: exact, or a child across a boundary (X.Y or X/Y). The
+    law is shelf_sql's (SQL) and shelf_mask's (the numpy filter), spelled here for the one place that
+    needs it as an EXPRESSION - the router's DEMOTE arm, which penalises by row instead of hiding by
+    predicate - and the three must agree or an A/B between the arms measures the predicate, not the
+    router. Bare `startswith` does not: it lets the
+    pick QA76.9 cover QA76.95, three different LCC captions from one another, which is exactly what
+    shelf_sql was written to refuse. The demote arm shipped with the bare form, and route_demote is
+    live on this box (0.5), so this is not dead code. (Review 2026-10-24.)"""
+    return klass == prefix or klass.startswith(prefix + ".") or klass.startswith(prefix + "/")
 
 
 def shelf_mask(classes, col) -> "np.ndarray":
@@ -365,12 +390,12 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
     except (TypeError, ValueError) as e:
         return _tool_done(t0, False, json.dumps({"error": f"bad argument: {e}"}))
     if catalog:
-        out = mem.browse(scope, prefixes=cls or None, limit=limit, since=since, until=until)
+        out = mem.browse(scope, prefixes=cls, limit=limit, since=since, until=until)
         out["mode"] = "map"
         mem.note_tool("maps", not out["shelves"])
         return _tool_done(t0, True, json.dumps(out, ensure_ascii=False))
     if not q:
-        if not cls:
+        if cls is None:
             return _tool_done(t0, False, '{"error": "give words (q), a shelf (class), or '
                                           'catalog:true - this store has a map, drawers, and a '
                                           'search; or call with nothing to get this menu"}')
@@ -382,7 +407,10 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
     when: dict[int, str] = {}
     if hits:      # the date a fact was said - temporal browsing reads dated cards (2026-10-24);
         # one indexed PK pass, kept out of search() so every block byte stays exactly what it was.
-        with mem.lock:
+        # _rollback_on_error because this is raw SQL on the SHARED connection outside MemoryService:
+        # a read that raises here without a rollback leaves the transaction aborted, and the NEXT
+        # caller eats the failure too (the 2026-10-23 lesson, found in this block by review).
+        with mem.lock, _rollback_on_error(mem.conn):
             got = mem.conn.execute("select id, created_at from memories where id = any(%s)",
                                    ([h["id"] for h in hits],)).fetchall()
             mem.conn.commit()
@@ -634,13 +662,16 @@ StoreError = psycopg.Error      # the store's failure class, named for serve/ser
 
 
 def _heals(fn):
-    """Decorator form of _rollback_on_error, on every read the request path takes.
+    """Decorator form of _rollback_on_error, on every statement the request path takes - reads since
+    the 2026-10-23 sweep, writes since the 2026-10-24 review found the write paths still naked.
 
     The store serves on ONE psycopg connection, and psycopg opens an implicit transaction on the
     first statement: a statement that raises leaves that transaction aborted, and until something
     rolls back, EVERY later request on the connection dies with InFailedSqlTransaction - one bad
     query wearing the costume of a dead store (measured 2026-10-23, the dict_snowball day). The
-    guard costs nothing on the success path and turns a store outage into one failed request."""
+    guard costs nothing on the success path and turns a store outage into one failed request.
+    Without it on a WRITE the bill came to two: the failed write itself, then the next request on
+    the connection, which was the first read to notice and roll back."""
     @functools.wraps(fn)
     def inner(self, *args, **kwargs):
         with _rollback_on_error(self.conn):
@@ -781,8 +812,9 @@ class MemoryService:
         self.embedder = embedder if embedder is not None else None
         self._vmeta = None                                  # cached (ids, mat, scope, class, ...) or None
         self._vdirty = True
-        self._bm25_n: int | None = None                     # cached (n, avgdl) for the lexical arm
-        self._bm25_avgdl: float | None = None               # - _bm25_stats() recomputes when n moves
+        self._bm25_n: tuple | None = None                   # cached (n, avgdl) for the lexical arm - the
+                                                            # key is the active set's (count, max id)
+        self._bm25_avgdl: float | None = None               # - _bm25_stats() recomputes when that key moves
         self._ecount = -1
         self._qc: "OrderedDict[str, object]" = OrderedDict()  # normalized query -> vector, capped at 128
         self._svec: "OrderedDict[str, tuple]" = OrderedDict()  # scope -> (stamp, {row id: vector}), capped at 32
@@ -944,6 +976,7 @@ class MemoryService:
         return None if dt is None else dt.timestamp()
 
 
+    @_heals
     def auto_classify(self, text: str) -> str:
         """Write-time sub-shelf minting (the user's ask, 2026-10-16: categories and cutters must
         grow as memories are made). The store's own law - "eyeball before you shelve; a false
@@ -1062,6 +1095,7 @@ class MemoryService:
         return ""
 
 
+    @_heals
     def remember(self, text: str, scope: str = USER_SCOPE, source: str = "manual",
                  confidence: float | None = None, provenance: dict | None = None,
                  klass: str | None = None, guard: bool = True) -> dict:
@@ -1284,6 +1318,7 @@ class MemoryService:
                 return ("supersede", rid)
         return None
 
+    @_heals
     def forget(self, memory_id: int, reason: str = "") -> bool:
         """The honest forget (audit 09 finding 2, Grok Q2 split, 2026-10-18): op=forget used
         to hard-DELETE - explicit on the surface, but it left no record of WHAT was removed.
@@ -1308,6 +1343,7 @@ class MemoryService:
             self._vdirty = True
             return gone.rowcount > 0
 
+    @_heals
     def purge(self, memory_id: int, reason: str, actor: str = "api") -> bool:
         """The hard-delete primitive (Grok Q2): legal ONLY with a non-empty reason, and it
         inserts {mem_id, sha256 of the full text, text head 200, reason, actor, ts} into the
@@ -1336,6 +1372,7 @@ class MemoryService:
             self._vdirty = True
             return True
 
+    @_heals
     def invalidate(self, memory_id: int, by_id: int | None = None) -> bool:
         """Take a fact out of recall WITHOUT deleting it: invalid_at marks when the store stopped
         trusting it, superseded_by points at the fact that replaced it (the version chain). Search,
@@ -1390,6 +1427,7 @@ class MemoryService:
         new["invalidated"] = int(old_id)
         return new
 
+    @_heals
     def classify(self, memory_id: int, klass: str) -> bool:
         """Shelve one fact (op=classify, the backfill and the hand-review path). Works on superseded
         rows too - history keeps its shelf marks. The row's own scope stays untouched: class says
@@ -1420,10 +1458,14 @@ class MemoryService:
             params.append(scope)
         if klass:
             named = [c for c in (class_name(x, quiet=True) for x in klass.split(",")) if c]
-            if named:
-                frag, args = shelf_sql("class", named)
-                conds.append(frag)
-                params += args
+            # The sentinel again (class_list 2026-10-15, browse 2026-10-24): a list filter whose every
+            # name is junk answers NOTHING - silently widening it to "no filter" is the exact bug the
+            # bad-address law was written against, one call site away from where it was fixed.
+            if not named:
+                return []
+            frag, args = shelf_sql("class", named)
+            conds.append(frag)
+            params += args
         if not include_invalid:
             conds.append("invalid_at is null")
         params.append(max(1, min(500, int(limit))))
@@ -1548,6 +1590,12 @@ class MemoryService:
             tab["pay"].pop(rid, None)
         if added or retired:
             tab["pay"].clear()                        # bar and rarity just moved; see the docstring
+            # ...and the BAR itself moves with the row count (build computes max(3, rows//50 capped
+            # at 5); the amend used to leave it frozen at whatever the first build saw, so a store
+            # that grew across the 150- and 250-row thresholds kept a small-store bar until some
+            # outside write forced a rebuild). Harmless above 250 active rows, where the cap pins it
+            # at 5 - and exactly the silent-drift class this file has already been audited for twice.
+            tab["bar"] = max(3, min(len(tab["toks"]) // 50, 5))
 
     def _dedupe(self, hits: list[dict]) -> list[dict]:
         """Near-dupe suppression for the ranked candidates (measured 2026-10-12: five rows phrased the
@@ -1642,19 +1690,27 @@ class MemoryService:
         """(n, avgdl) for the lexical arm - FTS5 computed document stats over the whole table for
         every query; a bare Postgres tsvector column carries no hidden equivalent, so the store
         keeps its own: the active-row count is one cheap probe, and avgdl comes from ts_stat's
-        nentry tally, CACHED and recomputed only when the count moved (the curation timer inserts
-        every ~30 min; keying the cache on n keeps it honest without a restart). Measured on the
-        venue store (11k rows): the full ts_stat pass costs a few tens of ms, once per change."""
+        nentry tally, CACHED and recomputed only when the ACTIVE ROW SET moves (the curation timer
+        inserts every ~30 min; keying the cache keeps it honest without a restart). Measured on the
+        venue store (11k rows): the full ts_stat pass costs a few tens of ms, once per change.
+        THE KEY IS (count, max id), not count alone (review 2026-10-24): a SUPERSEDE retires one row
+        and lands another, so the active count is unchanged while the corpus changed shape - under
+        the old key a sweep that consolidated 62 rows into 62 new ones kept an avgdl from a corpus
+        that no longer existed, and avgdl is the length-normaliser every bm25 score divides by.
+        max(id) moves with every insert (identity), so the pair sees every write this store makes;
+        an outside editor that changed a text without inserting or re-stamping stays the accepted
+        caveat of _dedupe_tables' identical law."""
         with self.lock:
-            n = self.conn.execute(
-                "select count(*) from memories where invalid_at is null").fetchone()[0]
-            if self._bm25_n != n or self._bm25_avgdl is None:
+            n, top = self.conn.execute(
+                "select count(*), coalesce(max(id), 0) from memories"
+                " where invalid_at is null").fetchone()
+            if self._bm25_n != (n, top) or self._bm25_avgdl is None:
                 tot = self.conn.execute(
                     "select coalesce(sum(st.nentry), 0) from ts_stat("
                     "'select ts from memories where invalid_at is null', 'ts') st").fetchone()[0]
                 self.conn.commit()
                 self._bm25_avgdl = max(1.0, float(tot) / max(1, n))
-                self._bm25_n = n
+                self._bm25_n = (n, top)
             return float(n), self._bm25_avgdl
 
     def _bm25(self, rows: list, qtoks: list, dfm: dict, n: float, avgdl: float,
@@ -1719,7 +1775,11 @@ class MemoryService:
         rows were PROPOSED to a vote, never SHOWN to a model, and hits/last_seen_at are the budget
         eviction's "never touch a served fact" guard and what the memory_search tool reports - a router
         that credited its candidates would quietly make every popular shelf's rows eviction-proof
-        without ever injecting one. Default True: every existing call site byte-identical."""
+        without ever injecting one. Default True: every existing call site byte-identical. THE SAME
+        LAW, FINISHED (review 2026-10-24): block_for/turn_block_for now pass credit=False and credit
+        the rows their rendered block actually SHOWS - search used to return 96 and book a "serve" for
+        all of them while the block showed fewer (the tail shows turn_recall_limit of them), and the
+        filter arm's fail-open counted the same rows twice in one turn."""
         limit = self.recall_limit if limit is None else max(1, min(240, int(limit)))
         # PHASE 4: with an embedder configured, a query bm25 CANNOT serve is exactly the case the
         # cosine pass exists for (spikes/lme/TEMPORAL_DIAG.md: multi-evidence rows that share no rare
@@ -1844,6 +1904,13 @@ class MemoryService:
             scopes.append(s)
         where = "m.invalid_at is null and m.scope = any(%s)"
         params: list = [scopes]
+        if prefixes is not None and not prefixes:
+            # THE SENTINEL, honoured (class_list's law, 2026-10-15, applied to the map): an address
+            # that names no shelf HOLDS nothing - it does not widen to the whole store. A caller that
+            # asked for the narrowest mark in the library and got the entire card catalog was shown
+            # 96 rows off other shelves; the same trap caught the map on 2026-10-24, where a junk
+            # class name fell through `cls or None` and answered "here is every shelf you have".
+            return {"shelves": [], "total_rows": 0, "hidden_drawers": 0, "hidden_rows": 0, "rows": []}
         if prefixes:
             frag, fp = shelf_sql("m.class", prefixes)
             where += " and (" + frag + ")"
@@ -1925,10 +1992,17 @@ class MemoryService:
             self._vmeta, self._vdirty, self._ecount = None, False, n
             return None
         mat = np.stack([np.frombuffer(r[1], dtype=np.float32) for r in rows])
+        # FIXED-WIDTH COLUMNS ARE A LAW WITH A LENGTH: a numpy 'U24' silently cuts a longer string
+        # in half, and the mask below compares the CUT value against the caller's full scope/class -
+        # so a too-long value does not crash, it just stops being findable by the cosine arm (and two
+        # scopes sharing their first 24 characters become one shelf). The widths therefore match the
+        # validators that bound them: SCOPE_MAX for scope (SCOPE_RE's own ceiling), CLASS_MAX for the
+        # call number (class_name enforces it now; U24 -> U48 for class bought time in the deep-mark
+        # fix, this makes it a rule instead of a lucky size).
         meta = {"ids": np.array([r[0] for r in rows]), "mat": mat,
                 "ix": {int(r[0]): n for n, r in enumerate(rows)},   # id -> row, for the fusion pass
-                "scope": np.array([r[2] for r in rows], dtype="U24"),
-                "class": np.array([r[3] for r in rows], dtype="U48"),   # U24 silently truncated deep marks
+                "scope": np.array([r[2] for r in rows], dtype=f"U{SCOPE_MAX}"),
+                "class": np.array([r[3] for r in rows], dtype=f"U{CLASS_MAX}"),
                 "created": np.array([r[4] for r in rows], dtype=np.float64),
                 "updated": np.array([r[5] for r in rows], dtype=np.float64),
                 "conf": np.array([r[6] for r in rows], dtype=np.float32)}
@@ -2184,7 +2258,7 @@ class MemoryService:
         return pick or None
 
     def _router_search(self, query: str, scope: str, classes, semantic: bool, exclude=(),
-                       pick=None, limit: int | None = None):
+                       pick=None, limit: int | None = None, credit: bool = False):
         """Deliver the router's pick: FILTER or DEMOTE, never both (2026-10-24, step 1 of the
         tier-3 focus - the fix m4_routegrade named, and the shape the 2026 field converged on).
         An explicit classes= ALWAYS filters - a human address holds, fail closed, the 2026-10-15
@@ -2198,8 +2272,9 @@ class MemoryService:
         this request would have injected NO bytes at all).
         DEMOTE arm (0 < route_demote < 1): nothing is filtered, so no fallback is needed - an
         empty pool is simply no-match, the pre-routing behavior. The search runs UNSCOPED and
-        every hit whose shelf is not covered by a pick (subtree law: some pick must be a prefix
-        of the row's class; a WILD row is covered by nothing) pays the bounded multiplicative
+        every hit whose shelf is not covered by a pick (the shelf_covers law: a pick covers its
+        exact mark and its children across a . or / boundary - never a sibling whose name merely
+        starts the same; a WILD row is covered by nothing) pays the bounded multiplicative
         penalty AFTER fusion and BEFORE dedup/render - the position exposure-decay chose for the
         same reason: demote the final claim to attention, whichever arm voted it there. A wrong
         pick can then sink pollution under the block's own score floor, but gold cannot be
@@ -2210,24 +2285,35 @@ class MemoryService:
         (tools/m4_routegrade) score the SAME pick it delivers with - no second vote, no
         double-counted histogram, no race between the graded list and the delivered one.
         `limit` rides through to the underlying search (the A/B harnesses sweep at their own k);
-        None keeps the store's recall default - the block paths stay byte-identical to tonight's."""
+        None keeps the store's recall default - the block paths stay byte-identical to tonight's.
+        `credit` (review 2026-10-24) defaults to False for the two BLOCK callers, because the block
+        credits what it SHOWS (see block_for): search() returns up to recall_limit rows and the
+        budget then keeps fewer, so crediting at search time booked a "serve" for every candidate
+        that never reached the prompt - the tail was the worst case (it shows turn_recall_limit rows
+        of what search returned), and the filter arm's fail-open counted the same rows twice in one
+        turn. The vote already abstains for the same reason (search's credit=False); this finishes
+        the law the test named: the vote PROPOSES, only shown rows CREDIT. A caller that shows
+        exactly what it gets - the memory_search tool, op=search - passes credit=True unchanged."""
         want = classes if classes is not None else (self._route(query, scope) if pick is None else pick)
         if classes is None and want and 0.0 < self.route_demote < 1.0:
-            hits = self.search(query, scope=scope, classes=None, semantic=semantic, limit=limit)
+            hits = self.search(query, scope=scope, classes=None, semantic=semantic, limit=limit,
+                               credit=credit)
             if exclude:
                 hits = [h for h in hits if h["id"] not in exclude]
             for h in hits:
                 cls = h.get("class") or ""
-                if not any(cls.startswith(p) for p in want):
+                if not any(shelf_covers(p, cls) for p in want):
                     h["score"] = round((h["score"] or 0.0) * self.route_demote, 6)
             hits.sort(key=lambda x: -(x["score"] or 0.0))   # stable: pre-demotion order breaks ties
             return hits
-        hits = self.search(query, scope=scope, classes=want, semantic=semantic, limit=limit)
+        hits = self.search(query, scope=scope, classes=want, semantic=semantic, limit=limit,
+                           credit=credit)
         if exclude:
             hits = [h for h in hits if h["id"] not in exclude]
         if classes is None and want and not hits:
             self._route_stats["fallbacks"] += 1
-            hits = self.search(query, scope=scope, classes=None, semantic=semantic, limit=limit)
+            hits = self.search(query, scope=scope, classes=None, semantic=semantic, limit=limit,
+                               credit=credit)
             if exclude:
                 hits = [h for h in hits if h["id"] not in exclude]
         return hits
@@ -2277,6 +2363,8 @@ class MemoryService:
         pinned = self._pinned(key)
         if pinned is not None:
             block, ids = pinned
+            if ids:
+                self._seen(ids)       # the block is riding the prompt again: that is a serve (2026-10-24)
             return block, [{"id": i} for i in ids], query
         # The router's delivery moved into _router_search (2026-10-24: both arms, the fail-open
         # law and its full reasoning live there). The pick does NOT ride the pin key - it is a
@@ -2287,6 +2375,8 @@ class MemoryService:
         if not hits:
             return None, [], query
         block, shown = self._render_block(hits, self.max_block_chars, scope)
+        if shown:
+            self._seen([h["id"] for h in shown])    # credit the LINES, not the candidate pool
         self._pin(key, (block, [h["id"] for h in shown]))
         return block, shown, query
 
@@ -2317,6 +2407,8 @@ class MemoryService:
         pinned = self._pinned(key)
         if pinned is not None:
             block, ids = pinned
+            if ids and block:
+                self._seen(ids)       # re-shown this turn: see block_for's credit law
             return (block or None), [{"id": i} for i in ids]
         q = users[-1][:400]
         # The router's delivery, both arms in _router_search (see block_for): the seen set rides
@@ -2331,6 +2423,7 @@ class MemoryService:
         if not shown:
             self._pin(key, ("", []))                # nothing fits the budget: inject no bytes at all
             return None, []
+        self._seen([h["id"] for h in shown])        # the tail shows <= turn_recall_limit of what it asked for
         self._pin(key, (block, [h["id"] for h in shown]))
         return block, shown
 
@@ -2451,6 +2544,14 @@ class MemoryService:
                                "2026-10-16: live-store backup 1.7 s, restore byte-verified by "
                                "identical lexical rankings)"}),
                 "pressure": bool(self.max_memories) and memories >= 0.8 * self.max_memories,
+                # THE CAP CAN MISS (review 2026-10-24): eviction only dares touch never-recalled rows, so
+                # once every row has been served the store sits OVER an armed cap with nothing left to
+                # evict - quietly, unless something reports the distance. This box runs max_memories=0
+                # (no cap), so it reads 0; on a boxed cap it is the number that says the sweep, not the
+                # budget, is the only thing still shrinking the store. The hits ledger guarding that pool
+                # was fixed the same review: it counted candidates, not serves, and filled faster than
+                # the law assumed (see _router_search).
+                "over_cap": max(0, memories - self.max_memories) if self.max_memories else 0,
                 "recall_limit": self.recall_limit, "max_block_chars": self.max_block_chars,
                 "per_turn": self.per_turn, "turn_recall_limit": self.turn_recall_limit,
                 "turn_block_chars": self.turn_block_chars,

@@ -2426,6 +2426,122 @@ scans, plus every flagged row read by eye) found, and what was done about it:
   `GET /memory` before it touches anything: `m6_backup` then `m7_consolidate --go`. First tick
   Mon 2026-10-19 00:56.
 
+## The 2026-10-24 review round: an outside read checked against the tree, and ten fixes (2026-10-24)
+
+The owner brought back an outside model's review of this branch and asked for the treatment every
+other claim gets: verify it against the code, fix what is actually wrong, keep the receipts. The
+doc-level reading held up almost line for line - phases, gates, the blockers, the 233-operation
+cleanup, upstream #1444, the 4.5x wild-row miss, the router's net-negative first life. The
+code-level bug list was a week stale, and reading the tree found ten things the review did not.
+
+**Corrections to the outside read, filed in public:**
+
+- `hits` and `confidence` are not null in the tool's facts - they were fixed on 2026-10-16 (the
+  lexical select feeds the blend and returns both; `serve/memory.py` carries the comment,
+  `serve/test_memory.py::test_tool_result_shape` pins `hits` starting at 0 and incrementing).
+- The semantic-dupe guard has no config switch to be "disabled" with: `guard=False` is the
+  benchmark-ingest path (a haystack is evidence, not a proposal). Vectors are stored on that path by
+  design, and exact-text dedup still applies.
+- "Reactivation can serve stale vectors" describes a path the store does not have: nothing
+  un-invalidates a row (grep for `set invalid_at` finds only the tombstone writes), so the vectors
+  that go with `invalidate`/`forget` are never read again. The failure mode is real only when a human
+  revives a row in SQL - which is exactly the blemish the journal records from 2026-10-24 (two rows
+  revived by hand ran the day vector-less).
+- Save on this exact stack is not unproven: Spike A measured it at 251,339 tokens (3.35 GB in 1.54 s,
+  no `invalid K/V extent`), and #1444 does not reproduce on this box's k8v4 + MTP + YaRN + Q8 PLE
+  config. What is queued is the venue re-record of the cartridge's economics, not the save.
+- One number was off by 5x: the 150 MB vector matrix belongs to **~100k rows**, not 20k
+  (this file, line 1427). At 20k the store pays ~0.9 s of cache rebuild per write burst, not per row.
+- The research reference is incomplete: the AkbasCore line has a **v3**
+  (`ceceli33/titan-cognitive-core-v3`, TEST745, 22 October 2026, Qwen2.5-72B, eleven physical
+  cartridges, blind-sealed master) that this repo never cites - only v2. Its own "not established"
+  list states the quiet part we needed: multi-cartridge work there is **text-mediated synthesis, not
+  latent fusion**, and a cartridge "is not demonstrated to be portable" across architectures. Our own
+  `spikes/engine-patch-draft/DECISIONS.md` item 4 had already moved the blocker from RoPE re-phasing
+  (k8v4 stores K unrotated, so grafted KV rows are position-free) to the **QSA indexer pooled keys**
+  and the order-entangled **GDN blob**. A minting plan that still leads with YaRN re-phasing is
+  solving the problem this repo closed in October.
+- The curation loop is trigger-gated, not clocked: the 30-minute number is the `strata-sweep.timer`
+  tick, and a cold tick that finds nothing hot answers with one curl and never wakes the engine.
+
+**The ten fixes, each with a test** (`serve/test_memory.py::ReviewFixes2026_10_24`, nine tests, plus
+two in `::Cartridge`; the full `serve/` suite is green - 1,163 passed, 20 skipped, 6 m 06 s):
+
+1. **The router's DEMOTE arm broke the shelf-boundary law** - and it is live on this box
+   (`route_demote: 0.5`). Coverage was tested with `class.startswith(pick)`, so a pick of MEM/CRG
+   covered MEM/CRGX and that sibling escaped its penalty, while the filter arm's SQL (`shelf_sql`:
+   `= X or X.% or X/%`), the cosine mask (`shelf_mask`) and the 2026-10-15 dotted-Cutter law all
+   treated them as different sets. One shared predicate now, `shelf_covers()`, so the law has one
+   spelling instead of three that disagree.
+2. **`hits` / `last_seen_at` counted candidates, not serves.** `search()` credited every row it
+   returned - up to `recall_limit`, 96 here - while the block shows fewer (the head is trimmed by the
+   char budget, the tail by `turn_recall_limit`, 12 here); the filter arm's fail-open credited the
+   same rows twice in one turn; and a pinned conversation credited nothing after its first turn.
+   Measured on the live store: `sum(hits)` 93,717 across 1,587 turns that carry a ledger - 59 credits
+   a turn - against 49.9 ids actually recorded as shown, and 1,272 of 1,770 active rows already at
+   `hits>0`. That column is the budget eviction's whole "never touch a served fact" guard, nearly
+   spent before it is even armed. The blocks now credit exactly the lines they render (the law the
+   stage-1 test already spelled out: the vote PROPOSES, only shown rows CREDIT), including on the pin
+   path, so "times served" means times served. Cost measured on the live store and rolled back:
+   0.33 ms for a 40-row credit.
+3. **An address that names no shelf widened the store**, at the two call sites left after the
+   2026-10-15 fail-closed law: the browse map (`cls or None` threw the sentinel away, so a model that
+   asked for the narrowest mark in the library was shown every shelf it has) and `op=list`. Both fail
+   closed now, which is what `browse()`'s own docstring had promised all along.
+4. **Two fixed-width numpy columns were cutting long values in half.** `scope` was `U24` while
+   `SCOPE_RE` allows 40; `class` was `U48` with no length bound in `CLASS_RE` at all. A too-long
+   scope did not error - it simply stopped being findable by the cosine arm, and two scopes sharing
+   their first 24 characters became one shelf. The widths now follow the validators (`SCOPE_MAX` 40,
+   `CLASS_MAX` 48, the latter enforced in `class_name`, which now refuses a 60-char mark instead of
+   storing it whole and answering for half). Checked against the live store before touching it:
+   longest scope 7, longest class 11, zero rows affected - a latent bug, retired before it could
+   become a venue number.
+5. **`_bm25_stats` keyed its avgdl cache on the active COUNT alone.** A correction retires one row and
+   lands another, so the count sits still while the corpus changes shape - and avgdl is the
+   length-normaliser every bm25 score divides by. The key is (count, max id) now, and every insert
+   moves max(id). Cost measured on the live store: 0.286 ms vs 0.288 ms for the old probe - free.
+6. **The write paths had no `_heals`.** The 2026-10-23 sweep put the rollback guard on every read
+   after the dict_snowball day; `remember`/`forget`/`purge`/`invalidate`/`classify`/`auto_classify`
+   stayed naked, so a failed write left the one shared connection in an aborted transaction and the
+   NEXT request failed on it too - one bad query, two failed requests. The tool's `when` fetch (raw
+   SQL outside the service) was the same hole; it is wrapped too.
+7. **An armed cap could be silently unreachable.** Eviction only dares touch never-recalled rows, so a
+   store where everything has been served simply sits over the cap and says nothing. `stats()` now
+   reports `over_cap` (0 on this box, where `max_memories: 0` means no cap at all).
+8. **The rare-token `bar` was computed once and never moved**: `_dedupe_amend` folds each write into
+   the cached token table and cleared the payload memo, but left `bar` at whatever the first build
+   saw. Bounded harm - the bar is capped at 5, so it is only wrong below ~250 active rows - and now
+   recomputed with the fold.
+9. **`min_reseed_s: 0` could not disable the re-seed window** (`cfg.get("min_reseed_s") or 600`, and 0
+   is falsy): the comment two lines above said "0 disables it" and was false. `tool_rounds` already
+   spelled the test as `is not None`; the two now agree. Same class of bug, same review: the memory
+   opt-out compared `"enabled"` against a case-sensitive tuple, so a hand-written `"OFF"` left the
+   whole memory system ON.
+10. **The cartridge trusted a slot that was not there.** The re-seed window renewed itself on every
+    request, and an engine restart takes the K/V slots with it - so after a reload the cart kept
+    reporting `seeded` for bytes no slot held, the standing text re-prefilled every conversation, and
+    nothing said so. The cart now remembers which engine process it installed into (`applied_gen`),
+    re-installs when that number moves, and `GET /memory` answers the honest question as
+    `kv_standing`. Correctness never broke - the standing text rides the prompt as bytes either way -
+    only the speedup died quietly, which is the kind of failure a page should own.
+
+Two honesty nits went with them: the seed/restore log lines said "N standing facts" while counting
+files in static mode (`describe()` now says which), and the `POST /memory` unknown-op menu was
+missing the two verbs it shipped last (`purge`, `cartridge`). `/v1/messages/count_tokens` also
+learned to count the standing text: it mirrored soul -> block -> client while the route renders
+standing -> block -> client, so Claude Code's context bar lay by exactly the persona files (~9.1k
+chars on this box) - the same failure the soul comment above it exists to prevent, re-introduced one
+feature later.
+
+**And one finding about the box, not the branch:** the test harness's Postgres fixture registered an
+atexit cleanup that stopped the cluster and never deleted its directory - one 2 GB leak per test
+process. 48 of them filled this box's 63 GiB `/tmp` to 100% (11 MB free) and killed a run with
+`psycopg.errors.DiskFull ... pg_wal/xlogtemp`. The fixture deletes its directory now; the purge took
+the box from 11 MB to 61 GB free, and a verification run left nothing behind.
+
+Reboot carries every line above: `serve/memory.py` and `serve/server.py` are boot-loaded, and the
+`hits` ledger changes meaning at that boot - smaller numbers, and true ones.
+
 ## Licensing and attribution
 
 - Strata (upstream) is MIT © Niko1221 and contributors; this fork's independent code keeps MIT.
