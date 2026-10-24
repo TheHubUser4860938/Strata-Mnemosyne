@@ -6550,6 +6550,17 @@ class Cartridges:
         self.prefixes = [p for p in (memory_api.class_name(x, quiet=True)
                                      for x in (cfg.get("class_prefixes") or ["USR", "DEC"])) if p]
         self.max_chars = max(200, int(cfg.get("max_chars") or 4000))
+        # The owner's law, 2026-10-24 night (born from his NVMe-wear question): "facts": false
+        # retires the store's shelved rows from the standing text. The cart then carries ONLY
+        # the static texts - the soul plus "files" (ordered paths, repo-relative or absolute:
+        # agent.md, a tool/skill sheet; missing files are announced and skipped, never fatal).
+        # The name is content-hashed, so the cart rotates only when a source file is edited:
+        # daily life = ZERO cartridge writes. The facts lose standing status, never knowledge:
+        # they ride the tier-3 block path their over-cap siblings already rode. Default
+        # facts:true keeps every other box byte-identical (the opt-in law); the dev config opts in.
+        self.facts = bool(cfg.get("facts", True))
+        self.files_cfg = [str(x) for x in (cfg.get("files") or [])]
+        self.sources = []                                      # what actually stands, by name
         # the re-seed window (2026-10-23): while a cart stands, moved text waits its turn instead
         # of paying a full seed on the next request - a session that shelves a fact every turn was
         # a full 6.3k-token re-prefill + 333 MB save per turn. New facts are NOT lost: the shelves
@@ -6564,14 +6575,49 @@ class Cartridges:
         self.lock = threading.Lock()
 
     def build(self):
-        self.text, self.n_facts, self.n_left = self.svc.memory.cartridge_text(self.prefixes, self.max_chars)
+        # Two modes (owner law, 2026-10-24 night - see the facts/files comment in __init__):
+        # store-shelf mode is today's byte-identical behavior; static mode reads NO store row -
+        # the standing text is the soul plus the configured files, and the harvest can never
+        # rotate it. The name stays a content hash in both modes, so a rotation means the bytes
+        # genuinely moved and a write means someone actually edited a source.
         soul = getattr(self.svc, "soul", "") or ""
         self.soul_chars = len(soul)
-        if not self.text:
-            self.standing, self.file = "", None
-            return
-        self.standing = soul + "\n\n" + self.text if soul else self.text
+        if self.facts:
+            self.text, self.n_facts, self.n_left = self.svc.memory.cartridge_text(self.prefixes,
+                                                                                   self.max_chars)
+            self.sources = ["soul.md"] if soul else []
+            if not self.text:                    # no standing facts: the soul rides separately,
+                self.standing, self.file = "", None     # the pre-cart bytes, exactly
+                return
+        else:
+            self.text, names = self.read_files()
+            self.sources = (["soul.md"] if soul else []) + names
+            self.n_facts, self.n_left = len(self.sources), 0
+            if not self.text and not soul:       # nothing to stand: no soul, no readable file
+                self.standing, self.file = "", None
+                return
+        self.standing = soul + "\n\n" + self.text if (soul and self.text) else (soul or self.text)
         self.file = "MEM-CRG-" + hashlib.sha256(self.standing.encode()).hexdigest()[:8] + ".bin"
+
+    def read_files(self):
+        """Static-mode text: the configured files joined in order with a blank line between.
+        An unreadable file is announced and skipped - an absent thing is never silently
+        'not enough' (the anti-vacuity law). Returns (text, names_that_stood)."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        docs, names = [], []
+        for fp in self.files_cfg:
+            p = fp if os.path.isabs(fp) else os.path.join(root, fp)
+            try:
+                with open(p, encoding="utf-8") as f:
+                    raw = f.read().strip()
+            except OSError as e:
+                print(f"[strata] cartridge: {fp} unreadable ({e}) - skipped, the cart "
+                      f"stands without it", flush=True)
+                continue
+            if raw:
+                docs.append(raw)
+                names.append(os.path.basename(fp))
+        return "\n\n".join(docs), names
 
     def standing_rides(self) -> bool:
         """True when the standing text is on its way into the prompt WITH the soul inside it: the
@@ -6608,7 +6654,8 @@ class Cartridges:
                 return
             self.build()
             if not self.file:
-                self.state = "failed: no shelved facts to stand"
+                self.state = ("failed: no shelved facts to stand" if self.facts
+                              else "failed: nothing to stand - soul off and no readable files")
                 return
             if self.state in ("loaded", "seeded") and self.file == self.applied:
                 # the text came back to, or stayed at, what stands: extend the window, ask the
@@ -6708,6 +6755,7 @@ class Cartridges:
         return {"shelves": self.prefixes, "max_chars": self.max_chars, "facts": self.n_facts,
                 "left_for_block": self.n_left, "file": self.applied, "bytes": self.bytes,
                 "state": self.state, "soul_chars": self.soul_chars, "files": files,
+                "sources": self.sources, "facts_mode": self.facts,
                 "reseed_in_s": max(0, int(self.min_reseed_s - (time.time() - self.applied_at)))
                 if self.applied_at else 0}
 

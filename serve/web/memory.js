@@ -88,10 +88,10 @@ function renderCart() {
   $("c-state").textContent = c ? c.state : "off";
   $("c-sub").textContent = c ? `file ${c.file || "(not applied yet)"} · soul ${c.soul_chars} ch`
                              : "memory.cartridges in the config";
-  $("c-facts").textContent = c ? c.facts : "—";
-  $("c-factsub").textContent = c
-    ? `${(c.bytes / 1048576).toFixed(0)} MB · ${c.left_for_block} left for the block · cap ${c.max_chars} ch`
-    : "";
+  $("c-facts").textContent = c ? (c.facts_mode === false ? c.sources.length + " files" : c.facts) : "—";
+  $("c-factsub").textContent = c ? (c.facts_mode === false
+    ? `${(c.sources.join(" + ") || "(nothing to stand)")} · ${(c.bytes / 1048576).toFixed(0)} MB · shelved facts ride the block`
+    : `${(c.bytes / 1048576).toFixed(0)} MB · ${c.left_for_block} left for the block · cap ${c.max_chars} ch`) : "";
   $("c-index").textContent = (STATS.by_class && STATS.by_class["MEM/CAT"]) ?? "—";
   $("c-indexsub").textContent = "MEM/CAT labels on the map of the shelves";
   $("c-window").textContent = c ? (c.reseed_in_s ? `in ${c.reseed_in_s}s` : "open") : "—";

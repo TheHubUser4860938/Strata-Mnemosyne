@@ -1193,6 +1193,41 @@ class Cartridge(unittest.TestCase):
         self.assertEqual(p.count("SOUL-ONCE"), 1, "soul bytes ride once: inside the standing text, not again from slot 0")
         self.assertIn("SOUL-ONCE\n\nSTANDING MEMORY", p, "the soul still leads, the facts follow it")
 
+    def test_the_static_cart_stands_on_soul_and_files_alone(self):
+        # The owner's law, 2026-10-24 night (born from his NVMe-wear question): facts:false
+        # retires the store's shelved rows from the standing text - the cart is the soul plus
+        # the configured files, the store is NOT read, and the harvest can never rotate it:
+        # daily life writes zero cartridge files. The facts lose standing status, never
+        # knowledge - they ride the tier-3 block (covered by the block's own suite).
+        agent = os.path.join(self.tmp.name, "agent.md")
+        with open(agent, "w", encoding="utf-8") as f:
+            f.write("# Tools\nGrep kindly; never cat a binary.")
+        c = Cartridges(self.svc, {"enabled": True, "facts": False,
+                                  "files": [agent, "no-such-sheet.md"]})
+        self.svc.soul = "SOUL-STATIC"
+        c.build()
+        self.assertEqual(c.standing, "SOUL-STATIC\n\n# Tools\nGrep kindly; never cat a binary.")
+        self.assertEqual(c.sources, ["soul.md", "agent.md"],
+                         "the unreadable file is skipped and announced - an absence, never a lie")
+        self.assertNotIn("launch ritual", c.standing, "the shelved fact LEFT the cart")
+        name = c.file
+        self.svc.memory.remember("The user's ship-it ritual is a green suite", scope="user", klass="USR")
+        c.build()
+        self.assertEqual(c.file, name, "a harvest cannot rotate a static cart - zero writes")
+        self.svc.soul = ""
+        c.build()
+        self.assertEqual(c.standing, "# Tools\nGrep kindly; never cat a binary.",
+                         "soul off: the files alone still stand, honestly labeled")
+        self.assertTrue(c.file)
+
+    def test_the_store_mode_default_stands_byte_identical(self):
+        # The opt-in law: with no facts key the cart reads the store exactly as before this
+        # change - the 66-fact era's bytes, the window, the gc: every existing M3b test runs
+        # in this mode; this one pins the DEFAULT itself so a future edit cannot flip it quietly.
+        c = self.svc.cartridges
+        self.assertTrue(c.facts, "default facts:true - other boxes keep today's bytes")
+        self.assertEqual(c.files_cfg, [], "no files configured: nothing extra stands")
+
 
 class MemoryOff(unittest.TestCase):
     """With the store off, the endpoints say so and chat behaves exactly as before."""
