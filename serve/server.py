@@ -6976,11 +6976,12 @@ class CartMinter:
         self.max_chars = int(cfg.get("mint_max_chars") or 16000)    # one cart's rendered text
         _mf = cfg.get("mint_max_facts")
         self.max_facts = 200 if _mf is None else max(1, int(_mf))   # C4's ceiling band, guarded
-        # S4 attach budgets (the owner's C2, 2026-10-25): "max 10 riders, real cap in TOKENS" -
-        # P7 banked that rider COUNT is near-free for recall (0.689 vs 0.667 at double carts),
-        # so the count is hygiene; the binding budget is the resident KV window (this box:
-        # 32,768 positions) that standing + carts + conversation must share. Defaults are the
-        # owner's numbers; any box tunes them in memory.cartridges.
+        # S4 attach budgets (2026-10-25): the owner's C2 set the COUNT (max 10 - hygiene, since
+        # P7 banked count as near-free for recall). attach_max_tokens is MY guardrail against
+        # prompt crowding, not a residency limit (the owner's night correction): the engine's
+        # --kv-resident window (this box: 32,768 positions) is a VRAM policy, and carts beyond
+        # it still ride - streamed, same values, the evening's own finding. Tune per box; any
+        # honest value keeps every path safe.
         _ac = cfg.get("attach_max_carts")
         self.attach_max = 10 if _ac is None else max(1, int(_ac))
         _at = cfg.get("attach_max_tokens")
