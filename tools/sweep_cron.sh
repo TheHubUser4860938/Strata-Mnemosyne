@@ -36,6 +36,12 @@ read -r pressure pending <<<"$nums"
 # the store directly, writes ride $URL - the m2 pattern, live-server caches included.
 .venv/bin/python tools/m4_catalog.py --apply --quiet --url "$URL" >> tools/state/cron.log 2>&1 || true
 
+# The S3 re-mint window (2026-10-25): stale carts catch up HERE, never on a request path (the
+# staleness law). The scan is one SQL attach; a remint rides the API and costs one engine seed
+# per stale cart - rare by construction (an idle ledger prints nothing). --quiet per the m4 law;
+# "|| true": the window never fails a sweep tick. Venue days freeze this timer with the sweep.
+.venv/bin/python tools/m8_remint.py --apply --quiet --url "$URL" >> tools/state/cron.log 2>&1 || true
+
 if [ "${pressure:-0}" = "1" ] || [ "${pending:-0}" -gt "$PENDING_MAX" ]; then
     echo "$(date '+%F %T') sweep: pressure=$pressure pending=$pending"
     # VENV python, not bare python3: the system interpreter has no psycopg (measured

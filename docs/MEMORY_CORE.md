@@ -2610,6 +2610,66 @@ the box from 11 MB to 61 GB free, and a verification run left nothing behind.
 Reboot carries every line above: `serve/memory.py` and `serve/server.py` are boot-loaded, and the
 `hits` ledger changes meaning at that boot - smaller numbers, and true ones.
 
+## S3 - the minting pipeline: the cart ledger, `op=mint`, and the background window (built 2026-10-25; unit-tested on the mock engine, live-verify at the next boot)
+
+The standing persona cart was one cartridge the server mints for itself. S3 is the machinery for
+the rest: **one experience, one cartridge** (the owner's episode ruling, 2026-10-24) - a fetched
+page, a read document, or a named set of store rows becomes a cart whose K/V can be loaded instead
+of re-earning the token tax of the fetch. The C-series numbers are the design's floor: C4 banked
+the ceiling between 100 and 500 facts for a single bank, an episode cart at ~25 facts recalling
+1.000 and five composed reaching 0.996, and state files at fixed 236 MB + marginal 15.6 KB per
+standing token.
+
+**The ledger.** A `carts` table in the store (the `shelves` precedent: one DDL entry, migration by
+reopen) is the control plane: `name` (the identity), `file` (a content hash: same bytes, same file,
+a re-mint that changes nothing is idempotent and leaves no scar), `kind` (`standing` / `rows` /
+`episode`), `sources` jsonb (`row_ids`, `shelf_prefixes`, or the episode's own `text` + `title` /
+`uri`, plus the `base` the cart was minted alongside), `tokens` / `bytes`, and the state law
+`fresh -> stale -> fresh` - with `stale_reason`, `previous_file` and `remint_count` keeping the
+supersession scar visible. The standing persona cart is **row zero**: `Cartridges` registers itself
+when it seeds or loads, and `op=retire` refuses to shelve it.
+
+**The verbs.** `POST /memory` grew `mint` / `remint` / `retire` / `carts`, and the op menu names
+them (the menu must never lie). A mint renders its sources - rows through the `cartridge_text` law
+(deterministic, confidence-first, bounded, never by hits), episode text as given - seeds one
+throwaway conversation (`Learn the note below... acknowledge with OK only.`) under the cartridge's
+lock, saves `MEM-CART-<hash>.bin`, and **hands the slot back**: the applied standing cart is
+restored so live traffic pays one ~0.1 s restore for the detour, never a re-prefill. The answers
+are the Grok interface the owner adopted: 400 a bad body (gone row ids fail closed on a FIRST
+mint - a typed id nobody checks is a typo until it costs a cart), 409 `CartConflict` a name that
+already stands, 503 the box moved (engine or slot refused; the next tick retries). `remint`
+follows supersession chains - a source row that `correct()` retired is found at its successor,
+because knowledge that changed its number is still the cart's knowledge - and drops gone rows with
+an announcement rather than lying by silence. `mint_max_facts` (default 200) guards C4's bank law
+at the door: many small carts, not one big bank.
+
+**The attach, and what S3 is NOT.** Fresh carts are announced by one index sentence behind the
+standing text (`Cartridges.prepend`): `note1 (episode: gate3-notes, 395 tok); gen (rows: STR/GEN,
+...)`. The line rides AFTER the standing bytes, never inside them - the file hash and prefix reuse
+count the standing text alone, so the minted set can change between turns without rotating a file -
+and zero fresh carts ride zero bytes (an absent thing is never silently "not enough"). Row zero
+gets no line: it IS the prefix. What is NOT here is attachment of a minted cart's K/V to a live
+conversation - that graft is S4, Gate 3 (>= 0.9 x text-injection), still the research bet.
+
+**The staleness law, both clocks.** A server write that moves a source row marks fresh carts stale
+INLINE (`_touched(ids)` on the memory write paths; stamp-only dedupe exits deliberately do not - a
+re-learned same-text fact must not force a re-mint). Out-of-process writers are caught by
+`CART_SCAN_SQL` - source rows that moved after the cart was minted. Both feed
+`tools/m8_remint.py`, which `sweep_cron.sh` runs every tick beside the catalog (the m2 pattern:
+the scan attaches, the remint rides the API because the engine belongs to the server). A cart
+whose sources are ALL gone is left stale and announced: a cart with nothing left to say is a
+retirement DECISION, and retirement is a human verb. The vault respects the ledger -
+`slot_retain` never evicts a fresh or stale cart's file, and `Cartridges.gc()` (which owns
+`MEM-CRG-*` rotation) never touches the `MEM-CART-*` prefix.
+
+Tested on the mock engine: 19 new cases (`Carts`: table, scar law, staleness hook, prefix
+sources, scan backstop; `Mint`: the four verbs over HTTP, 400/409 arms, row-zero, the slot
+hand-back counted, the index line riding and going quiet). Suite: 1,255 passed, 15 skipped
+(the +1 skip is outside every file this change touched, recorded not explained). Live-verify at
+the boot that carries this: `carts` table on the prod store, the row zero registering itself, one
+real episode cart minted from a fetched page, and `m8` reporting a clean ledger each tick.
+
+
 ## Licensing and attribution
 
 - Strata (upstream) is MIT © Niko1221 and contributors; this fork's independent code keeps MIT.
