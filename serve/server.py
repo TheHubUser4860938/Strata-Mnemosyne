@@ -6744,18 +6744,28 @@ class Cartridges:
         counts what build() actually read, so a box with the soul off keeps today's bytes."""
         return self.state in ("loaded", "seeded") and self.soul_chars > 0
 
-    def prepend(self, messages):
-        """The standing text rides at the very front, and (S3, 2026-10-25) the minted carts' index
-        line rides just behind it. The index rides AFTER the standing bytes, never inside them:
-        the content hash covers the standing text and prefix reuse counts bytes from token 0 -
-        so the minted set can change between turns without ever rotating the cart file. Zero
-        carts stand: zero bytes ride, and the prompt is byte-identical to the pre-S3 one
-        (the anti-vacuity law - an absent thing is never silently "not enough")."""
+    def prepend(self, messages, att=None):
+        """The standing text rides at the very front; behind it the cart index line and (S4,
+        2026-10-25) the bodies of the carts ATTACHED to this conversation - att is
+        CartMinter.attach()'s dict, or None for the plain standing ride. The index and the
+        bodies ride AFTER the standing bytes, never inside them: the content hash covers the
+        standing text and prefix reuse counts bytes from token 0 - so the attached set can
+        change between turns without ever rotating the cart file. Zero carts, zero asks: zero
+        extra bytes ride, and the prompt is byte-identical to the pre-S3 one (the anti-vacuity
+        law - an absent thing is never silently "not enough")."""
         if not self.standing:
             return messages
         text = self.standing
-        idx = self.svc.carts.index_line() if getattr(self.svc, "carts", None) else ""
-        return memory_api.prepend_head(messages, f"{text}\n\n{idx}" if idx else text)
+        if getattr(self.svc, "carts", None):
+            a = att or {}
+            idx = self.svc.carts.index_line(attached=a.get("names"), asked=a.get("asked"),
+                                            pulled=(a.get("pull") or {}).get("names"))
+            if idx:
+                text = f"{text}\n\n{idx}"
+            block = (a.get("block") or "").strip()
+            if block:
+                text = f"{text}\n\n{block}"
+        return memory_api.prepend_head(messages, text)
 
     def invalidate(self):
         """Muted conversations replace the slot's state - and since 2026-10-23 the cartridge does
@@ -6966,6 +6976,15 @@ class CartMinter:
         self.max_chars = int(cfg.get("mint_max_chars") or 16000)    # one cart's rendered text
         _mf = cfg.get("mint_max_facts")
         self.max_facts = 200 if _mf is None else max(1, int(_mf))   # C4's ceiling band, guarded
+        # S4 attach budgets (the owner's C2, 2026-10-25): "max 10 riders, real cap in TOKENS" -
+        # P7 banked that rider COUNT is near-free for recall (0.689 vs 0.667 at double carts),
+        # so the count is hygiene; the binding budget is the resident KV window (this box:
+        # 32,768 positions) that standing + carts + conversation must share. Defaults are the
+        # owner's numbers; any box tunes them in memory.cartridges.
+        _ac = cfg.get("attach_max_carts")
+        self.attach_max = 10 if _ac is None else max(1, int(_ac))
+        _at = cfg.get("attach_max_tokens")
+        self.attach_max_tokens = 16000 if _at is None else max(0, int(_at))
         # the fallback slot-serial lock (S3 audit finding 6): beside a cartridge, cart.lock is
         # THE lock seed/restore already hold; without one, svc.fifo is NOT the answer - it is a
         # plain Lock that svc.run() re-acquires inside, and a non-reentrant lock held across run()
@@ -7125,13 +7144,123 @@ class CartMinter:
 
     # ---- the surfaces that ride every turn ------------------------------------------------
 
-    def index_line(self) -> str:
-        """The one-line cart index behind the standing text. The request path must never die for
-        a pointer: a store failure reads as no carts (the /memory page shows the ledger truth)."""
+    def index_line(self, attached=None, asked=None, pulled=None) -> str:
+        """The one-line cart index behind the standing text (S4 made it attach-aware: it tells the
+        model what RIDES, what WAITS in the ledger, and what was ASKED but could not ride). The
+        request path must never die for a pointer: a store failure reads as no carts (the /memory
+        page shows the ledger truth)."""
         try:
-            return self.svc.memory.cart_index()
+            return self.svc.memory.cart_index(attached=attached, asked=asked, pulled=pulled)
         except Exception:                                        # noqa: BLE001 - metadata, not a gate
             return ""
+
+    # ---- S4: the attach surface (2026-10-25; the owner's C1/C2/C6 calls) ---------------------
+    #
+    # X-Strata-Carts: name,name,...   carts riding this conversation's PREFIX (task-scoped,
+    #                                 agent-declared - C1; the client carries the list per turn).
+    # X-Strata-Carts-Pull: name       a cart pulled into THIS turn as a tail block (C6).
+    #
+    # Stateless by design: the engine's conversation cache keys on the prompt head, so each cart
+    # set is its own parked conversation - no server-side window registry, no slot scheduler.
+    # The economics are the evening's measurements (bench/p1/, journal 2026-10-25): a prefix
+    # rider costs ~33 eval tok/turn once the cache absorbs it (G3; count near-free, P7); a pull
+    # buys ~10 good turns at ~0.4 recall (P6) and never invalidates the cache (pure append);
+    # the deep-window countermeasure is the roll-up (P8) - that is S4b, not this class.
+    #
+    # Never 400, never silent: an ask that cannot ride (unknown, retired, row zero, over count,
+    # over budget, nothing to render) SKIPS, and the index line ANNOUNCES the skip to the model
+    # itself. Byte law: names sort, bodies render verbatim from the ledger - the same set always
+    # composes the same bytes, or the conversation cache pays a re-prefill for nothing.
+
+    ATTACH_LEAD = ("The notes below ride on this conversation's prefix as learned carts. They "
+                   "are given knowledge: use them, do not re-learn them, do not restate them.")
+    PULL_LEAD = ("A cart is pulled to this turn for reference:")
+
+    def _attach_names(self, raw):
+        seen, out = set(), []
+        for part in re.split(r"[,\s]+", str(raw or "").strip().lower()):
+            if part and part not in seen:
+                seen.add(part)
+                out.append(part)
+        return out
+
+    def _attach_body(self, row) -> str:
+        """The cart's text as the ledger knows it: episode carts hold their text verbatim; rows
+        carts RE-RENDER deterministically (the cartridge_text law - same rows, same bytes; if the
+        rows moved the cart is stale anyway, and the fresh render catches the TEXT up while the
+        .bin waits for m8). Returns "" when there is nothing to render."""
+        src = row.get("sources") or {}
+        txt = str(src.get("text") or "").strip()
+        if txt:
+            return txt
+        try:
+            rt, _n_rows, _gone = self.render(src, force=True)   # render's 3-tuple, not cart_text's 4
+            return rt
+        except (ValueError, memory_api.StoreError):
+            return ""                                    # nothing live to render: not riding
+
+    def _attach_set(self, names, budget_on: bool):
+        """Resolve requested names to (name, body) pairs that may ride: sorted (the byte law),
+        capped at attach_max, then budgeted at attach_max_tokens (first rider always fits -
+        one cart over budget rides alone rather than announcing nothing)."""
+        kept, tok = [], 0
+        for nm in sorted(names)[:self.attach_max]:
+            got = self.svc.memory.carts_get(nm)
+            row = got[0] if got else None
+            if row is None or row["state"] == "retired" or nm == "standing":
+                continue                                 # the index line announces each arm
+            body = self._attach_body(row)
+            if not body:
+                continue
+            t = int(row.get("tokens") or 0)
+            if budget_on and kept and tok + t > self.attach_max_tokens:
+                continue                                 # over budget: stays in the ledger
+            tok += t
+            kept.append((nm, body))
+        return kept
+
+    def attach(self, headers) -> dict:
+        """Parse and validate one request's attach headers. Returns
+        {"names": [...prefix riders...], "block": str, "pull": {"names": [...], "block": str},
+         "asked": [...every name the headers named...]} - empty block when nothing rides.
+        A store failure reads as nothing attached (the index_line law: the request path never
+        dies for a pointer; the page and the mint show the ledger truth)."""
+        att = {"names": [], "block": "", "pull": {"names": [], "block": ""}, "asked": []}
+        try:
+            pre = self._attach_names(headers.get("X-Strata-Carts")
+                                     if headers is not None else None)
+            pul = self._attach_names(headers.get("X-Strata-Carts-Pull")
+                                     if headers is not None else None)
+            att["asked"] = sorted(set(pre) | set(pul))       # EVERY ask: the cap and the budget
+            if not att["asked"]:                             # skip announced, never silently
+                return att
+            kept = self._attach_set(pre, budget_on=True)
+            att["names"] = [nm for nm, _ in kept]
+            att["block"] = (self.ATTACH_LEAD + "\n\n"
+                            + "\n\n".join(f"[{nm}]\n{b}" for nm, b in kept)) if kept else ""
+            rode = {nm for nm, _ in kept}                # a name in BOTH headers rides once:
+            pul = [n for n in pul if n not in rode]      # the prefix copy wins (the tail would
+                                                         # be double tokens for the same bytes)
+            kept_p = self._attach_set(pul, budget_on=False)   # a pull is one turn of tail: no
+            att["pull"]["names"] = [nm for nm, _ in kept_p]   # budget, but the same skip arms
+            att["pull"]["block"] = (self.PULL_LEAD + "\n\n"
+                                    + "\n\n".join(f"[{nm}]\n{b}" for nm, b in kept_p)
+                                    ) if kept_p else ""
+        except Exception:                                        # noqa: BLE001 - never die here;
+            att["asked"] = att.get("asked") or []                # asked is computed before any
+            att["names"], att["block"] = [], ""                  # store call - keep the ASK even
+            att["pull"] = {"names": [], "block": ""}             # when the ride failed, so the
+                                                                 # index still announces (audit
+                                                                 # MINOR 1, the announcement law)
+        return att
+
+    def apply_pull(self, messages, att):
+        """C6: the pulled cart rides as ONE appended user turn - pure append, so the conversation
+        cache re-reads zero old bytes (a mid-conversation insert would re-prefill from its point
+        on). The pull persists only if the client carries the turn in its history afterward;
+        P6 measured the rescue honestly: ~0.4 recall for ~10 turns, then the decay resumes."""
+        blk = ((att or {}).get("pull") or {}).get("block") or ""
+        return list(messages) + ([{"role": "user", "content": blk}] if blk else [])
 
     def files_guard(self) -> list:
         """The vault names the ledger depends on (fresh/stale): slot_retain must not evict them.
@@ -7155,6 +7284,17 @@ class CartMinter:
 
     def view(self):
         return self.carts()
+
+
+def stand_on(svc: Service, messages, headers):
+    """The full standing prefix for one request (S4, 2026-10-25): the cartridge's standing
+    text, the attach-aware cart index line, the attached carts' bodies, and a pulled cart as
+    ONE appended user turn. One entry point so every dialect rides the same bytes (the parity
+    law - the same lesson as the token-count mirror's review); muted conversations never call
+    it (upstream bytes), and a box without the mint surface gets the cartridge alone."""
+    att = svc.carts.attach(headers) if getattr(svc, "carts", None) else None
+    messages = svc.cartridges.prepend(messages, att)
+    return svc.carts.apply_pull(messages, att) if att else messages
 
 
 # ------------------------------------------------------------------------------------------------ OpenAI
@@ -8849,7 +8989,7 @@ def make_handler(svc: Service):
                 if mem_ctx is not None:
                     svc.cartridges.ensure()                       # seed once or restore ~0.1 s; best-effort
                     if svc.cartridges.state in ("loaded", "seeded"):
-                        messages = svc.cartridges.prepend(messages)
+                        messages = stand_on(svc, messages, self.headers)   # S4: standing + index + carts
                 else:
                     svc.cartridges.invalidate()                   # muted: this conversation will replace the slot
             if svc.soul and mem_ctx is not None and not (svc.cartridges and
@@ -9064,7 +9204,7 @@ def make_handler(svc: Service):
                 if mem_ctx is not None:
                     svc.cartridges.ensure()
                     if svc.cartridges.state in ("loaded", "seeded"):
-                        messages = svc.cartridges.prepend(messages)
+                        messages = stand_on(svc, messages, self.headers)   # S4 parity: same prefix, Codex too
                 else:
                     svc.cartridges.invalidate()
             if svc.soul and mem_ctx is not None and not (svc.cartridges and
@@ -9153,8 +9293,14 @@ def make_handler(svc: Service):
             # facts-mode box) - the failure the comment below was written to prevent, re-introduced one
             # feature later. No ensure(): a token count asks nothing of the slot, and if the cart has not
             # stood yet the real request would not prepend it either, so the count stays honest.
-            if svc.cartridges is not None and svc.cartridges.state in ("loaded", "seeded"):
-                messages = svc.cartridges.prepend(messages)
+            if svc.cartridges is not None and svc.cartridges.state in ("loaded", "seeded") \
+                    and mem_ctx_ct is not None:               # muted asks nothing of the prefix
+                messages = stand_on(svc, messages, self.headers)   # S4: the count must ride the SAME
+                                                                    # bytes as the route it mirrors -
+                                                                    # standing, index, attached carts,
+                                                                    # pulled tail (the review lesson of
+                                                                    # 2026-10-24: a mirror that skips a
+                                                                    # leg makes the context bar lie)
             if svc.soul and mem_ctx_ct is not None and not (svc.cartridges
                                                             and svc.cartridges.standing_rides()):
                 messages = memory_api.prepend_head(messages, svc.soul)   # bytes too, or the context bar
@@ -9177,7 +9323,7 @@ def make_handler(svc: Service):
                 if mem_ctx is not None:                           # the same cartridge prefix (one slot is shared
                     svc.cartridges.ensure()                       # by every dialect, so the prefix law is too)
                     if svc.cartridges.state in ("loaded", "seeded"):
-                        messages = svc.cartridges.prepend(messages)
+                        messages = stand_on(svc, messages, self.headers)   # S4 parity: same bytes, Claude Code too
                 else:
                     svc.cartridges.invalidate()
             if svc.soul and mem_ctx is not None and not (svc.cartridges and
@@ -10505,7 +10651,10 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                                                            # honest spelling (audit finding 13)
                 print(f"[strata] memory cartridge on: shelves {', '.join(svc.cartridges.prefixes) or '(none)'} "
                       f"up to {svc.cartridges.max_chars:,} chars, file dir {svc.slot_save_path} "
-                      f"(restored at the first standing request; the engine pins the file to model+engine)",
+                      f"(restored at the first standing request; the engine pins the file to model+engine)"
+                      + (f"; attach: X-Strata-Carts: name,name (prefix, max {svc.carts.attach_max} "
+                         f"carts / {svc.carts.attach_max_tokens:,} tok), X-Strata-Carts-Pull: name "
+                         f"(tail block, one turn)" if getattr(svc, "carts", None) else ""),
                       flush=True)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):

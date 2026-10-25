@@ -3218,11 +3218,13 @@ class Mint(unittest.TestCase):
         # no carts yet, but a standing cart: seed and confirm the standing bytes alone.
         st, _ = self.ask("before any mint")
         self.assertEqual(st, 200)
-        self.assertNotIn("Learned cartridges", self.prompt_text(), "zero mints = zero index bytes")
+        self.assertNotIn("Other carts in the ledger", self.prompt_text(),
+                         "zero mints = zero index bytes")
         self.http("POST", "/memory", {"op": "mint", "name": "note1",
                                       "sources": {"text": "a fetched page worth holding"}})
         st, _ = self.ask("after a mint")
-        self.assertIn("Learned cartridges", self.prompt_text(), "one cart = one index sentence")
+        self.assertIn("Other carts in the ledger", self.prompt_text(),
+                      "S4 wording: an unattached fresh cart is ANNOUNCED, not claimed to ride")
         self.assertIn("note1", self.prompt_text())
 
     def test_mint_leaves_the_slot_as_live_traffic_expects(self):
@@ -3235,6 +3237,120 @@ class Mint(unittest.TestCase):
         self.assertEqual(self.calls["save"], 2, "the mint saved its own .bin")
         self.assertEqual(self.calls["restore"], before + 1,
                          "the mint restored the standing cart - live traffic pays a restore, not a re-prefill")
+
+
+class Attach(Mint):
+    """S4 the attach surface (2026-10-25, the owner's C1/C2/C6 calls): X-Strata-Carts rides
+    cart BODIES on the conversation's prompt prefix; X-Strata-Carts-Pull appends one tail
+    turn; asks that cannot ride SKIP with an announcement the model reads (never a 400,
+    never silence); no header means zero body bytes (the opt-in law). The economics these
+    tests protect are measured (bench/p1/ G3/P6/P7/P8), not assumed."""
+
+    def test_no_header_no_body_bytes(self):
+        self.http("POST", "/memory", {"op": "mint", "name": "idle",
+                                      "sources": {"text": "waits in the ledger QX"}})
+        st, _ = self.ask("plain ride")
+        self.assertEqual(st, 200, st)
+        p = self.prompt_text()
+        self.assertIn("idle", p, "the index announces the fresh cart")
+        self.assertNotIn("waits in the ledger QX", p, "no header = no body bytes (opt-in law)")
+        self.assertNotIn("pulled to the tail", p, "and no pull clause either")
+
+    def test_prefix_bodies_ride_sorted(self):
+        self.http("POST", "/memory", {"op": "mint", "name": "zeta",
+                                      "sources": {"text": "zeta body ZQ"}})
+        self.http("POST", "/memory", {"op": "mint", "name": "alpha",
+                                      "sources": {"text": "alpha body AQ"}})
+        st, _ = self.ask("attached ask", [("X-Strata-Carts", "zeta, alpha")])
+        self.assertEqual(st, 200, st)
+        p = self.prompt_text()
+        self.assertIn("notes below ride on this conversation's prefix", p, "the lead rides")
+        self.assertIn("alpha body AQ", p)
+        self.assertIn("zeta body ZQ", p)
+        self.assertLess(p.index("[alpha]"), p.index("[zeta]"), "the byte law: names sort")
+        self.assertIn("Learned carts riding this prefix", p)
+        self.assertNotIn("Other carts in the ledger", p, "all fresh carts ride: no leftovers clause")
+
+    def test_same_set_same_bytes(self):
+        self.http("POST", "/memory", {"op": "mint", "name": "stable",
+                                      "sources": {"text": "stable body SQ"}})
+        st, _ = self.ask("first", [("X-Strata-Carts", "stable")])
+        a = self.prompt_text()
+        st, _ = self.ask("first", [("X-Strata-Carts", "stable")])
+        self.assertEqual(a, self.prompt_text(), "the same attach set composes the same bytes - "
+                                                "or the conversation cache pays for nothing")
+
+    def test_asks_that_cannot_ride_are_announced_not_fatal(self):
+        self.http("POST", "/memory", {"op": "mint", "name": "gone1",
+                                      "sources": {"text": "retired body RQ"}})
+        self.http("POST", "/memory", {"op": "retire", "name": "gone1", "reason": "superseded"})
+        st, _ = self.ask("mixed asks", [("X-Strata-Carts", "ghost, gone1, standing")])
+        self.assertEqual(st, 200, "a typo never kills the request")
+        p = self.prompt_text()
+        self.assertIn("asked, no such cart: ghost", p)
+        self.assertIn("asked, retired: gone1", p)
+        self.assertIn("needs no attach, it IS the prefix: standing", p)
+
+    def test_over_count_skips_announced(self):
+        self.svc.carts = CartMinter(self.svc, {"attach_max_carts": 2})
+        for nm in ("aa", "bb", "cc"):
+            self.http("POST", "/memory", {"op": "mint", "name": nm,
+                                          "sources": {"text": f"body of {nm} XQ"}})
+        st, _ = self.ask("three asks", [("X-Strata-Carts", "cc, bb, aa")])
+        p = self.prompt_text()
+        self.assertIn("body of aa XQ", p)
+        self.assertIn("body of bb XQ", p)
+        self.assertNotIn("body of cc XQ", p, "over the count cap the sorted tail skips")
+        self.assertIn("render): cc", p, "the index announces the skip - never silent")
+
+    def test_over_budget_skips_the_later_riders(self):
+        self.http("POST", "/memory", {"op": "mint", "name": "b1", "sources": {"text": "budget one B1Q"}})
+        self.http("POST", "/memory", {"op": "mint", "name": "b2", "sources": {"text": "budget two B2Q"}})
+        st, body = self.http("POST", "/memory", {"op": "carts"})
+        toks = {c["name"]: int(c["tokens"]) for c in body["carts"] if c["name"] in ("b1", "b2")}
+        self.svc.carts.attach_max_tokens = toks["b1"] + toks["b2"] - 1   # only one fits
+        st, _ = self.ask("budgeted ask", [("X-Strata-Carts", "b1, b2")])
+        p = self.prompt_text()
+        self.assertIn("budget one B1Q", p, "the first rider always fits (one cart over budget "
+                                           "rides alone rather than announcing nothing)")
+        self.assertNotIn("budget two B2Q", p)
+
+    def test_stale_cart_rides_and_is_marked(self):
+        self.http("POST", "/memory", {"op": "remember", "scope": "user", "class": "USR",
+                                      "text": "the cart's source fact"})
+        st, sbody = self.http("POST", "/memory", {"op": "search", "q": "source fact"})
+        rid = sbody["hits"][0]["id"]
+        st, _ = self.http("POST", "/memory", {"op": "mint", "name": "rowncart",
+                                              "sources": {"row_ids": [rid]}})
+        self.svc.memory.cart_mark_stale([rid], "test staleness")
+        st, _ = self.ask("stale ask", [("X-Strata-Carts", "rowncart")])
+        p = self.prompt_text()
+        self.assertIn("[rowncart]", p, "the block rode - the cart's body bytes are in the prompt")
+        self.assertIn("the cart's source fact", p, "a rows-cart re-renders live: the TEXT catches "
+                                                   "up while the .bin waits for m8")
+        self.assertIn("stale - re-mint", p, "...and the index says the file is behind")
+
+    def test_name_in_both_headers_rides_once(self):
+        self.http("POST", "/memory", {"op": "mint", "name": "both",
+                                      "sources": {"text": "single ride SRQ"}})
+        st, _ = self.ask("double ask", [("X-Strata-Carts", "both"),
+                                        ("X-Strata-Carts-Pull", "both")])
+        self.assertEqual(st, 200, st)
+        p = self.prompt_text()
+        self.assertEqual(p.count("single ride SRQ"), 1,
+                         "the prefix copy wins (audit MINOR 2): no double tokens for one ask")
+
+    def test_pull_rides_as_one_tail_turn(self):
+        self.http("POST", "/memory", {"op": "mint", "name": "pullc",
+                                      "sources": {"text": "pulled body PQ"}})
+        st, _ = self.ask("the question", [("X-Strata-Carts-Pull", "pullc")])
+        p = self.prompt_text()
+        self.assertIn("A cart is pulled to this turn", p)
+        self.assertIn("pulled body PQ", p)
+        self.assertIn("Cart pulled to the tail this turn", p, "the index names it as tail, not prefix")
+        self.assertLess(p.index("the question"), p.index("pulled body PQ"),
+                        "the pull is a pure append: the conversation's bytes come first "
+                        "(cache-safe, the C6 call)")
 
 
 if __name__ == "__main__":

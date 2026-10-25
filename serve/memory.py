@@ -1790,27 +1790,76 @@ class MemoryService:
         return header + "\n" + "\n".join(lines), len(lines), left
 
     @_heals
-    def cart_index(self) -> str:
+    def cart_index(self, attached=None, asked=None, pulled=None) -> str:
         """The one-line cartridge index behind the standing text (S3's attach surface, the Grok
-        interface): every FRESH cart named in one sentence, stale and retired ones quiet (an
-        honest silence, not an empty boast). Row zero is excluded - it IS the prefix the line
-        rides behind. Zero fresh carts: '' - no bytes ride (the anti-vacuity law)."""
+        interface; S4 made it ATTACH-AWARE, 2026-10-25). Three honest clauses, each present only
+        when its subject exists (the anti-vacuity law): carts RIDING this prefix are named as
+        loaded; fresh carts that stay in the ledger are named as attachable; names the client
+        ASKED for that cannot ride are ANNOUNCED with their reason - an absent thing is never
+        silently "not enough". Row zero is excluded - it IS the prefix the line rides behind.
+        Nothing stands and nothing was asked: '' - no bytes ride."""
+        names = [str(n) for n in (attached or [])]
+        pulls = [str(n) for n in (pulled or [])]
+        ride = {n.lower() for n in names + pulls}
+        want = ride | {str(a).lower() for a in (asked or [])}
         with self.lock:
             rows = self.conn.execute(
-                "select name, kind, tokens, sources from carts where state = 'fresh' and kind"
-                " <> 'standing' order by name").fetchall()
+                "select name, kind, tokens, sources, state from carts where"
+                " (state in ('fresh', 'stale') and kind <> 'standing')"
+                + (" or lower(name) = any(%s)" if want else "") + " order by name",
+                (sorted(want),) if want else None).fetchall()
             self.conn.commit()
-        if not rows:
-            return ""
-        bits = []
-        for nm, kind, tok, src in rows:
+        by_name = {r[0]: r for r in rows}
+        def bit(nm, state):
+            _n, kind, tok, src, _s = by_name[nm]
             src = src or {}
             what = (str(src.get("title") or src.get("uri") or "").strip()
                     or ", ".join(str(p) for p in (src.get("shelf_prefixes") or []))
                     or (f"{len(src.get('row_ids') or [])} rows" if src.get("row_ids") else "?"))
-            bits.append(f"{nm} ({kind}: {what}, {tok:,} tok)")
-        return ("Learned cartridges standing on this prefix (loaded whole, never restated,"
-                " never searched for): " + "; ".join(bits) + ".")
+            return (f"{nm} ({kind}: {what}, {tok:,} tok"
+                    + (", stale - re-mint" if state == "stale" else "") + ")")
+        clauses = []
+        attach_set, pull_set = {n.lower() for n in names}, {n.lower() for n in pulls}
+        rode = [n for n in sorted(by_name)
+                if n in attach_set and by_name[n][4] in ("fresh", "stale")]
+        if rode:
+            clauses.append("Learned carts riding this prefix (loaded whole, never restated,"
+                           " never searched for): " + "; ".join(bit(n, by_name[n][4])
+                                                                for n in rode) + ".")
+        pulln = [n for n in sorted(by_name)
+                 if n in pull_set and n not in attach_set and by_name[n][4] in ("fresh", "stale")]
+        if pulln:
+            clauses.append("Cart pulled to the tail this turn: "
+                           + "; ".join(bit(n, by_name[n][4]) for n in pulln) + ".")
+        rest = [n for n in sorted(by_name)
+                if n not in want and by_name[n][4] == "fresh" and by_name[n][1] != "standing"]
+        if rest:
+            clauses.append("Other carts in the ledger (not riding; attach by name with"
+                           " X-Strata-Carts within the budget): "
+                           + "; ".join(bit(n, "fresh") for n in rest) + ".")
+        gone = sorted(want - set(by_name))
+        retired = sorted(want & {r[0] for r in rows if r[4] == "retired"})
+        zero = sorted(want & {r[0] for r in rows if r[4] != "retired" and r[1] == "standing"})
+        riding = {n for n in rode} | {n for n in pulln}
+        skipped = sorted(n for n in want if n in by_name and n not in riding
+                         and by_name[n][4] in ("fresh", "stale") and by_name[n][1] != "standing")
+
+        def names_limited(ns):                            # the announcement channel must obey
+            shown = [n[:40] for n in ns[:10]]             # the token discipline too (audit
+            return ", ".join(shown) + (f" (+{len(ns) - 10} more)" if len(ns) > 10 else "")
+        miss = []
+        if gone:
+            miss.append("asked, no such cart: " + names_limited(gone))
+        if retired:
+            miss.append("asked, retired: " + names_limited(retired))
+        if skipped:
+            miss.append("asked, did not ride (over the count or token budget, or nothing "
+                        "live to render): " + names_limited(skipped))
+        if zero:
+            miss.append("needs no attach, it IS the prefix: " + ", ".join(zero))
+        if miss:
+            clauses.append("Cart asks that did not ride - " + "; ".join(miss) + ".")
+        return " ".join(clauses)
 
     @_heals
     def cart_text(self, row_ids=None, shelf_prefixes=None, max_chars: int = 4000):
