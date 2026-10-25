@@ -1375,6 +1375,53 @@ class Carts(unittest.TestCase):
         self.assertEqual(self.mem.carts_get("scan-cart")[0]["stale_reason"],
                          "out-of-process write")
 
+    def test_invalidate_under_a_watched_prefix_stales_inline(self):
+        # Audit finding 3 (2026-10-25): the prefix expansion used to filter tombstones, so an
+        # invalidated source row slipped past the inline hook. The hook asks "did a row the
+        # cart was built from MOVE", not "is it alive" - the tombstone keeps its class and
+        # the cart hears about it in the same request.
+        a = self.mem.remember("rows under the shelf count", scope="ops", klass="STR/GEN")
+        self.mem.cart_register("shelfcart", "MEM-CART-i.bin", "rows",
+                               {"shelf_prefixes": ["STR/GEN"]}, 8, 16)
+        self.mem.invalidate(a["id"])
+        self.assertEqual(self.mem.carts_get("shelfcart")[0]["state"], "stale",
+                         "invalidating a source row is a move the cart must hear inline")
+
+    def test_scan_sees_the_absence_a_purge_leaves(self):
+        # Audit finding 3's other half: a purge erases a row AND its timestamp together, so
+        # no clock can see the event - the inline join finds nothing to intersect and
+        # "updated_at > minted_at" has no row to ask. The absence arm is the count: the
+        # n_sources recorded at mint against the smaller living world.
+        a = self.mem.remember("provenance rows can be purged away", scope="ops", klass="STR/GEN")
+        self.mem.cart_register("shelfy", "MEM-CART-a.bin", "rows",
+                               {"shelf_prefixes": ["STR/GEN"], "n_sources": 1}, 8, 16)
+        self.assertTrue(self.mem.purge(a["id"], reason="test: out of the world"))
+        self.assertEqual(self.mem.carts_get("shelfy")[0]["state"], "fresh",
+                         "inline is blind to a purged prefix row by construction - the scan owns it")
+        self.assertEqual(self.mem.cart_scan_stale(), ["shelfy"])
+        self.assertEqual(self.mem.carts_get("shelfy")[0]["stale_reason"], "out-of-process write")
+
+    def test_purged_named_row_is_caught_inline(self):
+        # The row_ids arm matches by ID, not by join, so a purge (which passes its id to the
+        # hook) is caught the same request: only the PREFIX expansion loses the row.
+        a = self.mem.remember("named rows can vanish too", scope="ops", klass="STR/GEN")
+        self.mem.cart_register("named", "MEM-CART-n.bin", "rows", {"row_ids": [a["id"]]}, 8, 16)
+        self.mem.purge(a["id"], reason="test: away")
+        self.assertEqual(self.mem.carts_get("named")[0]["state"], "stale")
+
+    def test_scalar_sources_poison_neither_scan_nor_hook(self):
+        # Audit finding 2: jsonb_array_elements_text RAISES on a jsonb scalar and coalesce
+        # does not catch jsonb null - one poisoned row blinded EVERY scan, EVERY tick, while
+        # the Python twin walked the string char by char. The mint door now refuses (400,
+        # tested in Mint); the SQL arms carry jsonb_typeof guards for any store that already
+        # holds one, and the introspection twin skips instead of iterating.
+        self.mem.cart_register("scalars", "MEM-CART-v.bin", "rows",
+                               {"row_ids": None, "shelf_prefixes": "STR/GEN"}, 8, 16)
+        self.assertEqual(self.mem.cart_scan_stale(), [], "a scalar is no source, not a crash")
+        self.assertEqual(self.mem.cart_mark_stale([1], "test"), [])
+        self.assertEqual(self.mem._cart_sources_ids({"shelf_prefixes": "STR/GEN"}), [],
+                         "the Python twin skips scalars instead of walking chars")
+
 
 class MemoryOff(unittest.TestCase):
     """With the store off, the endpoints say so and chat behaves exactly as before."""
@@ -3037,7 +3084,9 @@ class Mint(unittest.TestCase):
         st, body = self.http("POST", "/memory", {"op": "mint", "name": "empty", "sources": {}})
         self.assertEqual(st, 400, body)
 
-    def test_mint_409_on_existing_name_and_400_over_fact_cap(self):
+    def test_mint_409_on_existing_name_and_force_overrides(self):
+        # (the name once promised a fact-cap 400 here; the cap has its own test below and this
+        # second half always tested the force OVERRIDE - the audit's honest-rename note)
         self.svc.memory.remember("f1 for the cart", scope="ops", klass="STR/GEN")
         st, _ = self.http("POST", "/memory", {"op": "mint", "name": "gen",
                                               "sources": {"shelf_prefixes": ["STR/GEN"]}})
@@ -3049,6 +3098,15 @@ class Mint(unittest.TestCase):
         st, body = self.http("POST", "/memory", {"op": "mint", "name": "gen2", "force": True,
                                                  "sources": {"text": "forced re-mint"}})
         self.assertEqual(st, 200, body)
+
+    def test_mint_400_on_scalar_sources(self):
+        # Audit finding 2's door: "shelf_prefixes": "STR/GEN" is a typo, not a one-item shelf -
+        # Python would walk it char by char and the scan would raise on the stored scalar.
+        # Fail closed where the typo is made, not three windows later.
+        st, body = self.http("POST", "/memory", {"op": "mint", "name": "scalar",
+                                                 "sources": {"shelf_prefixes": "STR/GEN"}})
+        self.assertEqual(st, 400, body)
+        self.assertIn("a list expected", body["error"]["message"])
 
     def test_mint_over_fact_cap_is_400(self):
         for t in ("alpha fact about qux", "beta fact about qux", "gamma fact about qux"):
@@ -3071,15 +3129,50 @@ class Mint(unittest.TestCase):
 
     def test_write_then_mint_from_moved_rows_is_stale_on_remint(self):
         fact = self.svc.memory.remember("the graft is the research bet", scope="ops", klass="STR/GR")
-        self.http("POST", "/memory", {"op": "mint", "name": "graft",
-                                      "sources": {"row_ids": [fact["id"]]}})
+        st, m = self.http("POST", "/memory", {"op": "mint", "name": "graft",
+                                              "sources": {"row_ids": [fact["id"]]}})
+        self.assertEqual(st, 200, m)
+        a_file = m["cart"]["file"]
         self.assertEqual(self.svc.memory.carts_get("graft")[0]["state"], "fresh")
         self.svc.memory.correct("the graft is Gate 3, the research bet", fact["id"])   # moves it
         self.assertEqual(self.svc.memory.carts_get("graft")[0]["state"], "stale",
                          "a correction to a source row marks the cart stale inline")
         st, body = self.http("POST", "/memory", {"op": "remint", "name": "graft"})
         self.assertEqual(st, 200, body)
-        self.assertEqual(self.svc.memory.carts_get("graft")[0]["state"], "fresh")
+        row = self.svc.memory.carts_get("graft")[0]
+        self.assertEqual(row["state"], "fresh")
+        # the scar over HTTP (audit finding 12: the store-level scar was tested, the mint
+        # chain was not): a re-mint that MOVES the bytes rotates the file and leaves both
+        # marks - the count and the previous name. Never erase, annotate.
+        self.assertEqual(row["remint_count"], 1)
+        self.assertEqual(body["cart"]["previous_file"], a_file)
+        self.assertNotEqual(row["file"], a_file)
+
+    def test_dedup_churn_catches_up_without_the_engine(self):
+        # Audit finding 1: the scan's clock cannot tell a harvest re-learn STAMP from a
+        # content move, so an actively re-learned source could make its cart pay a full
+        # seed + a 236 MB save EVERY tick, forever. The stamp-churn law: when a re-mint
+        # renders to the SAME content-hash file and the .bin still stands in the vault,
+        # the ledger is caught up WITHOUT the engine - no seed, no save, no scar.
+        fact = self.svc.memory.remember("the sweep re-learns the same text each window",
+                                        scope="ops", klass="STR/GEN")
+        st, a = self.http("POST", "/memory", {"op": "mint", "name": "churn",
+                                              "sources": {"row_ids": [fact["id"]]}})
+        self.assertEqual(st, 200, a)
+        saves = self.calls["save"]
+        with self.svc.memory.lock:               # an out-of-process stamp: updated_at moves,
+            self.svc.memory.conn.execute(        # the text does not - the scan cannot tell
+                "update memories set updated_at = now() + interval '1 hour' where id = %s",
+                (fact["id"],))
+            self.svc.memory.conn.commit()
+        self.assertEqual(self.svc.memory.cart_scan_stale(), ["churn"])
+        st, b = self.http("POST", "/memory", {"op": "remint", "name": "churn"})
+        self.assertEqual(st, 200, b)
+        self.assertTrue(b["cart"]["caught_up"], "same bytes must not re-touch the engine")
+        self.assertEqual(self.calls["save"], saves, "no second save - the NVMe never felt it")
+        row = self.svc.memory.carts_get("churn")[0]
+        self.assertEqual(row["state"], "fresh")
+        self.assertEqual(row["remint_count"], 0, "same file = no scar, mint level included")
 
     def test_remint_of_unknown_is_400_and_retire_stands_down(self):
         st, body = self.http("POST", "/memory", {"op": "remint", "name": "nope"})
@@ -3096,6 +3189,16 @@ class Mint(unittest.TestCase):
         self.assertEqual(st, 200, body)
         row = next(c for c in body["carts"] if c["name"] == "here")
         self.assertTrue(row["file_exists"], "the page reports the vault truth, not the ledger hope")
+
+    def test_carts_op_name_filter_is_case_kind(self):
+        # audit finding 12: names are stored lowercase (NAME_RE), so an uppercase filter used
+        # to answer [] - an absence that reads like "no such cart" when it was a typo. The
+        # filter now speaks the ledger's own tongue.
+        self.http("POST", "/memory", {"op": "mint", "name": "page9", "sources": {"text": "one"}})
+        self.http("POST", "/memory", {"op": "mint", "name": "page10", "sources": {"text": "two"}})
+        st, body = self.http("POST", "/memory", {"op": "carts", "name": "PAGE9"})
+        self.assertEqual(st, 200, body)
+        self.assertEqual([c["name"] for c in body["carts"]], ["page9"])
 
     # ---- the attach index rides the standing text ---------------------------------------
 
