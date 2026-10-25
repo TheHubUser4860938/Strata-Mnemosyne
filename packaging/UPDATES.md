@@ -118,13 +118,11 @@ All signing happens on the release PC, on the finished files.
 
 **What is built (per OS)**
 
-* *Full installers* (the first download, engine inside): Windows `cuda13`, `cuda12`, `rx9070`; Linux `nvidia-cuda13`, `nvidia-cuda12`, `amd-rx9070`,
-  `amd-rx7900`; Mac `dmg`. Each carries ONE signed engine package in `engine-bundle/` (the Mac one unsigned, see below).
-* *Update installers* (the only files `latest.json` names): built with `--config src-tauri/tauri.update.conf.json`, which drops `engine-bundle`.
-  Windows: `Strata-0.2.3-windows-update.exe`; Linux: the base AppImage before the engines are repacked into it
-  (`Strata-0.2.3-linux-update.AppImage`); Mac: `Strata.app.tar.gz` (the Metal engine is 2 MB and there is one Mac variant, so it stays inside).
-  Why: an app update must not carry an engine. One `latest.json` entry per OS goes to every variant, and a CUDA installer on an AMD PC
-  would copy a useless CUDA engine beside the AMD one (`bundled-engine.test.mjs`). Engines come per card from the signed feed
+* *The installer*, one per OS (0.2.5). The Windows and Linux ones have no engine inside: built with `--config src-tauri/tauri.update.conf.json`, which drops `engine-bundle`. The Mac dmg keeps its small Metal engine (one Mac variant).
+  Windows: `Strata-0.2.5-windows-x64-setup.exe`; Linux: `Strata-0.2.5-linux-x86_64.AppImage`; Mac: `Strata-0.2.5-macos-arm64.dmg` for people and
+  `Strata.app.tar.gz` as the updater archive (the updater cannot install from a dmg). The Windows and Linux files are both the first download and the
+  file `latest.json` names; the first start of the app downloads the engine for the card (the first-run card), or installs a file the person already has.
+  Why: an app update must not carry an engine, and the right engine depends on the card. Engines come per card from the signed feed
   (`feed.select_engine`: platform, backend, CUDA `archs` and `min_driver`, HIP `archs`; `tests/terminal/test_release_matrix.py`).
 
 **Steps**
@@ -135,14 +133,13 @@ All signing happens on the release PC, on the finished files.
     # --url-prefix= (not --url-prefix "") because PowerShell 5.1 drops an empty argument. The Control version is the VERSION file
     # (0.1.48), not the app version: a Control package newer than the installed one is installed by `strata update`.
     # Pack Linux and Mac packages on Linux / the Mac or on Windows with this tool: it sets the execute bit from the file header either way.
-    cd apps/desktop && npx tauri build --bundles nsis                                               # Windows full installers: engine-bundle holds the one signed package
-    cd apps/desktop && npx tauri build --bundles nsis --config src-tauri/tauri.update.conf.json    # Windows update installer
-    # Linux: tauri build --bundles appimage (no engine) is the update AppImage; repack-appimage.sh puts an engine package into a copy for each full AppImage
-    # on the release PC, per updater artifact (Windows update .exe, Linux update .AppImage, Mac Strata.app.tar.gz):
+    cd apps/desktop && npx tauri build --bundles nsis --config src-tauri/tauri.update.conf.json    # Windows installer (no engine inside)
+    # Linux: tauri build --bundles appimage (no engine inside) is the AppImage
+    # on the release PC, per updater artifact (Windows setup .exe, Linux .AppImage, Mac Strata.app.tar.gz):
     npx tauri signer sign -f <path to tauri-updater.key> <artifact>                                 # writes <artifact>.sig
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.3 --archive <update .exe> --sig <update .exe.sig> --notes "..."
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.3 --archive <update .AppImage> --sig <update .AppImage.sig>
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.3 --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.5 --archive Strata-0.2.5-windows-x64-setup.exe --sig Strata-0.2.5-windows-x64-setup.exe.sig --notes "..."
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.5 --archive Strata-0.2.5-linux-x86_64.AppImage --sig Strata-0.2.5-linux-x86_64.AppImage.sig
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.5 --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
     python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
 

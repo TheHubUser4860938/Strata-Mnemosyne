@@ -42,8 +42,8 @@ perplexity +7.3% (code +3.2%, agent work +2.2%). IQ1_M: perplexity +21% (KL 0.21
 121 + 111 + 8 = 239 GB for 1.75; 138 + 111 + 8 = 257 GB for 2.00; 155 + 111 + 8 = 274 GB for 2.25.
 
 Measured: an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive answers at about 4.7 tokens/s and reads prompts at 121
-tokens/s (4K) to 231 tokens/s (8K, layer-major path); an RTX 3060 (12 GB) with 46 GB of RAM about 8 to 10 tokens/s (code 9.9, agent work 7.8; 149 tokens/s at 8K; DSpark stays off there, `--dspark on` adds 2-13%); four R9700 about 31
-tokens/s. Under about 40 GB of RAM it is untested and slow; setup says so and still installs.
+tokens/s (4K) to 231 tokens/s (8K, layer-major path); an RTX 3060 (12 GB) with 46 GB of RAM about 8 to 10 tokens/s (code 9.9, agent work 7.8; 149 tokens/s at 8K; DSpark stays off there, `--dspark on` adds 2-13%); four R9700 about 48
+tokens/s on 2.00 and 80 on 2.25 (code, with the shipped hot-expert profile). Under about 40 GB of RAM it is untested and slow; setup says so and still installs.
 
 Setup downloads with resume and SHA-256, packs the model with the plain recipe (`pack_gguf.py --model SET --shards ... --engram
 engram-IQ4_NL.gguf --engram-meta <UD shard 1> --dspark-gguf dspark-...-Q8_0.gguf`; do not add `--skip-tensors` or `--dense-override`:
@@ -87,6 +87,12 @@ The server speaks to the engine as it does for the other models, so `/v1/chat/co
   and its sub-agents are kept as a checkpoint too. `STRATA_DS4_SLOT_KEEP=0` and `STRATA_DS4_AUTO_PIN=0` turn this off.
 
 Not in this version: several requests at once (`--parallel` is ignored with a warning) and pictures (`--vision` is ignored with a warning).
+
+## Speed: Faster or Full quality
+
+DeepSeek picks 6 experts for every word it writes. **Faster** uses 5 of them (engine flag `--experts 5`): a small quality change, usually not noticeable, and answers come sooner. It is the default on a PC whose graphics cards total 16 GiB or less, and on an integrated GPU such as Strix Halo: the engine decides that itself (`--experts auto`), and Strata passes `--experts` only when you choose. **Full quality** uses all 6 (`--experts 6`).
+
+The choice needs the DeepSeek engine 0.1.50 or newer (0.1.49.2 does not take `--experts`); with an older engine the step and the plan line are left out and nothing is passed. In `strata launch` the guided screens have a Speed step for DeepSeek; with flags use `--speed faster|full`, or `--full-quality` in scripts. `strata launch --plan` shows which one this PC gets.
 
 ## Tuning
 
