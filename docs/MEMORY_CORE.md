@@ -207,13 +207,19 @@ the context window — measured on a personal ~50-question cross-harness set; nu
   **12 × Qwen Sparse Attention (real KV, 2 KV heads)**. MAM's append-only, bitwise-stable, RoPE-re-phase
   arithmetic lives in the 12 KV layers only; GDN state is order-entangled.
 - KV is quantized (`--kv k8v4`) and RoPE is YaRN ×2 at 512K — re-phasing stored keys must survive both.
+  *(Written against the pre-swap stack. The live box since 2026-10-24 runs `--kv int8` streamed — 8,196
+  positions/layer resident, 14 GiB conversation cache — and YaRN ×1.5 at 393,216 against a trained
+  262,144, both read from the running engine's args at the 19:37 boot. The swap is what moved the
+  graft blocker off RoPE re-phasing; see "The 2026-10-24 review round".)*
 - Zero-embedding consolidation forwards have no token IDs, but PLE is a per-ID n-gram lookup (here the Q8
   table) — synthetic memory rows need a defined PLE story.
 - MAM's own published envelope: dense, BF16, full-attention 7B models; scaling sealed at 22/80 correct on 80
   cartridges. Gate 3: grafted-cartridge recall ≥ 0.9 × text-injection on the QA set, or cartridges stay
   research notes and the text-memory layer ships as the product.
 - Session save/restore on this config is itself unproven: upstream issue #1444 shows save failures
-  (`invalid K/V extent`) on some setups; Spike A tests our exact stack (k8v4 + MTP + YaRN + Q8 PLE).
+  (`invalid K/V extent`) on some setups; Spike A tests our exact stack (k8v4 + MTP + YaRN + Q8 PLE —
+  the stack at writing; the INT8/streamed stack that replaced it saves and restores the standing
+  cart every cycle, 237 MB, and C4's smoke3 measured save 214 ms / restore 123 ms at 253 MB).
   First half DONE: save passes on this config at 251,339 tokens (3.35 GB in 1.54 s, no extent error) and
   the RAM guard refuses an oversized restore cleanly with generation verified after (Stage 0 table).
 
@@ -562,12 +568,17 @@ text is now the STATIC texts: the soul plus a configured `files` list - on the f
 human) and `persona/always.md` (the box map). `facts: false` retired the shelved rows from
 the cart: they ride the tier-3 block instead (standing status lost, knowledge kept), so the
 harvest can no longer rotate it - a rotation now means a hand edited a source file, and
-daily life writes zero (the NVMe-wear law; measured: 343 MB per rotation). The soul's
+daily life writes zero (the NVMe-wear law; measured: 343 MB per rotation in the soul+facts era,
+237 MB for the static cart). The soul's
 load-time budget retired the same night (`SOUL_BUDGET = None`; set an integer to re-arm the
 tripwire). Personal data stays out of git: `user.md` and `always.md` are box-local, generated
 from their `.example` templates like the `strata-*.json` configs; only the PII-free core is
-tracked. Composed for the next boot: 20,435 standing chars (~5.7k tokens estimated) across
-five sources - a richer persona in a smaller cart than the 7,009-token soul+facts era. `GET
+tracked. Stood at the 2026-10-24 19:37 boot (verified against the box, not remembered): five
+sources, `MEM-CRG-22c49c0c.bin`, 237 MB on disk, 20,446 standing chars composed - soul Part A
+11,293 (the loader holds Part B back while the reason system is off) plus agent/skill/user/always
+9,145; an empty prompt on the route counts 5,635 tokens with the standing text in it (the server's
+own counter). A richer persona in a smaller cart than the 7,009-token soul+facts era - and the
+composed bytes reproduce the live cart name exactly, hash included. `GET
 /memory` reports `sources` and `facts_mode`, and the tier-2 page names what actually stands.
 
 **The store's own page (item D).** `GET /memory-ui` (only when memory is on) serves a panel:
@@ -2449,7 +2460,11 @@ code-level bug list was a week stale, and reading the tree found ten things the 
   revived by hand ran the day vector-less).
 - Save on this exact stack is not unproven: Spike A measured it at 251,339 tokens (3.35 GB in 1.54 s,
   no `invalid K/V extent`), and #1444 does not reproduce on this box's k8v4 + MTP + YaRN + Q8 PLE
-  config. What is queued is the venue re-record of the cartridge's economics, not the save.
+  config. (That measurement belongs to the pre-swap k8v4 stack; the INT8/streamed stack that replaced
+  it on 2026-10-24 saves and restores the 237 MB standing cart every boot and reseed, and C4's
+  smoke3 measured save 214 ms / restore 123 ms at 253 MB — the mechanics are proven at cart scale,
+  the 251K-token figure has not been re-taken on the new stack.) What is queued is the venue
+  re-record of the cartridge's economics, not the save.
 - One number was off by 5x: the 150 MB vector matrix belongs to **~100k rows**, not 20k
   (this file, line 1427). At 20k the store pays ~0.9 s of cache rebuild per write burst, not per row.
 - The research reference is incomplete: the AkbasCore line has a **v3**
