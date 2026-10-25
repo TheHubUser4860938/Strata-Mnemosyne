@@ -115,7 +115,7 @@ def main() -> int:
                  m._dt(r[6]), m._dt(r[7]), m._dt(r[8]) if r[8] is not None else None,
                  r[9], m._dt(r[10]) if r[10] is not None else None, r[11], r[12] or ""))
         n_mem = len(rows)
-        cur.executemany("insert into embeddings values (%s, %s)",
+        cur.executemany("insert into embeddings(id, vec) values (%s, %s)",
                         [(i, bytes(v)) for i, v in old.execute(
                             "select id, vec from embeddings").fetchall()])
         n_emb = cur.rowcount

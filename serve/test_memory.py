@@ -2383,7 +2383,8 @@ class StubEmbedder:
         import numpy as np
         self.map = {t: np.array(v, dtype=np.float32) for t, v in pairs.items()}
         self.dim = len(next(iter(self.map.values())))
-        self.model_name = "stub"
+        self.dims = self.dim                 # the swap law reads .dims (2026-10-24); the
+        self.model_name = "stub"             # stub speaks both spellings so tests test the law
 
     def embed_docs(self, texts):
         import numpy as np
@@ -2775,6 +2776,78 @@ class ReviewFixes2026_10_24(unittest.TestCase):
         self.assertNotEqual(int(m.conn.info.transaction_status), 3,
                             "3 is INERROR - the aborted state that made every later request fail "
                             "on 2026-10-23; 0 or 2 (a fresh transaction) both mean the store answers")
+
+
+class EmbedderSwap2026_10_24(unittest.TestCase):
+    """Vectors became a MODEL-SCOPED asset (the swap law): stamped at write, filtered by
+    width AND stamp in both matrices, counted when foreign, and rewritten in one
+    transaction by serve.reembed.migrate. Stubs only - the real models smoke in
+    serve/test_embedder.py."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.stub = StubEmbedder({"zippity zarp blorp": [1.0, 0.0, 0.0, 0.0],
+                                  "zopply zibble flarp": [0.0, 1.0, 0.0, 0.0]})
+        self.mem = MemoryService(self.tmp.name, embedder=self.stub)
+
+    def tearDown(self):
+        self.mem.close()
+        self.tmp.cleanup()
+
+    def test_write_stamps_the_model(self):
+        self.mem.remember("zippity zarp blorp", scope="swap", guard=False)
+        self.assertEqual(self.mem.conn.execute("select model from embeddings").fetchone()[0],
+                         "stub")
+
+    def test_foreign_stamp_is_excluded_counted_and_silent_bm25(self):
+        self.mem.remember("zippity zarp blorp", scope="swap", guard=False)
+        self.mem.conn.execute("update embeddings set model = 'other-model'")
+        self.mem.conn.commit()
+        self.assertEqual(self.mem.foreign_vectors(), 1)
+        got = self.mem.search("zippity zarp blorp", scope="swap")     # must not crash,
+        self.assertEqual([g["text"] for g in got], ["zippity zarp blorp"])   # bm25 answers
+
+    def test_mixed_widths_never_reach_the_stack(self):
+        import numpy as np
+        self.mem.remember("zippity zarp blorp", scope="swap", guard=False)
+        self.mem.conn.execute("update embeddings set vec = %s", (np.zeros(768, np.float32).tobytes(),))
+        self.mem.conn.commit()
+        self.assertEqual(self.mem.foreign_vectors(), 1)               # 768-d under a 4-d stub
+        self.assertIsNone(self.mem._vec_matrix())                     # excluded, not exploded
+
+    def test_migrate_rewrites_vectors_stamps_and_meta(self):
+        from serve.reembed import migrate
+        self.mem.remember("zippity zarp blorp", scope="swap", guard=False)
+        self.mem.conn.execute("update embeddings set model = 'old-model'")
+        self.mem.conn.commit()
+        text = self.mem.conn.execute("select text from memories").fetchone()[0]
+        other = StubEmbedder({text: [0.0, 0.0, 1.0, 0.0]})
+        other.model_name = "brave-new"
+        rep = migrate(self.mem, other, log=lambda *a: None)
+        self.assertEqual(rep["rows"], 1)
+        self.mem.embedder = other      # the reboot the migration is written for: the server
+        self.assertEqual(self.mem.foreign_vectors(), 0)    # comes back with the new embedder
+        import numpy as np
+        vec = np.frombuffer(self.mem.conn.execute("select vec from embeddings").fetchone()[0],
+                            np.float32)
+        self.assertEqual(vec.tolist(), [0.0, 0.0, 1.0, 0.0])          # the NEW model's bytes
+        stamp = self.mem.conn.execute(
+            "select value from meta where key = 'embedder_model'").fetchone()[0]
+        self.assertEqual(stamp, "brave-new")
+
+    def test_resolve_class_names_and_raises(self):
+        from serve.embedder import Embedder, EmbeddingGemma2, resolve_class
+        self.assertIs(resolve_class("bge-small-en-v1.5"), Embedder)
+        self.assertIs(resolve_class("EmbeddingGemma-2"), EmbeddingGemma2)
+        self.assertEqual(resolve_class("embeddinggemma-2").DIMS, 768)
+        with self.assertRaises(ValueError) as cm:
+            resolve_class("sbert-mini")        # an unknown name must NOT quietly widen to bge
+        self.assertIn("sbert-mini", str(cm.exception))
+
+    def test_stats_names_the_asset(self):
+        self.mem.remember("zippity zarp blorp", scope="swap", guard=False)
+        e = self.mem.stats()["embedder"]
+        self.assertEqual((e["model"], e["dims"], e["foreign"]), ("stub", 4, 0))
 
 
 if __name__ == "__main__":

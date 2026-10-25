@@ -10081,6 +10081,13 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
               f"the tool and the journal stay on - the browse arm); "
               f"embedder {svc.memory.embedder and 'on: ' + getattr(svc.memory.embedder, 'model_name', '?') + ' (CPU, hybrid rerank)' or (svc.memory.embedder_error and 'FAILED - lexical only: ' + svc.memory.embedder_error or 'off')}; "
               f"GET /memory to inspect)", flush=True)
+        # The swap law made the vectors a MODEL-SCOPED asset (2026-10-24): vectors written by
+        # another embedder do not silently ride the semantic arm as garbage cosines - they are
+        # excluded, counted, and said out loud here until serve/reembed.py rewrites them.
+        if svc.memory.embedder is not None and svc.memory.foreign_vectors():
+            print(f"[strata] memory: {svc.memory.foreign_vectors()} vectors belong to another "
+                  f"embedder - the semantic arm runs without them until "
+                  f"'python -m serve.reembed' rewrites them", flush=True)
         # M3b: the tier-2 standing cartridge rides the same config - {"cartridges": {"enabled": true,
         # "class_prefixes": [...], "max_chars": N}} - and needs slot_save_path for its session file.
         cart_cfg = mcfg.get("cartridges")

@@ -53,14 +53,23 @@ Two things arrive switched **on**, and everything else stays byte-identical to u
 
   ```json
   "memory": { "dir": "Strata-data/memory",
-              "embedder": { "dir": "Strata-data/embeddings/bge-small-en-v1.5" } }
+              "embedder": { "name": "bge-small-en-v1.5",
+                            "dir": "Strata-data/embeddings/bge-small-en-v1.5" } }
   ```
+
+  (`name` picks the model class — the only one shipped in the default setup is bge-small; the
+  dev box runs `embeddinggemma-2` behind the same block, and an unknown name **raises** rather
+  than quietly falling back. Changing `name`/`dir` means re-embedding the store:
+  `python -m serve.reembed --store DIR --dir EMBDIR`.)
 
   or start the server with `--memory Strata-data/memory`. When it is live the boot banner
   prints `[strata] memory core on: ...`, and `http://127.0.0.1:8005/memory-ui` is the store's
   own page — stats, search, forget. The embedder (pinned by SHA-256, MIT, ~130 MB, CPU-only —
   it never touches the GPU your model owns) is what lets recall understand paraphrase;
-  without it recall stays lexical and everything else still works.
+  without it recall stays lexical and everything else still works. The dev box's store
+  switched the same way to `embeddinggemma-2` (Apache-2.0, 768-d, 8K context, 314 MB q8) on
+  2026-10-24; every banked venue number still carries its *bge-small era* label until a
+  venue day re-records it.
 
 - **Reason modes** (DavidAU model families — see below): 41 framings, pairs, thinking levels
   and an autonomous picker — the server boots already knowing how to consult its own cast
