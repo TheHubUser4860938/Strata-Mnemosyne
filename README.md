@@ -243,25 +243,6 @@ that summons them into a steering system:
   commanding. Same numbers, different clothes; it is the fastest way to see what the dial
   actually does to the voice.
 
-## And the store got disciplined
-
-The store woke up one morning with 2,885 rows, half of them paraphrased fragments of documents
-still sitting in a folder — which is not a memory, that is a photocopy shop. By that evening it
-held **1,051**: 1,549 fragments were forgotten and replaced by eleven whole-document pointers
-(one memory per document, the document itself on disk, the recall quoting it by title and
-fingerprint), every unclassified row found its shelf (148 shelves, zero wild), retired facts
-now lose their vectors along with their recall — the store holds the invariant *vectors ==
-live rows*, 1,051 == 1,051 — and the nightly machinery does the rest: a curation sweep every
-30 minutes that runs only when the store asks for it, a weekly janitor that seals an encrypted
-backup and collapses paraphrase clusters, and a slot folder that keeps the newest files and
-nothing else.
-
-The write paths earned their rules the hard way — a 233-operation manual cleanup, then the laws
-enforced in code: multi-call agent turns journal as ONE row; every landing fact is judged
-against the store before it is stored (the supersession arm: 88 flags, correct verdicts, in its
-first live hours); ingest reunites abbreviation splits ("8 U.S.C." no longer dies mid-citation)
-and refuses shards that cannot stand alone.
-
 **Where it stands, read from the store's own stats on 2026-10-23:** **966** live rows across 138
 shelves (one row still unclassified), 1,521 retired rows behind them, 2,508 journaled turns, and
 the invariant holds — the embedder reports 966 vectors for 966 live rows. The store now runs on
