@@ -3190,6 +3190,18 @@ class Mint(unittest.TestCase):
         row = next(c for c in body["carts"] if c["name"] == "here")
         self.assertTrue(row["file_exists"], "the page reports the vault truth, not the ledger hope")
 
+    def test_stats_carry_the_ledger_for_the_page(self):
+        # the memory page paints stats.carts (serve/web/memory.js, 2026-10-25): the GET that
+        # feeds it must carry the ledger with the honest file_exists field, or the panel
+        # shows a card that lies about what stands.
+        self.http("POST", "/memory", {"op": "mint", "name": "painted", "sources": {"text": "page sees me"}})
+        st, body = self.http("GET", "/memory?limit=1")
+        self.assertEqual(st, 200, body)
+        rows = {c["name"]: c for c in body["stats"]["carts"]}
+        self.assertIn("painted", rows)
+        self.assertTrue(rows["painted"]["file_exists"])
+        self.assertEqual(rows["painted"]["state"], "fresh")
+
     def test_carts_op_name_filter_is_case_kind(self):
         # audit finding 12: names are stored lowercase (NAME_RE), so an uppercase filter used
         # to answer [] - an absence that reads like "no such cart" when it was a typo. The
