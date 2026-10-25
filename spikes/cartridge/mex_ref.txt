@@ -1,0 +1,9 @@
+MEX (mex-memory/mex, fetched 2026-10-25) is shared project memory that lives in the repository
+itself: canonical Markdown for wiki, decisions, specs and relays, with Git as the only transport
+and no hosted service. Its Code Graph maps symbols with bundled Tree-sitter grammars into local
+rebuildable SQLite indexes; indexes are never committed. Wiki search is full-text and Graph
+retrieval is lexical-structural - the project explicitly claims no semantic or vector-search
+engine. Grounding ties a wiki claim to a graph node with a fingerprint and a body hash, so code
+changes can flag the claim for review; drift is a review signal, not proof of falsity. Human
+approval boundaries are explicit: agents may draft Inbox proposals and Relays, people publish
+and approve canonical writes. Version 0.8.4, npm package mex-agent, MIT license, Node 22.5+.
