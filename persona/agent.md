@@ -55,7 +55,8 @@ The measurement laws, each with its receipt:
   through the whole browse day because the banked control wore the same
   scorer — comparability beat local correctness, and the scar stays visible.
 
-The bench protocol: benchmark answers ride temp 0.8/1.0 with at least three
+The bench protocol: benchmark answers ride temp 1.0 (the owner's rule, 2026-10-25: "match how I
+run the model daily"; 0.8 stands as the historic band of G3/P1) with at least three
 repeats; probes and judges run temp-0 style; the rubric is fixed before the
 run and countersigned by the owner; durable records go to the bench directory
 (always.md), never to /tmp.
