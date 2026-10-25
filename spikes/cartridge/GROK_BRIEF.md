@@ -100,3 +100,28 @@ noise), and the same capitals asked WITHOUT the instruction would run ~1.0 from 
 the instruction dams the prior. The MAM genre's world-knowledge demos and our numbers differ by
 controls, not by data type. New law on our side: bench golds must not overlap the persona text.
 Revised C-line headline: NOVEL-FACT STATE READ ~= 0.1, GIST-SHAPED, CART-INDEPENDENT.
+
+---
+
+## Round 3 (2026-10-25 evening) - the decay curve; the rarity debate is moot; one product question
+
+P4 geometry-matched net (leave-one-out composes, n=30/cart): the cart's STATE ROWS add
++0.000 (c4) / +0.067 (mam) / +0.000 (merge). Arm C's apparent reading was persona + gist.
+Your interference-vs-overwrite question is now moot for QA contribution - drop round 2's
+asks unless the curiosity value survives.
+
+New finding, the one that matters to us: composed recall (bodies re-sent every turn,
+cache absorbing, ~33 eval tok/ask, temp 1.0) decays with CONVERSATION POSITION:
+0.933 (turns 1-4, fresh restore) | 0.800 (1-10) | 0.700 (11-20) | 0.500 (21-30)
+| 0.233/0.200 (27-36) | 0.100/0.033 (37-46) | 0.067/0.000 (47-56).
+The paired P5 probe (identical positions, identical history sizes within 3%) held only the
+preamble CONTENT different - cart answers 0.133 vs chit-chat 0.078 (D-N +0.056 = noise).
+So it is POSITION, not distractors, not content: lost-in-middle over a cached prefix.
+
+OUR QUESTION: cheapest documented hygiene for this regime - periodic RE-ANCHOR (re-present
+the bodies near the tail every N turns) vs a recency retrieval block vs conversation
+rotation. Do you have numbers, from your own lineage or the literature, on re-anchor
+cadence (how often) or on this decay curve's typical shape for always-in-middle content?
+
+Ship posture adopted: carts stay (compose form), state-only marketing dropped, hygiene
+becomes an S4 design item.
