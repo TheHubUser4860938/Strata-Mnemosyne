@@ -149,7 +149,7 @@ The Terminal is the `strata` command, for scripts, servers and AI agents.
 Linux and Mac:
 
 ```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 Windows (PowerShell):
@@ -433,6 +433,20 @@ For swift models you can run them with the Q8 PLE N-gram table adjust your .json
   "/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-Q8PLETable.gguf", 
   Change to the name of the Q8 PLE table.
 
+### DeepSeek V4.1-Flash (in the Terminal, from 0.2.4)
+
+[DeepSeek V4.1-Flash](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF) is a different, much bigger model. ISTA-DASLab made the three sets below. Strata runs them on a PC with one 12 GB graphics card and 46 to 64 GB of RAM, and reads the rest from your SSD. It runs on NVIDIA RTX 30 to 50 cards and on the Radeon AI PRO R9700. It uses its own engine package, `strata-dsv41`, which `strata launch` downloads when you pick DeepSeek. The desktop app does not offer it yet.
+
+| Set | Download | Quality against the original model | Writes at |
+| --- | ---: | --- | --- |
+| **IQ1_M** (1.75 bits) | 239 GB | KL 0.217, perplexity 3.80 (+21%); code +8.9%, agent work +10.2%; weaker on plain English prose. ISTA-DASLab's model card: keeps 98.7% of the base model's task average (AIME25, GPQA-Diamond, LiveCodeBench v6). | not measured yet |
+| **IQ2_XXS** (2.00 bits) | 257 GB | KL 0.170, perplexity 3.63 (+15.5%); code +8.6%, agent work +5.3% | about 8 to 10 tokens/s on an RTX 3060 (code 9.9, agent work 7.8), about 5 on an RTX 5070 |
+| **IQ2_XS** (2.25 bits) | 274 GB | KL 0.107, perplexity 3.37 (+7.3%); code +3.2%, agent work +2.2% | about 11 tokens/s on one Radeon AI PRO R9700 |
+| **IQ4_NL** (Engram table, not a third model) | 111 GB, already in all three downloads above | The 4-bit Engram lookup table the model reads from RAM or SSD. All three sets use this one file (`DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`). | n/a |
+
+4x Radeon AI PRO R9700: about 31 tokens/s, 55 to 69 with DSpark.
+
+Start it with `strata launch --model ist-das-2.00bpw` (or `ist-das-1.75bpw`, `ist-das-2.25bpw`). Details, speeds per card and the manual install: [docs/DEEPSEEK41.md](docs/DEEPSEEK41.md).
 ## How fast is it?
 
 Based on a 12 GB graphics card (RTX 5070, Ryzen 5 7600, 64 GB RAM). See results from other cards:
