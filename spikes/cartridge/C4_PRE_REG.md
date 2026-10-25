@@ -75,7 +75,7 @@ the ask, the runner follows the pen.
 (Both halves of that line later that night: C5 ran, and c4_run.py was built per this contract
 and PROVEN at smoke rung-25 - all green, save 214 ms / restore 123 ms at 253 MB.)
 
-## Amendment - the episode ruling (appended 2026-10-24 late night, AWAITING countersign; the sections above stand untouched)
+## Amendment - the episode ruling (appended 2026-10-24 late night, COUNTERSIGNED; the sections above stand untouched)
 
 The owner's course-correction, before the ladder runs, doctrine in his words: cartridges are not
 for stuffing as much data in as possible - that is not how they are meant to be used. They store
@@ -118,3 +118,25 @@ the re-fetch. Grok's manifest takes this as one more shape of `sources`, no inte
 Runner note: c4_run.py exists and is smoke-proven; rung-25 is a config line (smoke used it),
 Phase C is new (~60 lines, same plumbing, same guards). Owner's countersign (one word) makes the
 amendment part of the contract before the next quiet-night run.
+
+**COUNTERSIGNED 2026-10-24 21:42 box clock, owner in-session**: "Anyways this countersign the
+amendment (or edit it) what is it again? [...] And then you can start." Signed as drafted.
+
+Implementation addendum, written before the first Phase C ask (pen before ask): Phase C runs
+CREP = 2 passes - the ladder keeps its signed 3; a reported phase carries the same >=95%
+exact-marker rule at fewer passes to fit the night's budget (Phase C is ~950-1,000 asks,
+45-60 min, which corrects the journal's earlier 20-30 min guess). Five carts at nonce index
+ranges 3000/3100/3200/3300/3400, the leak episode at 3500: the ladder owns 1000.., the decoys
+2000.. - the ranges make collision structural, not lucky. Tonight's multi-cart is a COMPOSED
+prefix (carts encoded into one conversation, C5 semantics); the true N-cart GRAFT of K
+separately-saved states is S4's, and every Phase C line says so.
+
+Graduation note (owner, same message; S3-era thinking, no build tonight): durable, 100%-factual,
+heavily-accessed rows may one day LEAVE the text store and be minted to a cartridge - the hot
+rows stop paying the recall block's token tax every turn, and the hits ledger already measures
+hotness while curation decides what is mintable. The condition is his: it happens only "if the
+cartridges prove better for recall than the text based system" - the venue A/B owes that
+measurement. One design debt the note carries forward: removal from the text store also removes
+browse-ability (walks, catalog counts, the amendment/supersession chain), so graduation needs a
+pointer or tombstone row naming the cart - and the mint manifest's sources.row_ids already
+records the identity to hang it on.
