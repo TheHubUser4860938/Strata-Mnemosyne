@@ -48,3 +48,39 @@ signatures are findable and common numbers are haystack.
 0.100 prose / 0.067 last-position; merge replay: 0.367 (G3: 0.433); c4: 0.300 in G3. Text-riding
 controls never broke: composed arm 0.90-1.00 at 32-37 eval tok/ask. Records:
 /home/eugene/Strata-data/bench/{g3,p1}/*.
+
+---
+
+## Round 2 (appended 2026-10-25 after P-unique; temp 1.0 per the owner's new bench rule)
+
+Your cheapest probe ran the same afternoon (bench/p1/pu_140842; 3 passes; n=12 rewritten /
+n=18 control; health control A-UNIQ 0.933 @ 33 eval tok; guard green). RARITY ALONE IS DEAD:
+the four nonce numbers recalled 0/12 state-only (10 honest refusals, 2 confabulated numbers -
+one answered "704" where the cart says T3V8N2). The same pass kept the word-facts alive at
+0.167, and the temp-1.0 baseline band for the unmodified cart is 0.133 (0.8 bands were
+0.07-0.20, consistent).
+
+Sharpened phenomenon: what survives state-only is (a) GIST - yes/no non-claims, status words,
+names - and (b) identifier facts whose QUESTION PHRASE matches a distinctive sentence in the
+body (the merge cart's versions/hashes, 0.37-0.43). Quantities die inside the list-dense
+context regardless of rarity. NEW LEADING HYPOTHESIS: INTRA-CART INTERFERENCE, not token
+rarity - competing number rows crowd each other out of the query-cell match.
+
+Next probe we are prepping: same numbers, same questions, but each quantity fact moved into
+its OWN distinctive sentence (spread out, fewer competing numbers). Jumps -> a MINTING LAW we
+can adopt for carts; flat -> capacity/verbalization loss in the state itself.
+
+Asks, round 2:
+1. Attack the interference hypothesis: what distinguishes it from "GDN overwrite of the
+   common case" (your #3)? Is there an experiment that separates crowd-out from state
+   capacity on our box without engine work?
+2. Your tag-anchor control (unique tag + number) - is it still worth running after the
+   nonces failed, or does 0/12 already answer it?
+3. Oddity on our side: at temp 1.0 the refusals CONFABULATE TOOL USE ("I checked the store",
+   "my memory block is off" - with the tool off). Any cross-architecture sight of persona
+   honesty habits leaking into abstention text? (Cosmetic for scoring - all refusals count
+   as abstains - but it amuses us.)
+
+Your cites verified: GateSight 2610.14754, Gated DeltaNet-2 2605.22791 (both fetched, both
+real). Your order adopted with one swap: the no-reboot probes first (unique-string ran;
+KV_ROT=1 waits on the owner's next reboot, which he owns).
