@@ -120,7 +120,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8005")
     ap.add_argument("--temp", type=float, default=0.8)
-    ap.add_argument("--rungs", default="100,500,1000")
+    ap.add_argument("--rungs", default="25,100,500,1000")   # the amended ladder (episode ruling):
+    # rung-25 is the unit of USE (one browsed page = one episode cart); 100 stays C3's control.
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--leak-sample", type=int, default=0)          # 0 = every bank ask re-asked
     ap.add_argument("--smoke", action="store_true")                # allows repeats<3; marks verdict
@@ -400,6 +401,7 @@ def main():
                "distractors": sum(1 for r in recalls if r["cls"] == "distractor"),
                "idks": sum(1 for r in recalls if r["cls"] == "idk"),
                "cold_contam": cold_contam, "prefix_tok": sv["n_saved"],
+               "written_mb": round(sv["n_written"] / 1e6, 1),   # the bytes-vs-tokens fit's points
                "encode_s": encode_s, "save_ms": sv["timings"].get("save_ms"),
                "restore_ms_first": (first_restore or {}).get("timings", {}).get("restore_ms"),
                "leak": f"{leaks}/{len(sample)}", "leak_n": len(sample),
@@ -434,6 +436,131 @@ def main():
                     except OSError:
                         pass
 
+    # ---- PHASE C - episode-cart unit economics (amendment 2026-10-24 late night, countersigned) --
+    # The unit of USE: one episode cart = what one experience taught (25 facts, web-page scale).
+    # Measures what ONE cart costs (state bytes, save/restore ms) and what MANY cost RESIDENT on
+    # one standing prefix (the attach curve, a recall gate at every size, one leak arm). Honest
+    # label pre-registered: tonight's multi-cart is a COMPOSED prefix (C5 semantics - the carts
+    # are encoded into one conversation); the true N-cart GRAFT of K separately-saved states is
+    # S4's work, and no graft is implied by these numbers. Pre-registered before any ask:
+    # CREP = 2 passes (smoke 1) - a REPORTED phase carrying the same >=95% exact-marker rule;
+    # CARTS = 5 (smoke 2); CFACTS = 25; cart index ranges 3000+100 apart (the ladder owns
+    # 1000.., the decoys 2000.. - collision is structural, not lucky); the leak episode is
+    # family CARTS+1, cold by selection, asked only under the full prefix.
+    CARTS, CFACTS, CREP = (2 if a.smoke else 5), 25, (1 if a.smoke else 2)
+    CART0 = 3000
+
+    def resolve_carts():
+        return [family("nonce", CART0 + k * 100, CFACTS) for k in range(CARTS + 1)]
+
+    carts = resolve_carts()
+    while True:                                        # the proven cold loop, cart ranges
+        todo = [f for f in need_probe if f["i"] not in known]
+        if not todo:
+            break
+        for f in todo:
+            cls, failed = ask_retry("coldC", "C", f"nonce{f['i']}",
+                                    [{"role": "user", "content": f["ask"]}], 0, f["gold"], [])
+            if failed:
+                raise SystemExit(f"[coldC] transport death probing nonce{f['i']} - no phase C")
+            known[f["i"]] = "prior" if cls == "gold" else "cold"
+            with cold_cache.open("a") as fh:
+                fh.write(json.dumps({"i": f["i"], "verdict": known[f["i"]], "gold": f["gold"],
+                                     "tag": a.tag}) + "\n")
+        carts = resolve_carts()                        # re-walk: priors replaced, ranges refilled
+
+    pc = {"carts": [], "attach": [], "failedC": 0, "leakC": None}
+
+    def pc_recall(tag_c, conv_c, fam_c, fname, n_pass):
+        """One reported recall arm at gate language (>=95% exact-marker), Phase C bookkeeping."""
+        golds_c = [f["gold"] for f in fam_c]
+        per, first_rs = [], None
+        for p in range(1, n_pass + 1):
+            n = 0
+            for f in fam_c:
+                rs = slot(url, "restore", fname)
+                if first_rs is None:
+                    first_rs = rs
+                cls, failed = ask_retry("recallC", tag_c, f"nonce{f['i']}",
+                                        conv_c + [{"role": "user", "content": f["ask"]}], p,
+                                        f["gold"], [g for g in golds_c if g != f["gold"]],
+                                        n_base=rs["n_restored"])
+                pc["failedC"] += failed
+                n += cls == "gold"
+                if not recs[-1]["geom_ok"] and recs[-1]["ptok"] is not None:
+                    geom_void.append((tag_c, p, f["i"]))
+            per.append(n)
+        return per, (first_rs or {}).get("timings", {}).get("restore_ms")
+
+    conv_m = []                                        # the composed multi-cart prefix
+    for k in range(CARTS):
+        conv_k = encode(carts[k], [], f"cart{k+1}", "C")
+        sv_k = slot(url, "save", f"c4_cart{k+1}_{a.tag}")
+        per, rms = pc_recall("C1", conv_k, carts[k], f"c4_cart{k+1}_{a.tag}", CREP)
+        pc["carts"].append({"cart": k + 1, "tok": sv_k["n_saved"],
+                            "mb": round(sv_k["n_written"] / 1e6, 1),
+                            "save_ms": sv_k["timings"].get("save_ms"), "restore_ms": rms,
+                            "pass": per, "mean": round(sum(per) / len(per) / CFACTS, 4)})
+        conv_m = encode(carts[k], conv_m, f"multi{k+1}", "C")   # fresh acks: a different conversation
+        if k == 0:
+            continue                                   # size-1 economics are the single-cart rows
+        sv_m = slot(url, "save", f"c4_multi{k+1}_{a.tag}")
+        attached = [f for j in range(k + 1) for f in carts[j]]
+        per, rms = pc_recall(f"C{k+1}", conv_m, attached, f"c4_multi{k+1}_{a.tag}", CREP)
+        pc["attach"].append({"size": k + 1, "tok": sv_m["n_saved"],
+                             "mb": round(sv_m["n_written"] / 1e6, 1),
+                             "save_ms": sv_m["timings"].get("save_ms"), "restore_ms": rms,
+                             "pass": per, "mean": round(sum(per) / len(per) / len(attached), 4)})
+
+    golds_m = [f["gold"] for f in [x for j in range(CARTS) for x in carts[j]]]
+    leaks = 0
+    for f in carts[CARTS]:                             # the never-attached foreign episode
+        rs = slot(url, "restore", f"c4_multi{CARTS}_{a.tag}")
+        cls, failed = ask_retry("leakC", f"C{CARTS}", f"nonce{f['i']}",
+                                conv_m + [{"role": "user", "content": f["ask"]}], 1,
+                                f["gold"], golds_m)
+        pc["failedC"] += failed
+        if not recs[-1]["geom_ok"] and recs[-1]["ptok"] is not None:
+            geom_void.append((f"C{CARTS}", "leak", f["i"]))
+        leaks += cls == "gold"
+    pc["leakC"] = f"{leaks}/{len(carts[CARTS])}"
+
+    pts = ([(led["prefix_tok"], led["written_mb"]) for led in ledger.values()
+            if led.get("written_mb")]
+           + [(c["tok"], c["mb"]) for c in pc["carts"]]
+           + [(m["tok"], m["mb"]) for m in pc["attach"]])
+    npts = len(pts)
+    sx, sy = (sum(p[i] for p in pts) for i in (0, 1))
+    sxx = sum(p[0] * p[0] for p in pts)
+    sxy = sum(p[0] * p[1] for p in pts)
+    slope = (npts * sxy - sx * sy) / max(npts * sxx - sx * sx, 1e-9)
+    inter = (sy - slope * sx) / npts
+    cart_mb = statistics.mean(c["mb"] for c in pc["carts"]) if pc["carts"] else 0.0
+    CACHE_MIB = 14000        # THIS box's --conversation-cache-mib (running args, 2026-10-24 boot)
+    pc["fit"] = {"fixed_mb": round(inter, 1), "marginal_kb_per_tok": round(slope * 1024, 1),
+                 "points": npts, "episode_cart_mb_mean": round(cart_mb, 1),
+                 "carts_per_cache_budget": int(CACHE_MIB // max(cart_mb, 1e-9)),
+                 "budget_mib": CACHE_MIB}
+    pc["asks"] = (CARTS * CFACTS * CREP
+                  + sum(m["size"] * CFACTS * CREP for m in pc["attach"]) + CFACTS)
+    ledger["C"] = pc
+    failed_total += pc["failedC"]
+    print(f"[phaseC] carts: " + " ".join(f"C{c['cart']} {c['mean']:.3f} ({c['mb']} MB/"
+          f"{c['tok']} tok)" for c in pc["carts"]), flush=True)
+    print(f"[phaseC] attach curve: " + " ".join(f"k{m['size']} {m['mean']:.3f}"
+          f"({m['mb']} MB)" for m in pc["attach"]) + f" | leak {pc['leakC']} | fit fixed "
+          f"{pc['fit']['fixed_mb']} MB + {pc['fit']['marginal_kb_per_tok']} KB/tok "
+          f"(n={npts}) | carts per {CACHE_MIB} MiB cache: {pc['fit']['carts_per_cache_budget']}",
+          flush=True)
+    if not a.keep_files:
+        for nm in ([f"c4_cart{k+1}_{a.tag}" for k in range(CARTS)]
+                   + [f"c4_multi{k+1}_{a.tag}" for k in range(1, CARTS)]):
+            for cand in (nm, nm + ".bin"):
+                try:
+                    (SESSIONS / cand).unlink(missing_ok=True)
+                except OSError:
+                    pass
+
     # ---- verdict, mechanically per C4_PRE_REG.md -------------------------------------------
     p100 = ledger.get(100, {}).get("leak_rate")
     lines = []
@@ -460,6 +587,28 @@ def main():
         last = max([N for N in passes if N < min(fails)], default=None)
         ceiling = (f"ceiling declared between {last} and {min(fails)}" if last is not None
                    else "even the first rung failed - the instrument is in question, not the bank")
+    pcl = []
+    if "C" in ledger:
+        pc = ledger["C"]
+        band = ([(f"cart{c['cart']}", c["mean"]) for c in pc["carts"]]
+                + [(f"attach k={m['size']}", m["mean"]) for m in pc["attach"]])
+        bad = [f"{n} at {v:.3f}" for n, v in band if v < 0.95]
+        pcl.append(f"  PHASE C episode carts ({len(pc['carts'])}x{CFACTS}, repeats={CREP}; multi ="
+                   " COMPOSED prefix - S4 graft owed): "
+                   + ("PASS - every single cart and every attach size >= 0.95" if not bad
+                      else "episode band UNHEALTHY: " + "; ".join(bad)))
+        pcl.append("    single: " + " ".join(
+            f"C{c['cart']} {c['mean']:.3f} ({c['mb']} MB/{c['tok']} tok, save {c['save_ms']} ms,"
+            f" restore {c['restore_ms']} ms)" for c in pc["carts"]))
+        pcl.append("    attach curve: " + " ".join(
+            f"k={m['size']} {m['mean']:.3f} ({m['mb']} MB/{m['tok']} tok)" for m in pc["attach"])
+            + f" | foreign episode leak under full prefix {pc['leakC']}")
+        ft = pc["fit"]
+        pcl.append(f"    state bytes vs tokens (n={ft['points']} points): fixed {ft['fixed_mb']} MB"
+                   f" + marginal {ft['marginal_kb_per_tok']} KB/tok | episode cart mean"
+                   f" {ft['episode_cart_mb_mean']} MB | carts per {ft['budget_mib']}-MiB"
+                   f" conversation cache: {ft['carts_per_cache_budget']} (arithmetic:"
+                   f" {ft['budget_mib']} // {ft['episode_cart_mb_mean']})")
     void = [f"geometry VOID on {len(geom_void)} ask(s): {geom_void[:4]}"] if geom_void else []
     if control and ledger.get(100) and ledger[100]["recall_mean"] < 0.85:
         void.append(f"control rung (100) at {ledger[100]['recall_mean']:.3f} < 0.85 - this era"
@@ -469,7 +618,8 @@ def main():
         ok, tot = (int(x) for x in pl.split("/"))
         if tot and ok / tot < 0.9:
             void.append(f"plumbing {pl} at rung {N} (< 90%): the read path itself is sick")
-    if failed_total > 0.05 * sum(N * a.repeats for N in rungs):
+    if failed_total > 0.05 * (sum(N * a.repeats for N in rungs)
+                              + ledger.get("C", {}).get("asks", 0)):
         void.append(f"{failed_total} transport-dead asks (> 5%): the box was not healthy")
     head = (f"\nC4 verdict @{now()} tag={a.tag} rungs={rungs} repeats={a.repeats} "
             f"temp={a.temp} channel=off/memory-muted geom_delta={ddelta:+d}"
@@ -477,6 +627,7 @@ def main():
     tail = (head + "\n".join(lines) + f"\n  {ceiling}"
             + (f"\n  LEAK BASELINE = rung-100 rate {p100}" if p100 is not None
                else "\n  LEAK BASELINE: rung 100 not run - leak gates idle this run")
+            + "".join("\n" + s for s in pcl)
             + (f"\n  VOID: {'; '.join(void)}" if void else "\n  all guards green") + "\n")
     print(tail)
     (BENCH / f"c4_verdict_{a.tag}.txt").write_text(
