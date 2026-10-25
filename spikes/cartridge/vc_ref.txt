@@ -1,0 +1,9 @@
+virtual-context (virtual-context/virtual-context, fetched 2026-10-25) is an HTTP proxy that
+gives an LLM a virtual context window, built like virtual memory: the conversation is the
+backing store, every turn kept verbatim in SQLite or PostgreSQL with sender, channel and time;
+everything else is a cache layer above it. Older turns become per-topic segment summaries and
+structured facts; each request pages in recent turns, relevant topics and facts, and an index of
+cold topics the model can open with tools like vc_expand_topic and vc_find_quote. When a cached
+fact and the conversation disagree, the conversation wins. Superseded facts are kept and marked,
+never deleted. On 100 LongMemEval questions with Claude Sonnet 4.5 as reader it scored 95/100 at
+52,347 tokens per question against 33/100 at 117,582 for full raw history. License AGPL-3.0.

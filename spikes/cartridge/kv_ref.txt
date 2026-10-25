@@ -1,0 +1,9 @@
+Strata KV streaming (engine 0.1.5, docs/DETAILS.md, read 2026-10-25) keeps the context's KV
+cache in RAM and puts only the part attention reads into VRAM (--kv-resident N), so more experts
+fit on the GPU: Q2_0 at 262K went from 50.9 to 62.6 tokens/s, about +6% at 128K, at a cost of
+roughly 13.7 KB of RAM per context token. The docs state plainly that the attention reads exactly
+the same values - only where the KV lives changes - so streaming is a speed lever, not an
+accuracy lever. 8-bit KV is the default; q4_0 halves KV memory with a Hadamard rotation before
+4-bit rounding but costs 8-12% perplexity on long documents. The session-file config fingerprint
+covers --kv, STRATA_KV_ROT, --kv-resident, --max-context, the MTP window and the rope
+configuration, so changing any of those invalidates saved session states until they are reminted.
