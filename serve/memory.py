@@ -644,6 +644,29 @@ _PG_DDL: tuple[str, ...] = (
                             # NULL = predates the column; the matrix filter treats NULL as
                             # "belongs to the store's legacy embedder" only insofar as its
                             # WIDTH still matches - see _vec_matrix.
+    # The cart ledger (S3 minting pipeline, 2026-10-25; the Grok interface + the episode ruling,
+    # C4_PRE_REG 2026-10-24). Every cartridge the store knows about; the standing persona cart is
+    # ROW ZERO, registered at boot. kind: standing | rows | episode - sources holds what the cart
+    # was minted FROM: {row_ids:[], shelf_prefixes:[], text,title,uri} (the episode text is the
+    # web-page cart: one experience, one cart, and the index line is what replaces the re-fetch).
+    # State law: fresh -> stale when a write touches a source row/prefix - the reason lands in
+    # stale_reason, annotated, never erased - and a background window (never the request path)
+    # re-mints. A re-mint keeps created_at, moves minted_at, records the superseded .bin in
+    # previous_file and counts the act: supersession with the scar visible, not a silent edit.
+    # retired = shelved by name; the .bin itself obeys the vault's own retention law.
+    """create table if not exists carts(
+         name text primary key,
+         file text not null,
+         kind text not null default 'rows',
+         sources jsonb not null default '{}'::jsonb,
+         tokens bigint not null default 0,
+         bytes bigint not null default 0,
+         created_at timestamptz not null,
+         minted_at timestamptz not null,
+         state text not null default 'fresh',
+         stale_reason text not null default '',
+         previous_file text not null default '',
+         remint_count integer not null default 0)""",
 )
 
 @contextlib.contextmanager
@@ -663,6 +686,24 @@ def _rollback_on_error(conn):
 
 
 StoreError = psycopg.Error      # the store's failure class, named for serve/server.py's HTTP clauses
+
+# The out-of-process staleness scan, one SQL as a module constant so the store's own
+# cart_scan_stale and tools/m8_remint.py (the background window) read the SAME law
+# (2026-10-25, S3): a fresh cart whose source rows moved after it was minted goes stale.
+CART_SCAN_SQL = """update carts set state = 'stale', stale_reason = 'out-of-process write'
+     where state = 'fresh' and (
+           exists(select 1
+                    from jsonb_array_elements_text(
+                             coalesce(sources -> 'row_ids', '[]'::jsonb)) r(id)
+                    join memories m on m.id = r.id::bigint
+                   where m.updated_at > carts.minted_at)
+        or exists(select 1
+                    from jsonb_array_elements_text(
+                             coalesce(sources -> 'shelf_prefixes',
+                                      '[]'::jsonb)) p(pref)
+                    join memories m on m.class like rtrim(p.pref, '*') || '%'
+                   where m.updated_at > carts.minted_at))
+    returning name"""
 
 
 def _heals(fn):
@@ -1157,8 +1198,8 @@ class MemoryService:
                         " on conflict (id) do nothing",
                         (hit[0], vec.tobytes(), getattr(self.embedder, "model_name", "unknown")))
                 self.conn.commit()
-                self._touched()
-                self._vdirty = True
+                self._touched()      # stamp-only exit: the text did not move, so no cart goes
+                self._vdirty = True  # stale here - a dedupe must not force a re-mint (S3 law)
                 self._dedupe_amend()        # the text is unchanged: only the stamp moves
                 return {"id": hit[0], "deduped": True}
             # PHASE 4 write-time near-dupe guard (embedder ON only; embedder OFF never gets here,
@@ -1180,8 +1221,8 @@ class MemoryService:
                         " on conflict (id) do nothing",
                         (verdict[1], vec.tobytes(), getattr(self.embedder, "model_name", "unknown")))
                     self.conn.commit()
-                    self._touched()
-                    self._vdirty = True
+                    self._touched()         # stamp-only exit: the carrier's text stands, so no
+                    self._vdirty = True     # cart stale-mark (same S3 law as the exact dedup)
                     self._dedupe_amend()    # the carrier's text is unchanged: only the stamp moves
                     return {"id": verdict[1], "deduped": "semantic"}
                 if verdict and verdict[0] == "supersede":
@@ -1246,7 +1287,8 @@ class MemoryService:
                         evicted = [g[0] for g in gone]
             self._bump()
             self.conn.commit()
-            self._touched()
+            self._touched((new_id,) + ((supersede,) if supersede else ()) + tuple(evicted),
+                          "remember")
             self._vdirty = True
             # the token table folds this write in instead of rebuilding (see _dedupe_amend): a
             # superseded row leaves the active set, an eviction retires one, and the new row joins it.
@@ -1362,7 +1404,7 @@ class MemoryService:
             self.conn.execute("delete from embeddings where id = %s", (int(memory_id),))
             self._bump()
             self.conn.commit()
-            self._touched()
+            self._touched((int(memory_id),), "forget")
             self._vdirty = True
             return gone.rowcount > 0
 
@@ -1391,7 +1433,7 @@ class MemoryService:
             self.conn.execute("delete from embeddings where id = %s", (int(memory_id),))
             self._bump()
             self.conn.commit()
-            self._touched()
+            self._touched((int(memory_id),), "purge")
             self._vdirty = True
             return True
 
@@ -1416,7 +1458,7 @@ class MemoryService:
             self.conn.execute("delete from embeddings where id = %s", (int(memory_id),))
             self._bump()
             self.conn.commit()
-            self._touched()
+            self._touched((int(memory_id),), "invalidate")
             self._vdirty = True       # same law as classify: the matrix holds ONLY active rows, so
             # an invalidate that does not dirty it leaves the cosine arm offering a superseded fact
             # (its fetch by id does not re-check invalid_at). correct() inherits this fix.
@@ -1461,7 +1503,7 @@ class MemoryService:
                                   (klass, int(memory_id)))
             self._bump()
             self.conn.commit()
-            self._touched()
+            self._touched((int(memory_id),), "classify")
             self._vdirty = True       # the matrix cache carries a CLASS column for the cosine arm's
             # shelf_mask: a classify that does not dirty it leaves the hybrid arm answering for the
             # OLD shelf until some unrelated write rebuilds - the backfill's 122 op=classify calls
@@ -1707,6 +1749,97 @@ class MemoryService:
         if not lines:
             return "", 0, left
         return header + "\n" + "\n".join(lines), len(lines), left
+
+    @_heals
+    def cart_index(self) -> str:
+        """The one-line cartridge index behind the standing text (S3's attach surface, the Grok
+        interface): every FRESH cart named in one sentence, stale and retired ones quiet (an
+        honest silence, not an empty boast). Row zero is excluded - it IS the prefix the line
+        rides behind. Zero fresh carts: '' - no bytes ride (the anti-vacuity law)."""
+        with self.lock:
+            rows = self.conn.execute(
+                "select name, kind, tokens, sources from carts where state = 'fresh' and kind"
+                " <> 'standing' order by name").fetchall()
+            self.conn.commit()
+        if not rows:
+            return ""
+        bits = []
+        for nm, kind, tok, src in rows:
+            src = src or {}
+            what = (str(src.get("title") or src.get("uri") or "").strip()
+                    or ", ".join(str(p) for p in (src.get("shelf_prefixes") or []))
+                    or (f"{len(src.get('row_ids') or [])} rows" if src.get("row_ids") else "?"))
+            bits.append(f"{nm} ({kind}: {what}, {tok:,} tok)")
+        return ("Learned cartridges standing on this prefix (loaded whole, never restated,"
+                " never searched for): " + "; ".join(bits) + ".")
+
+    @_heals
+    @_heals
+    def cart_text(self, row_ids=None, shelf_prefixes=None, max_chars: int = 4000):
+        """The mint renderer for ROW sources (S3): the cartridge_text law - confidence descending,
+        id ascending, deterministic, bounded, never by hits (the .bin is valid only for its exact
+        bytes) - with an EXPLICIT selection: named ids, shelf prefixes, or both (one numbered
+        list). Returns (text, n_facts, n_left_out, gone_ids). A named row that left the active set
+        FOLLOWS its supersession chain to the survivor - knowledge that changed its number is
+        still the cart's knowledge, and a re-mint must not die on the move (the never-erase law).
+        GONE ids are ones with no survivor at all: never existed, or retired with no successor.
+        Prefix sources see active rows only: a shelf's dead rows are nobody's cart."""
+        ids = sorted({int(i) for i in (row_ids or [])})
+        ok = [c for c in (class_name(p, quiet=True) for p in (shelf_prefixes or [])) if c]
+        if shelf_prefixes and not ok:
+            raise ValueError(f"shelf_prefixes: no valid class in {list(shelf_prefixes)!r}")
+        if not ids and not ok:
+            return "", 0, 0, []
+        conds, args = [], []
+        if ids:
+            conds.append("id = any(%s)")
+            args.append(ids)
+        if ok:
+            frag, a2 = shelf_sql("class", ok)
+            conds.append(f"({frag})")
+            args += a2
+        with self.lock:
+            rows = self.conn.execute(
+                "select id, class, text, confidence from memories where invalid_at is null and ("
+                + " or ".join(conds) + ") order by confidence desc, id asc", args).fetchall()
+            by_id = {r[0]: r for r in rows}
+            gone = []
+            for mid in ids:                       # chains walk one hop at a time; carts name < 200 rows
+                if mid in by_id:
+                    continue
+                cur, hops, found = mid, 0, None
+                while cur is not None and hops < 10:
+                    rec = self.conn.execute("select superseded_by from memories where id = %s",
+                                            (cur,)).fetchone()
+                    if rec is None:
+                        break                                   # no such row at all
+                    cur, hops = rec[0], hops + 1                # None = retired with no successor
+                    if cur is None or cur in by_id:
+                        found = cur
+                        break
+                    act = self.conn.execute(
+                        "select id, class, text, confidence from memories"
+                        " where id = %s and invalid_at is null", (cur,)).fetchone()
+                    if act:
+                        by_id[act[0]] = act
+                        found = act[0]
+                        break
+                if found is None:
+                    gone.append(mid)
+            self.conn.commit()
+        rows = sorted(by_id.values(), key=lambda r: (-float(r[3] or 0.0), r[0]))   # the law, re-applied
+        header = "CART MEMORY - learned whole and held in full; never restate it:"
+        lines, used, left = [], len(header) + 1, 0
+        for i, (_rid, cls, txt, _conf) in enumerate(rows, 1):
+            ln = f"{i}. [{cls}] {txt}"
+            if used + len(ln) + 1 > max_chars:
+                left += 1
+                continue
+            lines.append(ln)
+            used += len(ln) + 1
+        if not lines:
+            return "", 0, left, gone
+        return header + "\n" + "\n".join(lines), len(lines), left, gone
 
     @_heals
     def _bm25_stats(self) -> tuple[float, float]:
@@ -2681,11 +2814,152 @@ class MemoryService:
             raise ValueError(f"memory key-file {self.key_path} is {len(key)} bytes, expected 32")
         return key
 
-    def _touched(self) -> None:
+    # ---- carts: the S3 minting ledger (2026-10-25) -------------------------------------
+    # The store is the control plane: it records WHICH cartridges exist and what each was
+    # minted from, and it answers the one question the write path must not get wrong - "did
+    # this write touch a row some fresh cart was minted from?". The engine-side work (seeding
+    # the conversation, saving the .bin) lives in server.py's CartMinter, which calls these.
+
+    def _cart_sources_ids(self, sources) -> list:
+        """The row ids a cart names, from its sources jsonb (row_ids plus every row under its
+        shelf_prefixes). Prefixes are expanded at read so a cart records a shelf, not a frozen
+        id list - a fact shelved into that prefix later is the cart's business, and staleness
+        (not a silent re-mint-on-read) is what tells it."""
+        s = sources or {}
+        ids = set(int(i) for i in (s.get("row_ids") or []))
+        prefixes = s.get("shelf_prefixes") or []
+        if prefixes:
+            like = [p.rstrip("*") + "%" for p in prefixes]
+            rows = self.conn.execute(
+                "select id from memories where invalid_at is null and class like any(%s)",
+                (like,)).fetchall()
+            ids.update(r[0] for r in rows)
+        return sorted(ids)
+
+    @_heals
+    def cart_register(self, name: str, file: str, kind: str, sources: dict,
+                      tokens: int, nbytes: int) -> dict:
+        """Row zero or a fresh mint: insert the cart, or re-mint it with the scar visible. On a
+        re-mint created_at stays, minted_at moves, the superseded .bin goes to previous_file and
+        remint_count ticks - supersession, never a silent overwrite (the ledger law)."""
+        name = str(name).strip()
+        if not name:
+            raise ValueError("cart name required")
+        if kind not in ("standing", "rows", "episode"):
+            raise ValueError(f"kind: one of standing, rows, episode (got {kind!r})")
+        now = self._dt(time.time())
+        with self.lock:
+            cur = self.conn.execute(
+                """insert into carts(name, file, kind, sources, tokens, bytes,
+                                     created_at, minted_at, state)
+                   values(%s,%s,%s,%s,%s,%s,%s,%s,'fresh')
+                   on conflict(name) do update set
+                     file = excluded.file, kind = excluded.kind, sources = excluded.sources,
+                     tokens = excluded.tokens, bytes = excluded.bytes,
+                     minted_at = excluded.minted_at, state = 'fresh', stale_reason = '',
+                     previous_file = case when carts.file is distinct from excluded.file
+                                          then carts.file else carts.previous_file end,
+                     remint_count = carts.remint_count
+                       + (carts.file is distinct from excluded.file)::int
+                   returning (xmax = 0) as is_new, previous_file""",
+                (name, file, kind, Jsonb(dict(sources or {})), int(tokens), int(nbytes),
+                 now, now)).fetchone()
+            self._bump()        # a cart standing or re-minted IS a store event: the version the
+            self.conn.commit()  # block headers and the page carry moves with it
+            self._touched()
+        return {"name": name, "file": file, "kind": kind,
+                "created": bool(cur[0]), "previous_file": cur[1] or ""}
+
+    @_heals
+    def carts_get(self, name: str = "") -> list:
+        """The ledger rows, newest-minted first; a name narrows to that one cart. Sources come
+        back as a dict (psycopg parses the jsonb); timestamps leave as epoch floats, the API
+        contract's own tongue (_ep law, ADR-002: storage is timestamptz, the boundary converts)."""
+        with self.lock:
+            rows = self.conn.execute(
+                "select name, file, kind, sources, tokens, bytes, created_at, minted_at,"
+                " state, stale_reason, previous_file, remint_count from carts"
+                + (" where name = %s" if name else "") + " order by minted_at desc",
+                (name,) if name else ()).fetchall()
+        cols = ("name", "file", "kind", "sources", "tokens", "bytes", "state", "stale_reason",
+                "previous_file", "remint_count")
+        out = []
+        for r in rows:
+            d = dict(zip(cols[:6], r[:6]))
+            d.update(created=self._ep(r[6]), minted=self._ep(r[7]))
+            d.update(zip(cols[6:], r[8:]))
+            out.append(d)
+        return out
+
+    @_heals
+    def cart_retire(self, name: str, reason: str) -> bool:
+        """Shelving: annotated, never deleted (the ledger law one level up from purges) - the
+        row stays as the record of what this box once minted; the .bin obeys the vault's own
+        retention law. Retiring the standing row is refused upstream: row zero does not shelve."""
+        with self.lock:
+            cur = self.conn.execute(
+                "update carts set state = 'retired', stale_reason = %s"
+                " where name = %s and state <> 'retired'", (str(reason or "")[:200], name))
+            if cur.rowcount:
+                self._bump()
+            self.conn.commit()
+        return cur.rowcount > 0
+
+    @_heals
+    def cart_scan_stale(self) -> list:
+        """Backstop for OUT-OF-PROCESS writers (importers' raw SQL): a fresh cart whose source
+        rows moved after it was minted goes stale now. A dedupe stamp can occasionally flag a
+        cart whose text never changed - that re-mint renders the same content, lands on the
+        same content-hash file, and leaves no scar: the cost is one seed pass, never a lie in
+        the ledger. Idempotent; tools/m8_remint.py (the re-mint window) runs this before
+        deciding what to re-mint - the SQL is the module's CART_SCAN_SQL so both callers
+        read ONE law."""
+        with self.lock:
+            rows = self.conn.execute(CART_SCAN_SQL).fetchall()
+            if rows:
+                self._bump()
+            self.conn.commit()
+        return sorted(r[0] for r in rows)
+
+    @_heals
+    def cart_mark_stale(self, ids, reason: str) -> list:
+        """The staleness hook (called from _touched with the ids a write moved): every FRESH cart
+        whose sources name any of these ids - directly, or through a shelf prefix - goes stale,
+        annotated with the reason, never deleted. Returns the names it marked (usually none)."""
+        ids = [int(i) for i in (ids or [])]
+        if not ids:
+            return []
+        with self.lock:
+            carts = self.conn.execute(
+                "select name, sources from carts where state = 'fresh'").fetchall()
+            marked = []
+            for name, sources in carts:
+                moved = sorted(set(self._cart_sources_ids(sources)) & set(ids))
+                if moved:
+                    why = f"{reason} moved row {'+'.join(str(i) for i in moved[:6])}"
+                    if len(moved) > 6:
+                        why += "+"
+                    self.conn.execute(
+                        "update carts set state = 'stale', stale_reason = %s where name = %s",
+                        (why[:200], name))
+                    marked.append(name)
+            if marked:
+                self._bump()
+            self.conn.commit()
+        return marked
+
+    def _touched(self, ids=None, reason: str = "write") -> None:
         """One more committed write. The SQLite era sealed a snapshot every 50th write so a power
         loss lost at most 49; the cluster's own WAL and checkpoints own durability now, so this
-        is the counter only - kept because the write paths and stats read it."""
+        is the counter plus the staleness hook - kept because the write paths and stats read it.
+        ids (when a caller passes them) mark any fresh cart minted from those rows stale; the
+        re-mint itself waits for a background window, never the request path (S3 staleness law)."""
         self._writes += 1
+        if ids:
+            try:
+                self.cart_mark_stale(ids, reason)
+            except Exception:    # noqa: BLE001 - staleness is best-effort; the scan re-checks
+                pass
 
 
 # ---- server glue ---------------------------------------------------------------

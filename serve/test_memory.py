@@ -16,7 +16,7 @@ from pathlib import Path
 
 from serve.frontend import ChatTemplate
 from serve.memory import MemoryService as _BaseMemoryService, request_state, time_bound, tool_result
-from serve.server import ByteTokenizer, Cartridges, MockEngine, Service, serve
+from serve.server import ByteTokenizer, Cartridges, CartMinter, MockEngine, Service, serve
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1280,6 +1280,100 @@ class Cartridge(unittest.TestCase):
         c = self.svc.cartridges
         self.assertTrue(c.facts, "default facts:true - other boxes keep today's bytes")
         self.assertEqual(c.files_cfg, [], "no files configured: nothing extra stands")
+
+
+class Carts(unittest.TestCase):
+    """The S3 cart ledger (serve/memory.py carts table): register/remint scar law, sources->ids
+    expansion, and the write-path staleness hook. Store only - the mint engine work is tested
+    over HTTP in the Mint class below."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mem = MemoryService(self.tmp.name)
+
+    def tearDown(self):
+        self.mem.close()
+        self.tmp.cleanup()
+
+    def test_register_and_row_zero_idempotent(self):
+        r = self.mem.cart_register("standing", "MEM-CRG-aa.bin", "standing",
+                                   {"files": ["persona/soul.md"]}, 100, 200)
+        self.assertTrue(r["created"])
+        row = self.mem.carts_get("standing")[0]
+        self.assertEqual(row["state"], "fresh")
+        self.assertEqual(row["remint_count"], 0)
+        r2 = self.mem.cart_register("standing", "MEM-CRG-aa.bin", "standing",
+                                    {"files": ["persona/soul.md"]}, 100, 200)
+        self.assertFalse(r2["created"], "row zero re-registers, never re-inserts")
+        self.assertEqual(self.mem.carts_get("standing")[0]["remint_count"], 0,
+                         "same file = no scar counted")
+
+    def test_remint_leaves_a_scar(self):
+        self.mem.cart_register("page1", "MEM-CART-1.bin", "episode", {"text": "v1"}, 10, 20)
+        r = self.mem.cart_register("page1", "MEM-CART-2.bin", "episode", {"text": "v2"}, 12, 24)
+        self.assertFalse(r["created"])
+        row = self.mem.carts_get("page1")[0]
+        self.assertEqual(row["remint_count"], 1)
+        self.assertEqual(row["previous_file"], "MEM-CART-1.bin")
+        self.assertEqual(row["state"], "fresh")
+        self.assertGreaterEqual(row["minted"], row["created"])
+
+    def test_bad_kind_and_empty_name_fail_closed(self):
+        self.assertRaises(ValueError, self.mem.cart_register, "x", "f.bin", "cartridge", {}, 1, 1)
+        self.assertRaises(ValueError, self.mem.cart_register, "", "f.bin", "rows", {}, 1, 1)
+
+    def test_staleness_hook_marks_fresh_carts(self):
+        fact = self.mem.remember("the mint pipeline is task three", scope="ops", klass="STR/GEN")
+        self.mem.cart_register("gen-cart", "MEM-CART-g.bin", "rows",
+                               {"row_ids": [fact["id"]]}, 8, 16)
+        self.assertEqual(self.mem.carts_get("gen-cart")[0]["state"], "fresh")
+        self.mem.invalidate(fact["id"])                    # a write moves that row's content
+        row = self.mem.carts_get("gen-cart")[0]
+        self.assertEqual(row["state"], "stale")
+        self.assertIn(str(fact["id"]), row["stale_reason"])
+
+    def test_dedupe_stamp_does_not_stale_a_cart(self):
+        fact = self.mem.remember("the re-mint runs in a background window", scope="ops",
+                                 klass="STR/GEN")
+        self.mem.cart_register("stamp-cart", "MEM-CART-s.bin", "rows",
+                               {"row_ids": [fact["id"]]}, 8, 16)
+        again = self.mem.remember("the re-mint runs in a background window", scope="ops",
+                                  klass="STR/GEN")              # exact-text dedup: stamp only
+        self.assertTrue(again.get("deduped"))
+        self.assertEqual(self.mem.carts_get("stamp-cart")[0]["state"], "fresh",
+                         "a stamp-only dedup must not force a re-mint")
+
+    def test_shelf_prefix_source_follows_the_shelf(self):
+        a = self.mem.remember("generate.cpp owns the decode loop", scope="ops", klass="STR/GEN")
+        self.mem.cart_register("prefix-cart", "MEM-CART-p.bin", "rows",
+                               {"shelf_prefixes": ["STR/GEN"]}, 8, 16)
+        self.assertIn(a["id"], self.mem._cart_sources_ids({"shelf_prefixes": ["STR/GEN"]}))
+        b = self.mem.remember("generate.cpp also submits the overlap signal", scope="ops",
+                              klass="STR/GEN")
+        self.mem.classify(b["id"], "STR/GEN")         # shelving a row INTO the watched prefix
+        self.assertEqual(self.mem.carts_get("prefix-cart")[0]["state"], "stale",
+                         "a new row under the prefix is the cart's business")
+
+    def test_retire_is_annotated_not_deleted(self):
+        self.mem.cart_register("old", "MEM-CART-o.bin", "episode", {"text": "x"}, 4, 8)
+        self.assertTrue(self.mem.cart_retire("old", "replaced by a richer cart"))
+        row = self.mem.carts_get("old")[0]
+        self.assertEqual(row["state"], "retired")
+        self.assertEqual(row["stale_reason"], "replaced by a richer cart")
+        self.assertEqual(self.mem.carts_get("nope"), [], "unknown name is empty, not an error")
+
+    def test_scan_backstop_finds_out_of_process_writes(self):
+        fact = self.mem.remember("importers write rows with raw SQL", scope="ops", klass="STR/GEN")
+        self.mem.cart_register("scan-cart", "MEM-CART-c.bin", "rows",
+                               {"row_ids": [fact["id"]]}, 8, 16)
+        # simulate an out-of-process write that bypasses the hook: move updated_at past minted_at
+        with self.mem.lock:
+            self.mem.conn.execute("update memories set updated_at = now() + interval '1 hour'"
+                                  " where id = %s", (fact["id"],))
+            self.mem.conn.commit()
+        self.assertEqual(self.mem.cart_scan_stale(), ["scan-cart"])
+        self.assertEqual(self.mem.carts_get("scan-cart")[0]["stale_reason"],
+                         "out-of-process write")
 
 
 class MemoryOff(unittest.TestCase):
@@ -2848,6 +2942,184 @@ class EmbedderSwap2026_10_24(unittest.TestCase):
         self.mem.remember("zippity zarp blorp", scope="swap", guard=False)
         e = self.mem.stats()["embedder"]
         self.assertEqual((e["model"], e["dims"], e["foreign"]), ("stub", 4, 0))
+
+
+class Mint(unittest.TestCase):
+    """S3 the mint pipeline over HTTP (2026-10-25): op=mint renders sources, seeds a throwaway
+    conversation, saves MEM-CART-*.bin and registers the ledger row. Covers the 400/409/503 arms,
+    row-zero, the write-path staleness over the wire, the re-mint scar, and the slot hand-back."""
+
+    SCRIPT = "OK"                                             # every seed and ask answers OK
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.slots = tempfile.TemporaryDirectory()
+        self.tok = ByteTokenizer()
+        self.engine = MockEngine(self.tok, self.SCRIPT, max_context=131072)
+        self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.svc.memory = MemoryService(self.tmp.name)
+        self.svc.slot_save_path = self.slots.name
+        self.svc.cartridges = Cartridges(self.svc, {"enabled": True, "class_prefixes": ["USR"],
+                                                    "max_chars": 400})
+        self.svc.carts = CartMinter(self.svc, {"mint_max_facts": 200})
+        self.calls = {"save": 0, "restore": 0}
+        orig = self.engine.session_file
+
+        def counted(action, path):
+            self.calls[action] = self.calls.get(action, 0) + 1
+            return orig(action, path)
+        self.engine.session_file = counted
+        self.httpd = serve(self.svc, port=0)
+        self.port = self.httpd.server_address[1]
+        st, body = self.http("POST", "/memory", {"op": "remember", "scope": "user", "class": "USR",
+                                                 "text": "The user's launch ritual is coffee before code"})
+        self.assertEqual(st, 200, body)      # a standing cart that can stand: row zero needs bytes
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.svc.memory.close()
+        self.tmp.cleanup()
+        self.slots.cleanup()
+
+    def http(self, verb, path, body=None, headers=()):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        hdrs = {"Content-Type": "application/json"}
+        hdrs.update({k: v for k, v in headers})
+        conn.request(verb, path, json.dumps(body) if body is not None else None, hdrs)
+        r = conn.getresponse()
+        data = r.read().decode()
+        conn.close()
+        try:
+            return r.status, json.loads(data)
+        except ValueError:
+            return r.status, data
+
+    def prompt_text(self):
+        return bytes(t for t in self.engine.last_prompt if t < 256).decode("utf-8", "replace")
+
+    def ask(self, text, headers=()):
+        return self.http("POST", "/v1/chat/completions",
+                         {"model": "m", "max_tokens": 64, "reasoning_effort": "off",
+                          "messages": [{"role": "user", "content": text}]}, headers)
+
+    def vault(self):
+        return {f for f in os.listdir(self.slots.name) if f.startswith("MEM-CART-")}
+
+    # ---- op=mint: episode text -----------------------------------------------------------
+
+    def test_mint_episode_saves_file_and_ledger_row(self):
+        st, body = self.http("POST", "/memory", {"op": "mint", "name": "page1",
+                                                 "sources": {"text": "the page said the graft is S4"}})
+        self.assertEqual(st, 200, body)
+        cart = body["cart"]
+        self.assertTrue(cart["created"])
+        self.assertEqual(cart["kind"], "episode")
+        self.assertTrue(cart["file"].startswith("MEM-CART-") and cart["file"].endswith(".bin"))
+        self.assertIn(cart["file"], self.vault(), "the .bin actually landed in the vault")
+        # the slot was handed back: one save (the mint) plus one restore (the standing cart back)
+        self.assertEqual(self.calls["save"], 1)
+        self.assertEqual(self.calls["restore"], 0)     # no standing cart applied yet (never seeded)
+
+    def test_mint_names_the_file_by_content_hash(self):
+        st, a = self.http("POST", "/memory", {"op": "mint", "name": "one",
+                                              "sources": {"text": "identical bytes"}})
+        st, b = self.http("POST", "/memory", {"op": "mint", "name": "two",
+                                              "sources": {"text": "identical bytes"}})
+        self.assertEqual(a["cart"]["file"], b["cart"]["file"],
+                         "same text = same file (the two names share the saved state)")
+
+    def test_mint_400_on_unknown_row_and_bad_kind(self):
+        st, body = self.http("POST", "/memory", {"op": "mint", "name": "ghost",
+                                                 "sources": {"row_ids": [999999]}})
+        self.assertEqual(st, 400, body)
+        self.assertIn("no live row", body["error"]["message"])
+        st, body = self.http("POST", "/memory", {"op": "mint", "name": "empty", "sources": {}})
+        self.assertEqual(st, 400, body)
+
+    def test_mint_409_on_existing_name_and_400_over_fact_cap(self):
+        self.svc.memory.remember("f1 for the cart", scope="ops", klass="STR/GEN")
+        st, _ = self.http("POST", "/memory", {"op": "mint", "name": "gen",
+                                              "sources": {"shelf_prefixes": ["STR/GEN"]}})
+        self.assertEqual(st, 200)
+        st, body = self.http("POST", "/memory", {"op": "mint", "name": "gen",
+                                                 "sources": {"text": "again"}})
+        self.assertEqual(st, 409, body)                 # CartConflict, not ValueError
+        self.assertEqual(body["error"]["type"], "conflict")
+        st, body = self.http("POST", "/memory", {"op": "mint", "name": "gen2", "force": True,
+                                                 "sources": {"text": "forced re-mint"}})
+        self.assertEqual(st, 200, body)
+
+    def test_mint_over_fact_cap_is_400(self):
+        for t in ("alpha fact about qux", "beta fact about qux", "gamma fact about qux"):
+            self.svc.memory.remember(t, scope="ops", klass="QUX")
+        self.svc.carts.max_facts = 2
+        st, body = self.http("POST", "/memory", {"op": "mint", "name": "big",
+                                                 "sources": {"shelf_prefixes": ["QUX"]}})
+        self.assertEqual(st, 400, body)
+        self.assertIn("mint_max_facts", body["error"]["message"])
+
+    # ---- row zero + staleness over the wire ---------------------------------------------
+
+    def test_row_zero_stands_when_the_cart_does(self):
+        st, _ = self.ask("first question")                          # triggers cartridge seed
+        self.assertEqual(st, 200)
+        rows = {c["name"]: c for c in self.svc.memory.carts_get()}
+        self.assertIn("standing", rows, "the standing cart registered itself as row zero")
+        self.assertEqual(rows["standing"]["kind"], "standing")
+        self.assertEqual(rows["standing"]["file"], self.svc.cartridges.applied)
+
+    def test_write_then_mint_from_moved_rows_is_stale_on_remint(self):
+        fact = self.svc.memory.remember("the graft is the research bet", scope="ops", klass="STR/GR")
+        self.http("POST", "/memory", {"op": "mint", "name": "graft",
+                                      "sources": {"row_ids": [fact["id"]]}})
+        self.assertEqual(self.svc.memory.carts_get("graft")[0]["state"], "fresh")
+        self.svc.memory.correct("the graft is Gate 3, the research bet", fact["id"])   # moves it
+        self.assertEqual(self.svc.memory.carts_get("graft")[0]["state"], "stale",
+                         "a correction to a source row marks the cart stale inline")
+        st, body = self.http("POST", "/memory", {"op": "remint", "name": "graft"})
+        self.assertEqual(st, 200, body)
+        self.assertEqual(self.svc.memory.carts_get("graft")[0]["state"], "fresh")
+
+    def test_remint_of_unknown_is_400_and_retire_stands_down(self):
+        st, body = self.http("POST", "/memory", {"op": "remint", "name": "nope"})
+        self.assertEqual(st, 400, body)
+        self.http("POST", "/memory", {"op": "mint", "name": "gone", "sources": {"text": "short lived"}})
+        st, body = self.http("POST", "/memory", {"op": "retire", "name": "gone", "reason": "superseded"})
+        self.assertEqual(st, 200, body)
+        self.assertEqual(body["cart"]["state"], "retired")
+        self.assertEqual(body["cart"]["stale_reason"], "superseded")
+
+    def test_carts_op_lists_ledger_with_file_exists(self):
+        self.http("POST", "/memory", {"op": "mint", "name": "here", "sources": {"text": "a page"}})
+        st, body = self.http("POST", "/memory", {"op": "carts"})
+        self.assertEqual(st, 200, body)
+        row = next(c for c in body["carts"] if c["name"] == "here")
+        self.assertTrue(row["file_exists"], "the page reports the vault truth, not the ledger hope")
+
+    # ---- the attach index rides the standing text ---------------------------------------
+
+    def test_index_line_rides_behind_standing_and_is_quiet_when_empty(self):
+        # no carts yet, but a standing cart: seed and confirm the standing bytes alone.
+        st, _ = self.ask("before any mint")
+        self.assertEqual(st, 200)
+        self.assertNotIn("Learned cartridges", self.prompt_text(), "zero mints = zero index bytes")
+        self.http("POST", "/memory", {"op": "mint", "name": "note1",
+                                      "sources": {"text": "a fetched page worth holding"}})
+        st, _ = self.ask("after a mint")
+        self.assertIn("Learned cartridges", self.prompt_text(), "one cart = one index sentence")
+        self.assertIn("note1", self.prompt_text())
+
+    def test_mint_leaves_the_slot_as_live_traffic_expects(self):
+        st, _ = self.ask("seed the standing cart")                  # cartridge seeds once
+        self.assertEqual(self.calls["save"], 1, "the standing cart saved its file")
+        before = self.calls["restore"]
+        st, _ = self.http("POST", "/memory", {"op": "mint", "name": "mid",
+                                              "sources": {"text": "an episode mid-session"}})
+        self.assertEqual(st, 200, "the mint should stand")
+        self.assertEqual(self.calls["save"], 2, "the mint saved its own .bin")
+        self.assertEqual(self.calls["restore"], before + 1,
+                         "the mint restored the standing cart - live traffic pays a restore, not a re-prefill")
 
 
 if __name__ == "__main__":

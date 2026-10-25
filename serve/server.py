@@ -4366,6 +4366,7 @@ class Service:
         self.slot_retain = 0                          # slot_retain N: a save prunes to the N newest (0 = keep all)
         self.memory = None                            # memory-core fork: serve/memory.py store (off unless configured)
         self.cartridges = None                        # memory-core M3b: tier-2 standing cartridge (off unless configured)
+        self.carts = None                             # memory-core S3: the mint pipeline over the cart ledger (2026-10-25)
         self.soul = ""                                # soul.md slot 0 (opt-in "memory.soul"; "" = today's bytes)
         self.soul_variant = "off"                     # "off" | "A" | "A+B" - what the boot gate composed
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
@@ -4523,6 +4524,15 @@ class Service:
             ap = os.path.join(self.slot_save_path, applied)
             if os.path.exists(ap):
                 guards.add(os.path.realpath(ap))
+        # the S3 law (2026-10-25): a slot_retain pass must not evict the files the CART LEDGER
+        # stands on - a pruned fresh cart is a pointer to a dead file, and the ledger says
+        # "stands". Retired names are ordinary slot files again; the vault owns them.
+        keeper = getattr(self, "carts", None)
+        if keeper is not None:
+            for fn in keeper.files_guard():
+                fp = os.path.join(self.slot_save_path, fn)
+                if os.path.exists(fp):
+                    guards.add(os.path.realpath(fp))
         try:
             entries = [e for e in os.scandir(self.slot_save_path) if e.is_file(follow_symlinks=False)]
         except OSError:
@@ -6735,7 +6745,17 @@ class Cartridges:
         return self.state in ("loaded", "seeded") and self.soul_chars > 0
 
     def prepend(self, messages):
-        return memory_api.prepend_head(messages, self.standing) if self.standing else messages
+        """The standing text rides at the very front, and (S3, 2026-10-25) the minted carts' index
+        line rides just behind it. The index rides AFTER the standing bytes, never inside them:
+        the content hash covers the standing text and prefix reuse counts bytes from token 0 -
+        so the minted set can change between turns without ever rotating the cart file. Zero
+        carts stand: zero bytes ride, and the prompt is byte-identical to the pre-S3 one
+        (the anti-vacuity law - an absent thing is never silently "not enough")."""
+        if not self.standing:
+            return messages
+        text = self.standing
+        idx = self.svc.carts.index_line() if getattr(self.svc, "carts", None) else ""
+        return memory_api.prepend_head(messages, f"{text}\n\n{idx}" if idx else text)
 
     def invalidate(self):
         """Muted conversations replace the slot's state - and since 2026-10-23 the cartridge does
@@ -6794,6 +6814,7 @@ class Cartridges:
                     self.applied_gen = gen              # these bytes now stand in THIS engine process
                     print(f"[strata] cartridge: restored {self.file} ({self.describe()}, "
                           f"{self.bytes:,} B)", flush=True)
+                    self.register_row_zero(r.get("n_restored"))
                     self.gc()
                     return
                 print(f"[strata] cartridge: restore of {self.file} refused ({str(r)[:100]}) - re-seeding",
@@ -6826,6 +6847,7 @@ class Cartridges:
         self.bytes = os.path.getsize(path) if os.path.exists(path) else 0
         print(f"[strata] cartridge: seeded {self.file} ({self.describe()}, {self.bytes:,} B; "
               f"{self.n_left} left for the recall block)", flush=True)
+        self.register_row_zero(r.get("n_saved"))
         self.gc()
 
     def gc(self):
@@ -6837,6 +6859,22 @@ class Cartridges:
                     os.remove(os.path.join(self.svc.slot_save_path, f))
         except OSError:
             pass
+
+    def register_row_zero(self, tokens):
+        """Row zero in the S3 cart ledger (2026-10-25): when the standing cart stands, it records
+        itself in the carts table so the ledger holds EVERY cartridge, standing first. Best-effort
+        and idempotent (same file = no scar): a ledger failure never takes the cartridge down, and
+        a re-seed of unchanged bytes re-registers without counting a re-mint. Carts off, or no
+        store: nothing to do."""
+        if self.svc.carts is None or self.svc.memory is None or not self.file:
+            return
+        src = {"files": list(self.sources)} if not self.facts else {"shelf_prefixes": list(self.prefixes)}
+        try:
+            self.svc.memory.cart_register("standing", self.file, "standing", src,
+                                          int(tokens or 0), int(self.bytes or 0))
+        except Exception as e:                                    # noqa: BLE001 - the ledger is metadata
+            print(f"[strata] carts: row zero not registered ({type(e).__name__}: {str(e)[:80]})",
+                  flush=True)
 
     def reseed(self):
         with self.lock:
@@ -6883,6 +6921,202 @@ class Cartridges:
                 "sources": self.sources, "facts_mode": self.facts,
                 "reseed_in_s": max(0, int(self.min_reseed_s - (time.time() - self.applied_at)))
                 if self.applied_at else 0}
+
+
+class CartConflict(ValueError):
+    """op=mint met a name that already stands, and force was not asked (HTTP 409, per the
+    Grok interface the owner adopted 2026-10-24: 400 bad body, 409 name collision, 503 the
+    box moved under the mint)."""
+
+
+MINT_LEAD = ("Learn the note below and hold it for later reference. Do not answer it, do not "
+             "restate it; acknowledge with OK only.\n\n")
+
+
+class CartMinter:
+    """S3 - the minting pipeline (2026-10-25; the Grok interface + the owner's episode ruling).
+
+    One experience, one cartridge: mint renders a cart's sources (explicit row ids, shelf
+    prefixes, or RAW EPISODE TEXT - a fetched page, a read document) into one deterministic
+    text, seeds it through the engine once, saves the slot state as MEM-CART-<hash>.bin, and
+    registers the ledger row in the store's carts table. Row zero - the standing persona cart -
+    belongs to Cartridges, which registers itself; nothing else mints from files, and the base
+    model plus the PLE n-gram table stay frozen: cartridges are the only thing this system
+    ever mints.
+
+    What S3 does NOT do is attachment: a minted cart stands as file + ledger row + one index
+    line behind the standing text (Cartridges.prepend). The K/V graft into a live conversation
+    is S4 (Gate 3: grafted recall >= 0.9 x text-injection). The C-series numbers this design
+    banks on (C4, tag 215424, 2026-10-24 night): a ~1k-token episode cart recalls 1.000, five
+    composed reach 0.996, one bank degrades past a few hundred facts, and a state file costs
+    fixed 236 MB + marginal 15.6 KB per standing token - so mint_max_facts guards the bank law
+    and the ledger, not the vault, decides what may exist.
+
+    The slot is left exactly as it was found: the seed conversation replaces the standing cart's
+    state (Cartridges law 5), so the mint restores the applied file when it saves - live traffic
+    pays one ~0.1 s restore for the detour, never a re-prefill. Staleness lives in the store: a
+    write that moves a source row marks the cart stale inline (memory._touched), importers are
+    caught by cart_scan_stale, and re-minting runs in the background window (tools/m8_remint.py
+    on the sweep tick), NEVER on the request path (the staleness law)."""
+
+    NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
+
+    def __init__(self, svc: Service, cfg: dict):
+        self.svc = svc
+        self.max_chars = int(cfg.get("mint_max_chars") or 16000)    # one cart's rendered text
+        _mf = cfg.get("mint_max_facts")
+        self.max_facts = 200 if _mf is None else max(1, int(_mf))   # C4's ceiling band, guarded
+
+    # ---- sources -> text ---------------------------------------------------------------
+
+    def render(self, sources, force: bool = False):
+        """Validate the sources and render the cart's text: rows first (the cartridge_text law -
+        deterministic, confidence-first, bounded, never by hits), episode text last. Returns
+        (text, n_rows, gone_ids). A FIRST mint refuses gone rows (a typed id nobody checks is a
+        typo until it costs a cart); a re-mint drops them with an announcement - the fact may
+        have been purged, and the cart catches up with what is left. Everything else a mint
+        refuses raises ValueError (HTTP 400): the ledger holds no half-mints."""
+        if not isinstance(sources, dict):
+            raise ValueError("sources: an object with row_ids, shelf_prefixes, or text")
+        ids = [int(i) for i in (sources.get("row_ids") or [])]
+        prefixes = [str(p) for p in (sources.get("shelf_prefixes") or [])]
+        text = str(sources.get("text") or "").strip()
+        parts, n_rows, gone = [], 0, []
+        if ids or prefixes:
+            rt, n, left, gone = self.svc.memory.cart_text(row_ids=ids or None,
+                                                          shelf_prefixes=prefixes or None,
+                                                          max_chars=self.max_chars)
+            if gone and not force:
+                raise ValueError(f"sources.row_ids: no live row for "
+                                 f"{'+'.join(str(i) for i in gone[:6])}"
+                                 + ("..." if len(gone) > 6 else ""))
+            if n > self.max_facts:
+                raise ValueError(f"sources: {n} facts is over mint_max_facts {self.max_facts} - "
+                                 "C4 banked the ceiling between 100 and 500 facts per cart: many "
+                                 "small carts, not one big bank (the episode ruling)")
+            if left:
+                raise ValueError(f"sources: {left} facts did not fit the {self.max_chars:,}-char "
+                                 f"render budget (mint_max_chars)")
+            parts.append(rt)
+            n_rows = n
+        if text:
+            if len(text) > self.max_chars:
+                raise ValueError(f"sources.text: {len(text):,} chars over mint_max_chars "
+                                 f"{self.max_chars:,}")
+            parts.append(text)
+        if not any(parts):
+            raise ValueError("sources: nothing to mint (every named row is gone, or the text is empty)")
+        return "\n\n".join(parts), n_rows, gone
+
+    # ---- the mint op --------------------------------------------------------------------
+
+    def mint(self, name: str, sources: dict, force: bool = False) -> dict:
+        name = str(name or "").strip().lower()
+        if not self.NAME_RE.fullmatch(name):
+            raise ValueError(f"name: 1-40 chars of a-z 0-9 _ - , got {name!r}")
+        if name == "standing":
+            raise ValueError("standing is row zero - Cartridges owns it, mint a different name")
+        if not isinstance(sources, dict) or not sources:
+            raise ValueError("sources: needs row_ids, shelf_prefixes, or text")
+        existing = self.svc.memory.carts_get(name)
+        if existing and existing[0]["state"] != "retired" and not force:
+            raise CartConflict(f"cart {name} already stands ({existing[0]['state']}) - "
+                               "force to re-mint")
+        text, n_rows, gone = self.render(sources, force=force)
+        kind = "episode" if str(sources.get("text") or "").strip() else "rows"
+        file = "MEM-CART-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:8] + ".bin"
+        svc = self.svc
+        cart = getattr(svc, "cartridges", None)
+        # one slot transfer at a time: the cartridge's lock is what seed/restore already hold,
+        # and the engine refuses an interleaved session file anyway (#465) - a clean wait beats
+        # a retry, same law as Cartridges.ensure.
+        with (cart.lock if cart is not None else svc.fifo):
+            try:
+                svc.load()
+            except Exception as e:                                # noqa: BLE001 - report per op
+                raise memory_api.StoreError(f"engine cannot load for mint: {e}")
+            try:
+                ids, thinking, max_new = svc.prepare(
+                    [{"role": "system", "content": MINT_LEAD + text},
+                     {"role": "user", "content": "Acknowledge with OK only."}], None, {}, 24)
+                for kind_, x in svc.run(ids, thinking, None, max_new or 24, {}, threading.Event()):
+                    if kind_ == "done":
+                        break
+            except Exception as e:                                # noqa: BLE001 - the mint reports
+                raise memory_api.StoreError(f"mint seed failed: {e}")
+            code, r = svc.slot_action("0", "save", file)
+            if code != 200:
+                raise memory_api.StoreError(f"mint save refused {code}: {str(r)[:120]}")
+            tokens, nbytes = int(r.get("n_saved") or 0), int(r.get("n_written") or 0)
+            if cart is not None and cart.applied and cart.state in ("loaded", "seeded"):
+                rc, rr = svc.slot_action("0", "restore", cart.applied)   # hand the slot back
+                if rc != 200:                                       # honest noise, never fatal:
+                    print(f"[strata] carts: restore of {cart.applied} after mint refused "
+                          f"({str(rr)[:100]}) - the next standing event repairs it", flush=True)
+        src = dict(sources)
+        if cart is not None and cart.applied:
+            src["base"] = cart.applied    # composed ALONGSIDE this standing file (provenance for
+                                          # S4's graft; the cart's own rows were seeded from 0 and
+                                          # the graft re-anchors them - the graft law, not here)
+        reg = svc.memory.cart_register(name, file, kind, src, tokens, nbytes)
+        reg.update({"tokens": tokens, "bytes": nbytes, "text_chars": len(text), "facts": n_rows})
+        if gone:
+            reg["dropped_rows"] = gone        # the re-mint law: gone rows drop with an
+        print(f"[strata] carts: {'re-minted' if reg['previous_file'] else 'minted'} {name} "   # announcement,
+              f"({kind}, {len(text):,} chars -> {tokens:,} tok, {nbytes / 1e6:.1f} MB, {file})"
+              + (f", dropped gone rows {'+'.join(str(i) for i in gone[:6])}" if gone else ""),
+              flush=True)
+        return reg
+
+    def remint(self, name: str) -> dict:
+        """Catch an old cart up with its sources: re-render what the ledger recorded, re-seed,
+        replace the file with its scar. force is implied - a stale cart is being caught up, not
+        fought over. Retired carts stay retired: history does not re-mint itself."""
+        row = self.svc.memory.carts_get(str(name or "").strip().lower())
+        if not row:
+            raise ValueError(f"no cart named {name!r}")
+        if row[0]["state"] == "retired":
+            raise ValueError(f"cart {row[0]['name']} is retired - mint a new name to replace it")
+        return self.mint(row[0]["name"], row[0]["sources"], force=True)
+
+    def retire(self, name: str, reason: str) -> dict:
+        name = str(name or "").strip().lower()
+        if name == "standing":
+            raise ValueError("row zero does not shelve (op=cartridge rotates it; op=retire is for mints)")
+        if not self.svc.memory.cart_retire(name, reason):
+            raise ValueError(f"no live cart named {name!r} (retired names stay retired)")
+        return self.svc.memory.carts_get(name)[0]
+
+    # ---- the surfaces that ride every turn ------------------------------------------------
+
+    def index_line(self) -> str:
+        """The one-line cart index behind the standing text. The request path must never die for
+        a pointer: a store failure reads as no carts (the /memory page shows the ledger truth)."""
+        try:
+            return self.svc.memory.cart_index()
+        except Exception:                                        # noqa: BLE001 - metadata, not a gate
+            return ""
+
+    def files_guard(self) -> list:
+        """The vault names the ledger depends on (fresh/stale): slot_retain must not evict them.
+        A retired cart's file is an ordinary file again - the vault's retention owns it."""
+        try:
+            return [r["file"] for r in self.svc.memory.carts_get()
+                    if r["state"] in ("fresh", "stale")]
+        except Exception:                                        # noqa: BLE001 - see index_line
+            return []
+
+    def carts(self, name: str = "") -> list:
+        """The ledger with one honest extra field: whether the .bin the row names ACTUALLY stands
+        in the vault (the surfaces report absences, they do not assume them)."""
+        rows = self.svc.memory.carts_get(name)
+        vault = self.svc.slot_save_path or ""
+        for r in rows:
+            r["file_exists"] = bool(vault) and os.path.exists(os.path.join(vault, r["file"]))
+        return rows
+
+    def view(self):
+        return self.carts()
 
 
 # ------------------------------------------------------------------------------------------------ OpenAI
@@ -7951,6 +8185,9 @@ def make_handler(svc: Service):
                 self._json(503, responses_error_body(f"the memory store failed: {first}", "server_error")
                            if path == "/v1/responses"
                            else {"error": {"type": "server_error", "message": f"the memory store failed: {first}"}})
+            except CartConflict as e:        # S3: mint met a standing name and force was not asked
+                print(f"[strata] 409 cart: {e}", flush=True)     # (before ValueError - it IS one)
+                self._json(409, {"error": {"type": "conflict", "message": str(e)}})
             except ValueError as e:
                 print(f"[strata] 400 invalid request: {e}", flush=True)
                 if path == "/v1/responses":
@@ -8047,6 +8284,8 @@ def make_handler(svc: Service):
             stats = svc.memory.stats()
             if getattr(svc, "cartridges", None) is not None:    # M3b: the cartridge reports beside the store
                 stats["cartridges"] = svc.cartridges.view()
+                if svc.carts is not None:      # the S3 ledger rides the same card (2026-10-25):
+                    stats["carts"] = svc.carts.view()    # every cart, and whether its file stands
             self._json(200, {"stats": stats,
                              "memories": svc.memory.list_memories(scope=memory_api.scope_name(scope, "") or None,
                                                                   limit=limit, include_invalid=inv not in ("", "0"),
@@ -8253,6 +8492,20 @@ def make_handler(svc: Service):
                 if svc.cartridges is None:
                     raise ValueError("cartridges are off (memory.cartridges.enabled in the config)")
                 r = {"cartridge": svc.cartridges.reseed()}
+            elif op in ("mint", "remint", "retire", "carts"):     # S3 (2026-10-25): one experience,
+                if svc.carts is None:                             # one cartridge - and the ledger
+                    raise ValueError("carts are off (memory.cartridges needs slot_save_path "    #  lives in the store; the base
+                                     "and memory.cartridges.minted not off)")                   #  model stays frozen
+                if op == "mint":
+                    r = {"cart": svc.carts.mint(str(req.get("name") or ""),
+                                                req.get("sources") or {}, bool(req.get("force")))}
+                elif op == "remint":
+                    r = {"cart": svc.carts.remint(str(req.get("name") or ""))}
+                elif op == "retire":
+                    r = {"cart": svc.carts.retire(str(req.get("name") or ""),
+                                                  str(req.get("reason") or "retired"))}
+                else:
+                    r = {"carts": svc.carts.carts(str(req.get("name") or ""))}
             elif op == "turn":
                 r = {"id": svc.memory.journal_turn(str(req.get("scope") or "default"), str(req.get("user") or ""),
                                                    str(req.get("assistant") or ""), req.get("model"))}
@@ -8261,9 +8514,11 @@ def make_handler(svc: Service):
             else:
                 # the menu lists every op the route actually answers (review 2026-10-24: purge and
                 # cartridge had both shipped and neither was named here, so an operator who guessed
-                # wrong got a menu that taught them the wrong verb set)
+                # wrong got a menu that taught them the wrong verb set) - S3 added four more verbs
+                # and the menu moves with them, or the menu lies
                 raise ValueError('op: one of "remember", "forget", "purge", "invalidate", "correct", '
-                                 '"classify", "search", "turn", "turns", "cartridge"')
+                                 '"classify", "search", "turn", "turns", "cartridge", '
+                                 '"mint", "remint", "retire", "carts"')
             self._json(200, {"ok": True, **r})
         def _images(self, req):
             """POST /v1/images/generations (serve/images.py): one sd-cli job in the GPU's turn."""
@@ -10205,6 +10460,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 print("[strata] memory: cartridges need slot_save_path - staying off", flush=True)
             else:
                 svc.cartridges = Cartridges(svc, cart_cfg)
+                if cart_cfg.get("minted", True) not in (None, False, 0, "", "off"):   # S3 (2026-10-25)
+                    svc.carts = CartMinter(svc, cart_cfg)          # the mint pipeline stands WITH
                 print(f"[strata] memory cartridge on: shelves {', '.join(svc.cartridges.prefixes) or '(none)'} "
                       f"up to {svc.cartridges.max_chars:,} chars, file dir {svc.slot_save_path} "
                       f"(restored at the first standing request; the engine pins the file to model+engine)",
