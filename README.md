@@ -6,12 +6,16 @@ itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one s
 harness ever has to re-send history. The server remembers, and it remembers the same way no
 matter which app is knocking.
 
-This fork is based on upstream Strata 0.2.3 (engine 0.1.48) — upstream's own headline list: faster
-Strix Halo (+6% to +19% answer speed on their test PC), Intel Arc as a released engine package, the
-DFlash2 drafter (opt-in, Terminal only), an agent chat that copes with a full context, HTTPS through
-the operating system's certificates (#3722), better defaults for CPU workers, VRAM and the
-conversation cache (#3493), a steadier Terminal and app — and adds the memory system and the
-reason-mode steering described below.
+This fork is based on upstream Strata 0.2.4.2 — the Terminal and Control are 0.2.4.2 and 0.1.49.2,
+while the desktop app stays 0.2.3 and every Qwen engine package is still the 0.1.48 file byte for
+byte, so a Qwen install downloads nothing new. Upstream's own headline for this round: DeepSeek
+V4.1-Flash in the Terminal — a mixture of experts needing 239 to 274 GB on disk, run on one 12 GB
+card with 46 to 64 GB of RAM on its own engine package (`strata-dsv41`, beside the Qwen engine,
+never replacing it); upstream measured about 8 to 10 tokens/s and 149 tokens/s on 8K prompts on an
+RTX 3060, off a RAM expert store that sizes itself and reads the rest from the SSD. The Qwen path is unchanged: the 0.2.3 round's faster Strix Halo,
+Intel Arc package, DFlash2 drafter, full-context agent chat, OS certificates (#3722) and the CPU
+worker, VRAM and conversation-cache defaults (#3493) all still stand. This fork adds the memory
+system and the reason-mode steering described below.
 
 ## The two names, and they are not decoration
 
@@ -39,7 +43,7 @@ cd Strata
 
 <img width="1278" height="263" alt="image" src="https://github.com/user-attachments/assets/f6f63206-afdb-439a-a9d4-d58ce0ee054a" />
 
-Version 0.2.3 · engine 0.1.48
+Version 0.2.4.2 (Terminal and Control 0.1.49.2) · Qwen engine 0.1.48 · app 0.2.3
 
 <img width="1879" height="434" alt="image" src="https://github.com/user-attachments/assets/1643c829-dc1b-43f5-9952-0d5c4f67f924" />
 
