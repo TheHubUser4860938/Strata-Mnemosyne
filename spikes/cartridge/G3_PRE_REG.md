@@ -181,4 +181,5 @@ ARM C, the research line (reported, not gated): the state-only read is NOT dead 
 The morning probe's 0/4 was real but pessimistic at n=90. Cartridge CONTENT, not question shape,
 drives the spread - S4.x research territory (seed/read shape, KV_ROT, engine-side anchors).
 
-Signed post-run: Clio 2026-10-25; owner countersign of THIS addendum: ____________________  date: ____________
+Signed post-run: Clio 2026-10-25; owner countersign of THIS addendum: verbal "Go", 2026-10-25
+(stamped by Clio at her next turn, same day).
