@@ -55,7 +55,7 @@ cd Strata
 
 <img width="1278" height="263" alt="image" src="https://github.com/user-attachments/assets/f6f63206-afdb-439a-a9d4-d58ce0ee054a" />
 
-Version 0.2.4.2 (Terminal and Control 0.1.49.2) · Qwen engine 0.1.48 · app 0.2.3
+Version 0.2.5 (app and Terminal 0.2.5, Control 0.1.50) · every engine package rebuilt at 0.1.50
 
 <img width="1879" height="434" alt="image" src="https://github.com/user-attachments/assets/1643c829-dc1b-43f5-9952-0d5c4f67f924" />
 
