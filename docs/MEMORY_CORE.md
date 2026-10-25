@@ -2710,7 +2710,11 @@ so an out-of-process re-shelve is caught by the count arm, not the clock; the 50
 the no-cartridge fallback are read-verified, not run-verified until the live-verify boot.
 Tests: +7 cases (inline and scan absence arms, the scalar guards, stamp churn catching up
 with the save count pinned, the re-mint scar over HTTP, filter casing, the 400 door), one
-test renamed because its name promised a fact-cap assertion it never made.
+test renamed because its name promised a fact-cap assertion it never made. The `Cartridges`
+view of the memory page now PAINTS the ledger the server had been shipping all along (a Carts
+card, a ledger panel with the honest `file GONE` mark and the why line, Retire as the page's
+only pen, row zero's button refusing to shelve) - pinned by a test that the stats carry the
+ledger with `file_exists`.
 
 
 ## Licensing and attribution

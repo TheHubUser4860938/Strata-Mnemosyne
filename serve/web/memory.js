@@ -96,6 +96,49 @@ function renderCart() {
   $("c-indexsub").textContent = "MEM/CAT labels on the map of the shelves";
   $("c-window").textContent = c ? (c.reseed_in_s ? `in ${c.reseed_in_s}s` : "open") : "—";
   $("c-windowsub").textContent = "moved standing text waits the window; Reseed now bypasses it";
+  // The S3 cart ledger (2026-10-25): the server already ships stats.carts - every row, and
+  // whether its .bin actually stands. Painted here, in the page's own dialect; when the
+  // pipeline is OFF the panel says so rather than showing an empty list (anti-vacuity: an
+  // absent thing is never silently "not enough"). Retire is the page's only pen: staleness
+  // and re-mints belong to the hook and the sweep window, not to a button.
+  const carts = STATS.carts;
+  const fresh = (carts || []).filter(k => k.state === "fresh").length;
+  const staleN = (carts || []).filter(k => k.state === "stale").length;
+  $("c-carts").textContent = carts ? String(fresh) : "off";
+  $("c-cartsub").textContent = carts
+    ? `fresh of ${carts.length} on the ledger${staleN ? ` · ${staleN} stale, waiting the window` : ""}`
+    : "the mint pipeline is off (memory.cartridges.minted)";
+  const cl = $("carts");
+  cl.innerHTML = "";
+  if (!carts) cl.innerHTML = `<li class="empty">No ledger is kept while the mint pipeline is off.</li>`;
+  else if (!carts.length) cl.innerHTML = `<li class="empty">The ledger is empty: row zero registers at the first standing request.</li>`;
+  for (const k of carts || []) {
+    const li = document.createElement("li");
+    li.className = "fact";
+    const state = k.state === "stale" ? `<span class="chip stale">stale</span>`
+                : k.state === "retired" ? `<span class="chip">retired</span>`
+                : `<span class="chip cls">fresh</span>`;
+    li.innerHTML = `<div class="body"><div class="txt" style="font-family:ui-monospace,monospace">${esc(k.name)}</div>
+      <div class="meta"><span class="chip${k.kind === "standing" ? " cls" : ""}">${esc(k.kind)}</span>${state}
+        ${(k.tokens || 0).toLocaleString()} tok · ${((k.bytes || 0) / 1048576).toFixed(0)} MB
+        · <span style="font-family:ui-monospace,monospace">${esc(k.file)}</span>${k.file_exists ? "" : " · file GONE"}
+        ${k.remint_count ? ` · ${k.remint_count} re-mint${k.remint_count === 1 ? "" : "s"}` : ""} · ${when(k.minted)}</div>
+      ${k.stale_reason ? `<div class="meta">why: ${esc(k.stale_reason)}</div>` : ""}</div>`;
+    if (k.state !== "retired") {
+      const btn = document.createElement("button");
+      btn.textContent = "Retire";
+      if (k.name === "standing") { btn.disabled = true; btn.title = "row zero does not shelve (op=retire refuses it)"; }
+      btn.onclick = async () => {
+        if (!confirm(`Retire cart "${k.name}"? The ledger keeps the row and the scar; the index line goes quiet.`)) return;
+        btn.disabled = true;
+        try { await api("/memory", { op: "retire", name: k.name, reason: "retired from the page" });
+              const d = await api(`/memory?limit=1`); STATS = d.stats || STATS; renderCart(); }
+        catch (e) { note(e.message, true); btn.disabled = false; }
+      };
+      li.append(btn);
+    }
+    cl.append(li);
+  }
   const ul = $("files");
   ul.innerHTML = "";
   const files = (c && c.files && c.files.length) ? c.files
