@@ -105,7 +105,7 @@ Strata は **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next
 Linux と Mac:
 
 ```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 Windows（PowerShell）:
@@ -182,6 +182,21 @@ Gyro は NVIDIA と AMD のカード（AMD は実験的）、および Linux 上
 - **[OrcaRouter の Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)** は手動で設定します。
 
 すべてのサイズ、ダウンロード、どの構成で何が動くかは [docs/MODELS.md](docs/MODELS.md) にあります。
+
+### DeepSeek V4.1-Flash（ターミナル版、0.2.4 から）
+
+[DeepSeek V4.1-Flash](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF) は、これとは別のずっと大きなモデルです。下の 3 つのセットは ISTA-DASLab が作りました。Strata は、12 GB のグラフィックスカード 1 枚と 46 から 64 GB の RAM を持つ PC でこれを動かし、残りは SSD から読みます。NVIDIA RTX 30 から 50 シリーズのカードと Radeon AI PRO R9700 で動きます。専用のエンジンパッケージ `strata-dsv41` を使い、DeepSeek を選ぶと `strata launch` がダウンロードします。デスクトップアプリはまだ対応していません。
+
+| セット | ダウンロード | 元のモデルとの品質差 | 出力速度 |
+| --- | ---: | --- | --- |
+| **IQ1_M**（1.75 ビット） | 239 GB | KL 0.217、パープレキシティ 3.80（+21%）、コード +8.9%、エージェント作業 +10.2%、通常の英語の散文では弱めです。ISTA-DASLab のモデルカードによると、基本モデルのタスク平均の 98.7% を保ちます（AIME25、GPQA-Diamond、LiveCodeBench v6）。 | 未測定 |
+| **IQ2_XXS** (2.00 ビット) | 257 GB | KL 0.170、パープレキシティ 3.63（+15.5%）、コード +8.6%、エージェント作業 +5.3% | RTX 3060 で毎秒約 8 から 10 トークン（コード 9.9、エージェント作業 7.8）、RTX 5070 で約 5 |
+| **IQ2_XS** (2.25 ビット) | 274 GB | KL 0.107、パープレキシティ 3.37（+7.3%）、コード +3.2%、エージェント作業 +2.2% | Radeon AI PRO R9700 1 枚で毎秒約 11 トークン |
+| **IQ4_NL**（Engram テーブル、3 つ目のモデルではありません） | 111 GB、上の 3 つのダウンロードに含まれています | モデルが RAM または SSD から読む 4 ビットの Engram 参照テーブルです。3 つのセットはこの 1 つのファイル（`DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`）を共有します。 | 該当なし |
+
+Radeon AI PRO R9700 4 枚：毎秒約 31 トークン、DSpark ありで 55 から 69。
+
+`strata launch --model ist-das-2.00bpw`（または `ist-das-1.75bpw`、`ist-das-2.25bpw`）で起動します。詳細、カードごとの速度、手動インストールは [docs/DEEPSEEK41.md](docs/DEEPSEEK41.md) にあります。
 
 ## どのくらい速い？
 
