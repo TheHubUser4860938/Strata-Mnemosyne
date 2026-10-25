@@ -73,4 +73,69 @@ refit here).
 
 - Clio signed 2026-10-25 (rubric fixed before the run; the sweep's classifier scar is in the rubric).
 - Owner countersign: ____________________  date: ____________
-- Gold addendum (appended before the first ask, both signatures required): pending.
+- Gold addendum (appended before the first ask, both signatures required): appended 2026-10-25,
+  pending countersign (see below).
+
+## Gold addendum (2026-10-25) - three carts minted live, thirty marker QAs
+
+The carts were minted against the running server (op=mint, fresh, file_exists true):
+`mam-test745` 607 tok / 245.4 MB, `c4-results` 600 tok / 245.3 MB, `merge-notes` 462 tok /
+243.2 MB - and C4's fit (236.1 MB + 15.6 KB/tok) predicted 245.6 / 245.2 / 243.1: three
+unscripted carts, all within 0.1%. The excerpts are authored from the banked records cited in
+their `uri` fields (verdict file / journal), not verbatim document slices - provenance named so
+a gold dispute has somewhere to go. `hit()` per the rubric: exact marker, commas/spacing free,
+NEVER substring.
+
+**mam-test745** (MAM Silicon Hippocampus reference, TEST745):
+
+| # | ask | marker |
+|---|---|---|
+| 1 | How many physical cartridges did TEST745 build? | 11 (eleven) |
+| 2 | How many body tokens does cartridge C01 carry? | 761 |
+| 3 | What GPU ran TEST745? | A100 |
+| 4 | Is synthesis between cartridges direct tensor fusion? | text-mediated / no |
+| 5 | Independent post-run cartridge verification score? | 11/11 |
+| 6 | How many text-mediated review rounds ran? | 8 (eight) |
+| 7 | Human expert grading of the blind answers? | pending |
+| 8 | Who is the researcher (name)? | Akbaş / Akbas |
+| 9 | Which sealed master was forged before reading the final report? | C11 |
+| 10 | What indexing answered selection prior art (TEST610/642)? | FAISS (or PCA128) |
+
+**c4-results** (C4 verdict, tag 215424):
+
+| # | ask | marker |
+|---|---|---|
+| 1 | Ladder mean recall at the 25-fact rung? | 1.000 |
+| 2 | Ladder mean recall at the 500-fact rung? | 0.916 |
+| 3 | Ladder mean recall at the 1000-fact rung? | 0.809 |
+| 4 | What did the row-16 contract miss answer, where gold asked D56? | Y51 |
+| 5 | Distractor answers at the 1000-fact rung? | 96 |
+| 6 | The leak baseline declared at the 100-fact rung? | 0.06 |
+| 7 | Between which rungs was the ceiling declared? | 100 and 500 |
+| 8 | Composed recall at k=5? | 0.996 |
+| 9 | The fixed MB cost per state file (the fit's intercept)? | 236.1 |
+| 10 | The marginal cost per standing token? | 15.6 KB |
+
+**merge-notes** (upstream v0.2.4.2 + v0.2.5):
+
+| # | ask | marker |
+|---|---|---|
+| 1 | Which upstream version was merged on 2026-10-25? | 0.2.5 |
+| 2 | The upstream merge commit hash for v0.2.5? | 8c19ef9a |
+| 3 | How many serve/ files did v0.2.5 touch? | zero |
+| 4 | Engine version after the rebuild from the fork's tree? | 0.1.50 |
+| 5 | The BUILD.json src hash recorded? | 5944ca5d |
+| 6 | The third victim of the pack-script rename? | update.sh |
+| 7 | The commit that fixed the README version caption? | f77702da |
+| 8 | The boot time of the green post-merge audit? | 07:55 |
+| 9 | Which version was merged first, by tag, on 2026-10-24? | 0.2.4.2 |
+| 10 | Which branch carries all of this? | memory-core |
+
+Distractor discipline per the rubric: each cart's ten golds are asked only against conversations
+where its own compose rides; the other carts' markers are the distractor pool (a marker from the
+pool counts as distractor, never as gold). Control set (arm-A foreign probe): the `merge-notes`
+gold 3 ("zero") is asked against a compose that EXCLUDES merge-notes - expected abstain, scar if
+it answers.
+
+- Golds drafted by Clio 2026-10-25; owner countersign of THIS table + the rubric above = the
+  run's two-stage seal: ____________________  date: ____________
