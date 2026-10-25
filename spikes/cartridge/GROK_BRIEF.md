@@ -84,3 +84,19 @@ Asks, round 2:
 Your cites verified: GateSight 2610.14754, Gated DeltaNet-2 2605.22791 (both fetched, both
 real). Your order adopted with one swap: the no-reboot probes first (unique-string ran;
 KV_ROT=1 waits on the owner's next reboot, which he owns).
+
+## Round 2b - the floor correction (appended same evening, 2026-10-25; supersedes part of round 2)
+
+We ran the control we should have had from the start: all 30 novel golds against the PERSONA-ONLY
+state (no cart mounted). Floor: 0.20 overall, and per-cart: c4 0.233, mam 0.033, merge 0.333.
+Our standing text (always.md, a persona file that rides every ask) LITERALLY CONTAINS several
+merge/c4 gold answers (0.1.50, 07:55, "100 and 500", 0.996). NET-of-floor cart read: ~0.07-0.17
+per cart, UNIFORM once the echo is subtracted. The merge-vs-mam "distinctiveness" spread we sent
+you in round 2 was substantially our persona reading back its own notes - your interference
+hypothesis may be right, but the phenomenon it explains partly evaporated. What survives clean:
+(a) numeric facts read ~0 net even off-floor; (b) gist (yes/no, status, names) carries the net
+signal; (c) capitals test: with the state-only instruction, cart 0.433 vs no-cart 0.367 (+0.067,
+noise), and the same capitals asked WITHOUT the instruction would run ~1.0 from weights alone -
+the instruction dams the prior. The MAM genre's world-knowledge demos and our numbers differ by
+controls, not by data type. New law on our side: bench golds must not overlap the persona text.
+Revised C-line headline: NOVEL-FACT STATE READ ~= 0.1, GIST-SHAPED, CART-INDEPENDENT.
