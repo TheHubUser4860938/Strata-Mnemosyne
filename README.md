@@ -305,12 +305,14 @@ and the one intervention ever measured to move that weak spot (writing facts wit
 dates) gained **+0.207** on the same 127 questions, McNemar p ≤ 1.2e-12, and it ships in the
 curation loop. Full protocol and records: `docs/MEMORY_CORE.md`.
 
-**Tier 2 — KV cartridges (built, and riding on a big-RAM box).** The store's standing shelves are
-seeded once as an engine session file and restored ahead of every conversation: restore **81 ms** for
-247 MB, the pin law **refuses foreign files** by config fingerprint, and the knowledge delta is
-real — warm 3/3 correct, cold 3/3 `idk`, wrong-cartridge control 0 leaks. The RAM gate is met on
-this box now: 125 GB since 2026-10-22, and the standing cartridge rides live — 63 shelved facts on
-two shelves, 285 MB, restored at boot in **150.3 ms** (the engine's own line: read+check 142.0 ms).
+**Tier 2 — KV cartridges (built, and riding on a big-RAM box).** The standing texts are seeded once
+as an engine session file and stand in the slot ahead of the traffic that continues them: restore
+**81 ms** for 247 MB, the pin law **refuses foreign files** by config fingerprint, and the knowledge
+delta is real — warm 3/3 correct, cold 3/3 `idk`, wrong-cartridge control 0 leaks. The RAM gate is
+met on this box now: 125 GB since 2026-10-22. What rides live since 2026-10-24 is the five-file
+static cart — the soul plus agent/skill/user/always, 237 MB, `MEM-CRG-22c49c0c.bin`, standing in
+the slot (`kv_standing` true at the 19:37 boot); the 63-fact soul+facts cart it replaced restored
+285 MB in **150.3 ms** (the engine's own line: read+check 142.0 ms).
 What is *not* claimed: prefill skipped for strangers (engine resume extends one conversation, not
 across them — measured, and the docs say so). The venue re-record that would settle its economics
 is unblocked and queued.
