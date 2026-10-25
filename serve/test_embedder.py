@@ -11,11 +11,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from serve.embedder import Embedder, _verify_pinned
+from serve.embedder import Embedder, EmbeddingGemma2, _verify_pinned
 from serve.memory import MemoryService
 from strata_control.datafolder import data_dir      # the one data folder (2026-10-23): the embedder is not inside the install
 
 MODEL_DIR = data_dir(Path(__file__).resolve().parent.parent) / "embeddings/bge-small-en-v1.5"
+EG2_DIR = data_dir(Path(__file__).resolve().parent.parent) / "embeddings/embeddinggemma-2"
 
 
 class Pins(unittest.TestCase):
@@ -62,6 +63,52 @@ class RealModel(unittest.TestCase):
         b = self.emb._encode(["cascade fix"])[0]       # unprefixed
         self.assertGreater(float(np.linalg.norm(a - b)), 0.05,
                            "bge asymmetry (query prefix) must be live or ranking degrades quietly")
+
+
+@unittest.skipUnless((EG2_DIR / "onnx/model_quantized.onnx").exists()
+                     and (EG2_DIR / "SHA256SUMS").exists(),
+                     "embeddinggemma-2 files not downloaded on this box")
+class RealModelGemma(unittest.TestCase):
+    """EmbeddingGemma-2 q8 CPU smoke (downloaded 2026-10-24, SHA256SUMS written against the
+    repo's own LFS oids). The card's example is the standard: the published scores
+    (0.684/0.854/0.752/0.783 for Venus/Mars/Jupiter/Saturn at q4/WebGPU) must be met within
+    q8 tolerance with the identical ranking - end-to-end proof that this ORT feed (empty
+    media-feature tensors, the graph's masked-mean sentence_embedding, L2 after) reproduces
+    the vendor recipe, prefixes included."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.emb = EmbeddingGemma2(EG2_DIR, threads=4)
+
+    def test_card_example_ranking_and_scores(self):
+        import numpy as np
+        q = self.emb.embed_query("Which planet is known as the Red Planet?")
+        docs = self.emb.embed_docs([
+            "Venus is often called Earth's twin because of its similar size and proximity.",
+            "Mars, known for its reddish appearance, is often referred to as the Red Planet.",
+            "Jupiter, the largest planet in our solar system, has a prominent red spot.",
+            "Saturn, famous for its rings, is sometimes mistaken for the Red Planet."])
+        self.assertEqual(q.shape, (768,))
+        self.assertEqual(docs.shape, (4, 768))
+        self.assertTrue(np.allclose(np.linalg.norm(docs, axis=1), 1.0, atol=1e-4))
+        cos = docs @ q
+        self.assertEqual(int(np.argmax(cos)), 1)                      # Mars, as the card has it
+        order = sorted(range(4), key=lambda i: -cos[i])
+        self.assertEqual(order, [1, 3, 2, 0])                         # Mars Saturn Jupiter Venus
+        for got, card in zip(cos, (0.684, 0.854, 0.752, 0.783)):      # the card's q4 scores
+            self.assertLess(abs(float(got) - card), 0.05,
+                            f"q8 CPU drifted >0.05 from the card's q4 reference {card}: "
+                            f"{float(got):.3f}")
+
+    def test_recipes_are_live(self):
+        import numpy as np
+        a = self.emb.embed_query("cascade fix")
+        b = self.emb._encode([EmbeddingGemma2.QUERY_PREFIX + "cascade fix"])[0]
+        self.assertTrue(np.allclose(a, b, atol=1e-6),
+                        "embed_query must BE the recipe string, not a paraphrase of it")
+        c = self.emb._encode(["cascade fix"])[0]                      # bare, no prefix
+        self.assertGreater(float(np.linalg.norm(a - c)), 0.05,
+                           "the query asymmetry must be live or search quality degrades quietly")
 
 
 @unittest.skipUnless((MODEL_DIR / "model.onnx").exists() and (MODEL_DIR / "SHA256SUMS").exists(),

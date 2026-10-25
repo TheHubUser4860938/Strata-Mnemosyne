@@ -702,15 +702,21 @@ def main():
             if law_rows is None:
                 import numpy as np
                 from serve import memory as _M
-                from serve.embedder import Embedder
-                law_emb = Embedder(str(data_dir(ROOT) / "embeddings/bge-small-en-v1.5"), threads=4)
+                from serve.embedder import create
+                # the swap law (2026-10-24): the sweep's law-check must embed with the SAME
+                # model the server ranks with, or the cosine compares apples to oranges -
+                # measured danger: a 384-d query against a 768-d matrix raised and the
+                # except-clause swallowed it, silently disarming the law mid-swap. The live
+                # stats name the model; the one-data-folder layout resolves it to a dir.
+                model = ((stats.get("embedder") or {}).get("model")) or "bge-small-en-v1.5"
+                law_emb = create(str(data_dir(ROOT) / "embeddings" / model), name=model, threads=4)
                 sdir = stats.get("dir") or (os.path.dirname(db_path) if db_path else "")
                 with _M.attach(sdir) as con:
                     raw = con.execute("select m.id, m.text, m.scope, e.vec from memories m "
                                       "join embeddings e on e.id = m.id"
                                       " where m.invalid_at is null").fetchall()
                 V = np.stack([np.frombuffer(r[3], dtype=np.float32) for r in raw]) if raw \
-                    else np.zeros((0, 384), dtype=np.float32)
+                    else np.zeros((0, law_emb.dims), dtype=np.float32)
                 V = V / (np.linalg.norm(V, axis=1, keepdims=True) + 1e-9)
                 law_rows = [(r[0], r[1], r[2], V[i]) for i, r in enumerate(raw)]
                 rec({"kind": "law_matrix", "rows": len(law_rows)})

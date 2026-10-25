@@ -639,7 +639,11 @@ _PG_DDL: tuple[str, ...] = (
     "create table if not exists meta(key text primary key, value text not null)",
     """create table if not exists embeddings(
          id bigint primary key references memories(id) on delete cascade,
-         vec bytea not null)""",
+         vec bytea not null,
+         model text)""",    # model: WHICH embedder produced this vector (2026-10-24 swap law).
+                            # NULL = predates the column; the matrix filter treats NULL as
+                            # "belongs to the store's legacy embedder" only insofar as its
+                            # WIDTH still matches - see _vec_matrix.
 )
 
 @contextlib.contextmanager
@@ -804,8 +808,11 @@ class MemoryService:
         self.embedder_error: str | None = None
         if isinstance(embedder, dict) and embedder:
             try:
-                from .embedder import Embedder
-                embedder = Embedder(embedder.get("dir") or "", threads=int(embedder.get("threads") or 4))
+                from .embedder import create
+                embedder = create(embedder.get("dir") or "", threads=int(embedder.get("threads") or 4),
+                                  name=embedder.get("name"),
+                                  max_seq=(int(embedder["max_seq"]) if embedder.get("max_seq")
+                                          else None))
             except Exception as exc:                        # missing file, pin mismatch, bad onnx...
                 self.embedder_error = f"{type(exc).__name__}: {str(exc)[:160]}"
                 embedder = None
@@ -944,6 +951,17 @@ class MemoryService:
                 "select column_name from information_schema.columns where table_name = 'turns'")}
             if "injected" not in tcols:
                 self.conn.execute("alter table turns add column injected jsonb")
+            # The embedder-swap column (2026-10-24): vectors are only comparable WITHIN one model,
+            # and the venue A/B says a store will change embedders - so every vector now carries
+            # the model that made it. Rows predating the column stay NULL and the matrix filter
+            # keeps them only while their WIDTH matches the live embedder (bge's 384-d bytes are
+            # meaningless against a 768-d query, and a mixed-width np.stack would take the whole
+            # semantic arm down, not just the foreign rows). The migration is one nullable column,
+            # no backfill: serve/reembed.py stamps what it rewrites.
+            ecols = {r[0] for r in self.conn.execute(
+                "select column_name from information_schema.columns where table_name = 'embeddings'")}
+            if "model" not in ecols:
+                self.conn.execute("alter table embeddings add column model text")
             self.conn.commit()
 
     # ---- store ---------------------------------------------------------------
@@ -1134,8 +1152,10 @@ class MemoryService:
                     "update memories set updated_at=%s, confidence=greatest(confidence,%s), class=%s where id=%s",
                     (self._dt(now), conf, hit[2] or klass, hit[0]))
                 if vec is not None:   # text unchanged, but the row may predate the embedder
-                    self.conn.execute("insert into embeddings values(%s,%s) on conflict (id) do nothing",
-                                      (hit[0], vec.tobytes()))
+                    self.conn.execute(
+                        "insert into embeddings(id, vec, model) values(%s,%s,%s)"
+                        " on conflict (id) do nothing",
+                        (hit[0], vec.tobytes(), getattr(self.embedder, "model_name", "unknown")))
                 self.conn.commit()
                 self._touched()
                 self._vdirty = True
@@ -1155,8 +1175,10 @@ class MemoryService:
                         "update memories set updated_at=%s, confidence=greatest(confidence,%s), "
                         "class=coalesce(nullif(class,''),%s) where id=%s",
                         (self._dt(now), conf, klass, verdict[1]))
-                    self.conn.execute("insert into embeddings values(%s,%s) on conflict (id) do nothing",
-                                      (verdict[1], vec.tobytes()))
+                    self.conn.execute(
+                        "insert into embeddings(id, vec, model) values(%s,%s,%s)"
+                        " on conflict (id) do nothing",
+                        (verdict[1], vec.tobytes(), getattr(self.embedder, "model_name", "unknown")))
                     self.conn.commit()
                     self._touched()
                     self._vdirty = True
@@ -1181,8 +1203,9 @@ class MemoryService:
                  conf, self._dt(now), self._dt(now), klass)).fetchone()[0]
             if vec is not None:
                 self.conn.execute(
-                    "insert into embeddings values(%s,%s) on conflict (id) do update set vec = excluded.vec",
-                    (new_id, vec.tobytes()))
+                    "insert into embeddings(id, vec, model) values(%s,%s,%s)"
+                    " on conflict (id) do update set vec = excluded.vec, model = excluded.model",
+                    (new_id, vec.tobytes(), getattr(self.embedder, "model_name", "unknown")))
                 if supersede:      # the richer phrasing wins: the older row retires pointing at it,
                     self.conn.execute(       # the Zep chain stays intact - nothing is deleted (invalidate
                         "update memories set invalid_at=%s, superseded_by=%s, updated_at=%s"
@@ -1969,6 +1992,36 @@ class MemoryService:
                 self._tool["empty"] += 1
 
     @_heals
+    def _vec_compat(self):
+        """SQL restriction + args for vectors the LIVE embedder may use (the 2026-10-24 swap
+        law). Vector bytes are comparable only within one model; WIDTH is the hard filter - a
+        mixed-width np.stack does not blur the semantic arm, it takes the whole arm down -
+        and the model stamp is the soft filter for equal-width futures. Duck-typed stubs keep
+        the old behavior: no dims passes width untouched, no model_name skips the stamp
+        filter, and a bare stub without either changes nothing byte-for-byte. NULL rows
+        (pre-column) survive on width alone - which is exactly right: a legacy bge store
+        matches a bge-shaped query and nothing else."""
+        dims = getattr(self.embedder, "dims", None) if self.embedder is not None else None
+        stamp = getattr(self.embedder, "model_name", None) if self.embedder is not None else None
+        cond, args = "", []
+        if dims:
+            cond += " and octet_length(e.vec) = %s"
+            args.append(int(dims) * 4)
+        if stamp:
+            cond += " and (e.model is null or e.model = %s)"
+            args.append(str(stamp))
+        return cond, tuple(args)
+
+    def foreign_vectors(self):
+        """Vectors the LIVE embedder cannot use (foreign model stamp or wrong width) - the
+        store's honest answer to "has the re-embed run?" (serve/reembed.py drives this number
+        down; the boot banner reads stats and says it out loud when it is not zero)."""
+        if self.embedder is None:
+            return None
+        cond, args = self._vec_compat()
+        return self.conn.execute(
+            "select count(*) from embeddings e where not (true" + cond + ")", args).fetchone()[0]
+
     def _vec_matrix(self):
         """(ids, mat, scope, class, created, updated, conf) for every ACTIVE row that carries a
         vector, cached; rebuilt when a write dirtied it OR the embedded-count moved (a backfill ran
@@ -1977,6 +2030,7 @@ class MemoryService:
         ANN index would be more machinery than math; a 100k-row store is the point to revisit, and
         stats() will have said so long before."""
         import numpy as np
+        compat, cargs = self._vec_compat()
         with self.lock:
             n = self.conn.execute("select count(*) from embeddings").fetchone()[0]
             if self._vmeta is not None and not self._vdirty and n == self._ecount:
@@ -1986,7 +2040,7 @@ class MemoryService:
                 "select m.id, e.vec, m.scope, coalesce(m.class,''),"
                 " extract(epoch from m.created_at), extract(epoch from m.updated_at), m.confidence"
                 " from embeddings e join memories m on m.id = e.id where m.invalid_at is null"
-                " order by m.id").fetchall()
+                + compat + " order by m.id", cargs).fetchall()
             self.conn.commit()
         if not rows:
             self._vmeta, self._vdirty, self._ecount = None, False, n
@@ -2029,9 +2083,10 @@ class MemoryService:
             hit = self._svec.get(scope)
             if hit is not None and hit[0] == tuple(key):
                 return hit[1]
+            compat, cargs = self._vec_compat()
             rows = self.conn.execute(
                 "select m.id, e.vec from embeddings e join memories m on m.id = e.id"
-                " where m.scope = %s and m.invalid_at is null", (scope,)).fetchall()
+                " where m.scope = %s and m.invalid_at is null" + compat, (scope,) + cargs).fetchall()
             self.conn.commit()
         vecs = {int(rid): np.frombuffer(blob, dtype=np.float32) for rid, blob in rows}
         self._svec[scope] = (tuple(key), vecs)
@@ -2565,7 +2620,12 @@ class MemoryService:
                 "router": {"on": self.route_shelves, "demote": self.route_demote, **self._route_stats},
                 "embedder": ({"on": True, "loaded": True,
                               "model": getattr(self.embedder, "model_name", type(self.embedder).__name__),
+                              "dims": getattr(self.embedder, "dims", None),
                               "vectors": embedded, "active": memories,
+                              "foreign": self.foreign_vectors(),
+                              "stamp": (self.conn.execute("select value from meta where"
+                                                          " key = 'embedder_model'").fetchone() or
+                                        [None])[0],
                               "unembedded": max(0, memories - embedded)}   # tools/m4_embed.py closes the gap
                              if self.embedder is not None else
                              ({"on": True, "loaded": False, "error": self.embedder_error}

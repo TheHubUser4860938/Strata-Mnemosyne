@@ -1222,7 +1222,7 @@ and UNIONs the cosine top over every embedded active row. At this store's size a
 honest design: 2,521 rows scan in ~1 ms, so an ANN index would be more machinery than math.
 
 ```
-"memory": { "embedder": {"dir": "Strata-data/embeddings/bge-small-en-v1.5", "threads": 4} }
+"memory": { "embedder": {"name": "bge-small-en-v1.5", "dir": "Strata-data/embeddings/bge-small-en-v1.5", "threads": 4} }
 ```
 
 plus `python3 tools/m4_embed.py --dir <store-dir>` once, to backfill rows written before it. Absent means
@@ -1449,6 +1449,59 @@ a scratch reveal had decrypted the full store minutes earlier — the 2,550-row 
 dev server answers the agent's *own* inference, so the agent does not restart it — it asks the user to,
 and it waits on the **port** (`ss -ltn | grep :8005`), not on `pgrep -f`, whose pattern also matches the
 invoking shell.
+
+**The swap law (2026-10-24 night): vectors belong to a model.** The embedder became a selector.
+`serve/embedder.py` now carries two classes behind `create()` - `Embedder` (bge-small-en-v1.5, the
+fork default until the venue A/B pays) and `EmbeddingGemma2` (google/embeddinggemma-2, text-only
+mode, the community q8 ONNX: 314 MB, 768-d native, 8,192-token context, `task: search result |
+query:` / `title: none | text:` prefixes; the graph's `sentence_embedding` output verified as the
+masked mean - cosine 1.0 against a numpy recompute - and the card's published example reproduced on
+this box within 0.01 on every score, ranking identical). A config `"name"` picks the model;
+`resolve_class` **raises** on a name that matches nothing - an address naming no model must not
+quietly widen to bge. Output selection is a class law, never a graph sniff: auto-selecting would
+have moved bge onto a different pooling path and silently changed every ranking, which is exactly
+what the pin file exists to make loud. The box's store moved to EmbeddingGemma-2 the same night
+(owner's call; the full history keeps bge as the code default until a venue day re-records the
+banked numbers). Measured on this box the same night: warm query embed **20-25 ms at 8
+threads** (bge: 3 ms - 7x, not the order of magnitude feared); the live-store re-embed ran
+**1,786 rows in 150.6 s - 84 ms/row** beside a serving engine (the idle 5-doc probe said
+~10 ms/doc; padding-to-longest and the DB writes eat the difference). The swap made vectors
+a model-scoped asset: `embeddings(id, vec, model)` stamps WHO made
+each vector (migration: one nullable column, no backfill), both matrices filter by WIDTH first -
+a mixed-width `np.stack` does not blur the semantic arm, it takes it down - then by stamp; foreign
+vectors are excluded, counted (`stats()["embedder"]["foreign"]`) and announced by the boot banner
+until `python -m serve.reembed --store DIR --dir EMBDIR` rewrites them **in one transaction** (the
+live server sees all-old or all-new bytes, never a mix). Stored at FULL 768-d on purpose (owner's
+decision, the reversibility argument): a 768-stored MRL vector can be sliced to 512/256/128 later
+with an L2 re-normalize and no re-embed; the reverse does not exist. The venue still owes the
+re-anchoring of every embedder-specific constant (block floor 0.3, guard floor 0.85, composition
+gold 0.64-0.79, the hub-row law) - until that day, every banked venue number carries the label
+*bge-small era*. The sweep's own cosine carries a number too: `LAW_TH = 0.78`, the
+correction-flag line measured 2026-10-17 on bge doc-vs-doc scores, rides into the new
+distribution with the rest and joins the re-anchoring list.
+
+**The two distributions, measured the night of the swap (same store, same 1,783 live rows,
+same 500 amendment pairs - the store's own superseded-to-live chains - embedded by both
+models):** the floors ride a distribution, and the distribution moved. Random pairs: p50
+**0.455 -> 0.665** (EG2's random ceiling is 0.886 - above bge's amendment p10). Query-row
+mass: p2 0.300 -> 0.569, p50 0.408 -> 0.631; even a junk query tops out at 0.712 under EG2
+where it scored 0.536 under bge - the ABSOLUTE scale compresses and shifts, the ORDERING
+does not (top1 stays on top for every real probe). Amendment pairs - the population the
+guard was tuned on: p10 0.815 -> 0.872, share above 0.85 **79% -> 96%**, while same-scope
+false-flags above 0.85 stay at 0.00% (same-scope p99 is 0.800). So of the three cosine
+knobs, two got BETTER where they matter: the write-guard floor 0.85 catches more true
+near-dupes with no new false positives, and LAW_TH 0.78 likewise (its 2.6%-of-same-scope
+extra flags reach the JUDGE, which is cost, not loss - the law never loses a fact). Only
+the BLOCK floor died of the shift: at 0.3 every EG2 row passes every query (100%, where
+bge's 0.3 sat exactly at its own p2, cutting the worst ~2%). It was re-placed
+percentile-matched, not guessed: **`floor_cosine: 0.57`** - EG2's p2-p5, the same tail the
+bge floor cut. The formal re-anchor (floor, guard, LAW_TH, the C5 composition gold
+0.64-0.79, the hub-row law) is still owed one venue day; until then every venue number
+reads under its era label and the interim floor rides the config with a comment saying so. And the scar this swap pulled out of the woodwork: the session-isolated config
+home in `conftest.py` made `data_dir()` fall back beside the install, so the real-model smokes had
+been **skipping on the box that owns the models** since 2026-10-14 - a green suite said nothing.
+The fix copies the real settings file into the session home (reads see the box, writes stay
+isolated) and the suite got six live tests it never had.
 
 ## Shelf isolation — what a call returns, at any budget (measured 2026-10-15, accumulated dev store: 2,796 active rows, 567 of them unclassified)
 

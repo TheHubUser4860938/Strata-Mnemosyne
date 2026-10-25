@@ -61,7 +61,7 @@ def main() -> int:
         chunk = rows[i:i + 64]
         vecs = emb.embed_docs([r[1] for r in chunk])
         with conn.cursor() as cur:
-            cur.executemany("insert into embeddings values(%s,%s)"
+            cur.executemany("insert into embeddings(id, vec) values(%s,%s)"
                             " on conflict (id) do update set vec = excluded.vec",
                             [(r[0], v.tobytes()) for r, v in zip(chunk, vecs)])
         conn.commit()
