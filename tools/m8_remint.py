@@ -19,8 +19,10 @@ ALL gone is reported and left stale: a cart with nothing left to say is a retire
 and retirement is a human verb (op=retire) - the sweep does not shelve knowledge by itself.
 
 Run: python3 tools/m8_remint.py [--db DIR] [--url URL] [--apply] [--quiet]
-(--quiet prints only when a cart moved, which is what the sweep tick wants to hear; dry by
-default: the scan and the remints both wait for --apply.)
+(--quiet prints only when a cart moved, which is what the sweep tick wants to hear. Dry by
+default, but the dry run now PREVIEWs the scan (audit finding 7b, 2026-10-25): the same
+CART_SCAN_WHERE the --apply UPDATE runs, read as a SELECT - "ledger clean" in dry mode means
+"nothing would move", not "we did not look". Only the remints wait for --apply.)
 """
 import argparse, json, sys, urllib.error, urllib.request
 from pathlib import Path
@@ -30,7 +32,7 @@ for p in (str(ROOT), str(ROOT / "tools")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from serve.memory import CART_SCAN_SQL, attach                # the store's own scan law + the m2 twin
+from serve.memory import CART_SCAN_SQL, CART_SCAN_WHERE, attach   # the store's own scan law + m2 twin
 from strata_control.datafolder import data_dir                # same home m4_catalog reads
 
 
@@ -45,6 +47,10 @@ def post(url: str, body: dict) -> tuple[int, dict]:
             return e.code, json.loads(e.read().decode())
         except ValueError:
             return e.code, {}
+    except urllib.error.URLError as e:      # audit finding 7c: server DOWN was a traceback per
+        return 0, {"error": {"message": f"server unreachable: {e}"}}   # tick, hidden only by
+                                                                       # the cron line's
+                                                                       # "|| true"
 
 
 def main(argv=None) -> int:
@@ -56,16 +62,31 @@ def main(argv=None) -> int:
     ap.add_argument("--quiet", action="store_true", help="print only when a cart moved")
     a = ap.parse_args(argv)
 
-    con = attach(a.db, autocommit=True)
+    try:                                             # audit finding 7a: an unreachable cluster
+        con = attach(a.db, autocommit=True)          # wears many costumes - it is NOT "no ledger",
+    except Exception as e:                           # and quiet boxes must not shout over it
+        if not a.quiet:                              # noqa: BLE001
+            print(f"[remint] store unreachable ({str(e).splitlines()[0][:80]}) - next tick")
+        return 0
     try:
-        newly = []
+        # The scan is ONE law in two verbs (the audit's dry-run finding): --apply runs the
+        # UPDATE (CART_SCAN_SQL); the dry run SELECTs the same CART_SCAN_WHERE, so what the
+        # report says is exactly what apply would move - a preview, not a different guess.
         if a.apply:
             newly = sorted(r[0] for r in con.execute(CART_SCAN_SQL).fetchall())
+        else:
+            newly = sorted(r[0] for r in con.execute(
+                "select name from carts where " + CART_SCAN_WHERE + " order by name").fetchall())
         stale = [r[0] for r in con.execute(
             "select name from carts where state = 'stale' order by name").fetchall()]
     except Exception as e:                       # noqa: BLE001 - the migration window: a store
-        print(f"[remint] no ledger to mind yet ({str(e).splitlines()[0][:80]})")   # predating the
-        return 0                                 # carts table reports, does not crash
+        msg = str(e).splitlines()[0][:100]       # predating the carts table reports, does not
+        if '"carts" does not exist' in msg:      # crash - and --quiet keeps its promise even
+            if not a.quiet:                      # there (audit finding 7a)
+                print("[remint] no ledger to mind yet")
+        else:                                    # a BROKEN scan is never reported as "clean":
+            print(f"[remint] scan FAILED ({msg})")   # the instrument speaks, the sweep listens
+        return 0
     finally:                                     # (finally still closes the connection)
         con.close()
 
@@ -89,11 +110,13 @@ def main(argv=None) -> int:
         elif code == 400:      # sources all gone: left stale on purpose, a retirement decision
             moved.append(f"{name}: nothing left to mint - "
                          f"{(body.get('error') or {}).get('message', '')[:80]}")
+        elif code == 0:        # server unreachable (post's honest 0): a tick, not a crash
+            moved.append(f"{name}: deferred - {(body.get('error') or {}).get('message', '')[:80]}")
         else:                  # 503 or worse: the box moved; the next tick tries again
             moved.append(f"{name}: remint refused {code} - "
                          f"{((body.get('error') or {}).get('message', ''))[:80]}")
     if newly and not a.quiet:
-        print(f"[remint] scan marked stale: {', '.join(newly)}")
+        print(f"[remint] scan {'marked' if a.apply else 'would mark'} stale: {', '.join(newly)}")
     if not a.quiet or moved:
         print(f"[remint] {len(moved)} stale cart(s)"
               f"{'' if a.apply else ' (dry run - pass --apply to re-mint)'}:")

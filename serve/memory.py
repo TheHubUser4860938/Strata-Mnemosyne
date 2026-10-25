@@ -648,7 +648,9 @@ _PG_DDL: tuple[str, ...] = (
     # C4_PRE_REG 2026-10-24). Every cartridge the store knows about; the standing persona cart is
     # ROW ZERO, registered at boot. kind: standing | rows | episode - sources holds what the cart
     # was minted FROM: {row_ids:[], shelf_prefixes:[], text,title,uri} (the episode text is the
-    # web-page cart: one experience, one cart, and the index line is what replaces the re-fetch).
+    # web-page cart: one experience, one cart, and the index line is what replaces the re-fetch);
+    # plus n_sources (the row count at mint - the scan's absence law: a purge leaves no
+    # timestamp, only a smaller world) and base (the standing file the cart composed alongside).
     # State law: fresh -> stale when a write touches a source row/prefix - the reason lands in
     # stale_reason, annotated, never erased - and a background window (never the request path)
     # re-mints. A re-mint keeps created_at, moves minted_at, records the superseded .bin in
@@ -687,23 +689,60 @@ def _rollback_on_error(conn):
 
 StoreError = psycopg.Error      # the store's failure class, named for serve/server.py's HTTP clauses
 
-# The out-of-process staleness scan, one SQL as a module constant so the store's own
-# cart_scan_stale and tools/m8_remint.py (the background window) read the SAME law
-# (2026-10-25, S3): a fresh cart whose source rows moved after it was minted goes stale.
-CART_SCAN_SQL = """update carts set state = 'stale', stale_reason = 'out-of-process write'
-     where state = 'fresh' and (
+# The staleness SQL, as constants so the store and tools/m8_remint.py (the background window)
+# read ONE law (2026-10-25, S3; the audit pass split the WHERE from the UPDATE so the tool can
+# preview the same predicate in dry mode). jsonb_typeof guards everywhere: coalesce does NOT
+# catch a jsonb scalar-null, and jsonb_array_elements_text RAISES on one - one malformed row
+# would otherwise blind the whole scan forever. The prefix matcher is shelf_sql's boundary law
+# (a prefix answers for X, X.Y and X/Y, never for Xyz), not a bare LIKE.
+CART_STALE_HOOK_SQL = """update carts set state = 'stale', stale_reason = %s
+  where state = 'fresh' and (
+        exists(select 1
+                 from jsonb_array_elements_text(
+                          case when jsonb_typeof(sources -> 'row_ids') = 'array'
+                               then sources -> 'row_ids' else '[]'::jsonb end) r(id)
+                where r.id::bigint = any(%s::bigint[]))
+     or exists(select 1
+                 from jsonb_array_elements_text(
+                          case when jsonb_typeof(sources -> 'shelf_prefixes') = 'array'
+                               then sources -> 'shelf_prefixes' else '[]'::jsonb end) p(pref)
+                 join memories m on (m.class = p.pref or m.class like p.pref || '.%%'
+                                     or m.class like p.pref || '/%%')
+                                and m.id = any(%s::bigint[])))
+  returning name"""
+
+# The scan's WHERE, three arms three truths: (1) a named source row MOVED after the mint -
+# updated_at is the only content clock a row carries; (2) a row under a watched shelf PREFIX
+# moved; (3) the world got SMALLER than the cart - a purge erases a row and its timestamp
+# together, and only the mint-time count (n_sources) or a vanished named id sees the absence.
+# CAVEAT, kept honest (the audit's first finding): a harvest re-learn STAMPS updated_at
+# without moving the text, so an actively re-learned source can go a cart stale between
+# windows; the re-mint notices the bytes never moved and catches the ledger up WITHOUT the
+# engine, no scar (the stamp-churn law in CartMinter.mint).
+CART_SCAN_WHERE = """state = 'fresh' and (
            exists(select 1
                     from jsonb_array_elements_text(
-                             coalesce(sources -> 'row_ids', '[]'::jsonb)) r(id)
-                    join memories m on m.id = r.id::bigint
-                   where m.updated_at > carts.minted_at)
+                             case when jsonb_typeof(sources -> 'row_ids') = 'array'
+                                  then sources -> 'row_ids' else '[]'::jsonb end) r(id)
+                    left join memories m on m.id = r.id::bigint
+                   where m.id is null or m.updated_at > carts.minted_at)
         or exists(select 1
                     from jsonb_array_elements_text(
-                             coalesce(sources -> 'shelf_prefixes',
-                                      '[]'::jsonb)) p(pref)
-                    join memories m on m.class like rtrim(p.pref, '*') || '%'
-                   where m.updated_at > carts.minted_at))
-    returning name"""
+                             case when jsonb_typeof(sources -> 'shelf_prefixes') = 'array'
+                                  then sources -> 'shelf_prefixes' else '[]'::jsonb end) p(pref)
+                   where (exists(select 1 from memories m
+                                  where (m.class = p.pref or m.class like p.pref || '.%'
+                                         or m.class like p.pref || '/%')
+                                    and m.updated_at > carts.minted_at))
+                      or (sources ? 'n_sources'
+                          and (select count(*) from memories m
+                                where m.invalid_at is null
+                                  and (m.class = p.pref or m.class like p.pref || '.%'
+                                       or m.class like p.pref || '/%'))
+                              is distinct from (sources ->> 'n_sources')::int)))
+        """
+CART_SCAN_SQL = ("update carts set state = 'stale', stale_reason = 'out-of-process write'"
+                 " where " + CART_SCAN_WHERE + " returning name")
 
 
 def _heals(fn):
@@ -1774,7 +1813,6 @@ class MemoryService:
                 " never searched for): " + "; ".join(bits) + ".")
 
     @_heals
-    @_heals
     def cart_text(self, row_ids=None, shelf_prefixes=None, max_chars: int = 4000):
         """The mint renderer for ROW sources (S3): the cartridge_text law - confidence descending,
         id ascending, deterministic, bounded, never by hits (the .bin is valid only for its exact
@@ -2821,19 +2859,27 @@ class MemoryService:
     # the conversation, saving the .bin) lives in server.py's CartMinter, which calls these.
 
     def _cart_sources_ids(self, sources) -> list:
-        """The row ids a cart names, from its sources jsonb (row_ids plus every row under its
-        shelf_prefixes). Prefixes are expanded at read so a cart records a shelf, not a frozen
-        id list - a fact shelved into that prefix later is the cart's business, and staleness
-        (not a silent re-mint-on-read) is what tells it."""
-        s = sources or {}
-        ids = set(int(i) for i in (s.get("row_ids") or []))
-        prefixes = s.get("shelf_prefixes") or []
-        if prefixes:
-            like = [p.rstrip("*") + "%" for p in prefixes]
-            rows = self.conn.execute(
-                "select id from memories where invalid_at is null and class like any(%s)",
-                (like,)).fetchall()
-            ids.update(r[0] for r in rows)
+        """The row ids a cart names: explicit row_ids plus every row under its shelf prefixes,
+        matched with shelf_sql's BOUNDARY law (X answers for X, X.Y and X/Y - never Xyz).
+        Tombstoned rows COUNT: the question is what the cart was built from, not what is alive
+        (an invalidated source row is a move the cart must hear about; a purge is the scan's
+        absence problem). Malformed jsonb scalars are skipped, not walked character by
+        character. This is the introspection twin - the hot hook path is pure SQL
+        (CART_STALE_HOOK_SQL), no per-cart Python at write time."""
+        s = sources if isinstance(sources, dict) else {}
+        raw_ids = s.get("row_ids")
+        ids = set(int(i) for i in raw_ids) if isinstance(raw_ids, list) else set()
+        raw_pre = s.get("shelf_prefixes")
+        if isinstance(raw_pre, list):
+            pats = []
+            for p in raw_pre:
+                p = str(p).strip().rstrip("*")
+                if p:
+                    pats += [p, p + ".%", p + "/%"]
+            if pats:
+                rows = self.conn.execute(
+                    "select id from memories where class like any(%s)", (pats,)).fetchall()
+                ids.update(r[0] for r in rows)
         return sorted(ids)
 
     @_heals
@@ -2907,13 +2953,13 @@ class MemoryService:
 
     @_heals
     def cart_scan_stale(self) -> list:
-        """Backstop for OUT-OF-PROCESS writers (importers' raw SQL): a fresh cart whose source
-        rows moved after it was minted goes stale now. A dedupe stamp can occasionally flag a
-        cart whose text never changed - that re-mint renders the same content, lands on the
-        same content-hash file, and leaves no scar: the cost is one seed pass, never a lie in
-        the ledger. Idempotent; tools/m8_remint.py (the re-mint window) runs this before
-        deciding what to re-mint - the SQL is the module's CART_SCAN_SQL so both callers
-        read ONE law."""
+        """Backstop for OUT-OF-PROCESS writers (importers' raw SQL) and for the absences only a
+        count or a left-join can see: a purge erases a row AND its timestamp together. The
+        predicate is the module's CART_SCAN_WHERE - tools/m8_remint.py previews the same SQL in
+        dry mode - so tool and store read one law. The stamp caveat lives with the constant:
+        an actively re-learned source may go a cart stale between windows; the re-mint notices
+        the bytes never moved and catches the ledger up WITHOUT the engine (same file, no scar
+        - the stamp-churn law in CartMinter.mint). Idempotent; returns the names marked."""
         with self.lock:
             rows = self.conn.execute(CART_SCAN_SQL).fetchall()
             if rows:
@@ -2923,43 +2969,45 @@ class MemoryService:
 
     @_heals
     def cart_mark_stale(self, ids, reason: str) -> list:
-        """The staleness hook (called from _touched with the ids a write moved): every FRESH cart
-        whose sources name any of these ids - directly, or through a shelf prefix - goes stale,
-        annotated with the reason, never deleted. Returns the names it marked (usually none)."""
-        ids = [int(i) for i in (ids or [])]
+        """The staleness hook (called from _touched with the ids a content write committed):
+        every FRESH cart whose sources name any of these ids - directly, or through a watched
+        shelf prefix - goes stale, annotated, never deleted. ONE set-based statement: no
+        per-cart Python expansion runs at write time (the audit's cost finding: the old loop
+        expanded every watched shelf, per write, forever, on the store lock). Returns the
+        names it marked (usually none). The stamp law lives with the CALLERS: dedupe exits do
+        not pass ids, so a re-learned same-text fact never comes through here."""
+        ids = sorted({int(i) for i in (ids or [])})
         if not ids:
             return []
+        why = (f"{reason} moved row {'+'.join(str(i) for i in ids[:6])}"
+               + ("+" if len(ids) > 6 else ""))[:200]
         with self.lock:
-            carts = self.conn.execute(
-                "select name, sources from carts where state = 'fresh'").fetchall()
-            marked = []
-            for name, sources in carts:
-                moved = sorted(set(self._cart_sources_ids(sources)) & set(ids))
-                if moved:
-                    why = f"{reason} moved row {'+'.join(str(i) for i in moved[:6])}"
-                    if len(moved) > 6:
-                        why += "+"
-                    self.conn.execute(
-                        "update carts set state = 'stale', stale_reason = %s where name = %s",
-                        (why[:200], name))
-                    marked.append(name)
-            if marked:
+            rows = self.conn.execute(CART_STALE_HOOK_SQL, (why, ids, ids)).fetchall()
+            if rows:
                 self._bump()
             self.conn.commit()
-        return marked
+        return sorted(r[0] for r in rows)
 
     def _touched(self, ids=None, reason: str = "write") -> None:
         """One more committed write. The SQLite era sealed a snapshot every 50th write so a power
         loss lost at most 49; the cluster's own WAL and checkpoints own durability now, so this
         is the counter plus the staleness hook - kept because the write paths and stats read it.
-        ids (when a caller passes them) mark any fresh cart minted from those rows stale; the
-        re-mint itself waits for a background window, never the request path (S3 staleness law)."""
+        ids (when a content write passes them) mark any fresh cart built from those rows stale;
+        the re-mint waits for the background window, never the request path (S3 staleness law).
+        The hook must not fail a COMMITTED write - but a swallowed exception must also not leave
+        the shared connection idle-in-transaction (audit finding 8): rollback first, announce,
+        and let the scan catch what the hook missed."""
         self._writes += 1
         if ids:
             try:
                 self.cart_mark_stale(ids, reason)
-            except Exception:    # noqa: BLE001 - staleness is best-effort; the scan re-checks
-                pass
+            except Exception as e:                              # noqa: BLE001 - by law, not by mood
+                try:
+                    self.conn.rollback()
+                except Exception:                               # noqa: BLE001
+                    pass
+                print(f"[strata] memory: cart-staleness hook failed "
+                      f"({type(e).__name__}: {str(e)[:80]}) - the scan will catch it", flush=True)
 
 
 # ---- server glue ---------------------------------------------------------------

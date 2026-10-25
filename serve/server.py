@@ -6966,6 +6966,12 @@ class CartMinter:
         self.max_chars = int(cfg.get("mint_max_chars") or 16000)    # one cart's rendered text
         _mf = cfg.get("mint_max_facts")
         self.max_facts = 200 if _mf is None else max(1, int(_mf))   # C4's ceiling band, guarded
+        # the fallback slot-serial lock (S3 audit finding 6): beside a cartridge, cart.lock is
+        # THE lock seed/restore already hold; without one, svc.fifo is NOT the answer - it is a
+        # plain Lock that svc.run() re-acquires inside, and a non-reentrant lock held across run()
+        # self-deadlocks. CartMinter's own lock serializes mints against each other, which is
+        # all there is to serialize when no cartridge exists.
+        self.lock = threading.Lock()
 
     # ---- sources -> text ---------------------------------------------------------------
 
@@ -6978,6 +6984,11 @@ class CartMinter:
         refuses raises ValueError (HTTP 400): the ledger holds no half-mints."""
         if not isinstance(sources, dict):
             raise ValueError("sources: an object with row_ids, shelf_prefixes, or text")
+        for key in ("row_ids", "shelf_prefixes"):        # the S3 audit's poisoned-scan finding:
+            v = sources.get(key)                         # a string accepted here walks as chars
+            if v is not None and not isinstance(v, (list, tuple)):   # in Python and raises in the
+                raise ValueError(f"sources.{key}: a list expected, got {type(v).__name__}"   # scan
+                                 f" ({v!r})")            # forever after - fail closed at the door
         ids = [int(i) for i in (sources.get("row_ids") or [])]
         prefixes = [str(p) for p in (sources.get("shelf_prefixes") or [])]
         text = str(sources.get("text") or "").strip()
@@ -7027,42 +7038,67 @@ class CartMinter:
         file = "MEM-CART-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:8] + ".bin"
         svc = self.svc
         cart = getattr(svc, "cartridges", None)
+        caught_up = (bool(existing) and existing[0]["file"] == file
+                     and os.path.exists(os.path.join(svc.slot_save_path, file)))
         # one slot transfer at a time: the cartridge's lock is what seed/restore already hold,
         # and the engine refuses an interleaved session file anyway (#465) - a clean wait beats
-        # a retry, same law as Cartridges.ensure.
-        with (cart.lock if cart is not None else svc.fifo):
-            try:
-                svc.load()
-            except Exception as e:                                # noqa: BLE001 - report per op
-                raise memory_api.StoreError(f"engine cannot load for mint: {e}")
-            try:
-                ids, thinking, max_new = svc.prepare(
-                    [{"role": "system", "content": MINT_LEAD + text},
-                     {"role": "user", "content": "Acknowledge with OK only."}], None, {}, 24)
-                for kind_, x in svc.run(ids, thinking, None, max_new or 24, {}, threading.Event()):
-                    if kind_ == "done":
-                        break
-            except Exception as e:                                # noqa: BLE001 - the mint reports
-                raise memory_api.StoreError(f"mint seed failed: {e}")
-            code, r = svc.slot_action("0", "save", file)
-            if code != 200:
-                raise memory_api.StoreError(f"mint save refused {code}: {str(r)[:120]}")
-            tokens, nbytes = int(r.get("n_saved") or 0), int(r.get("n_written") or 0)
-            if cart is not None and cart.applied and cart.state in ("loaded", "seeded"):
-                rc, rr = svc.slot_action("0", "restore", cart.applied)   # hand the slot back
-                if rc != 200:                                       # honest noise, never fatal:
-                    print(f"[strata] carts: restore of {cart.applied} after mint refused "
-                          f"({str(rr)[:100]}) - the next standing event repairs it", flush=True)
+        # a retry, same law as Cartridges.ensure. Without a cartridge, CartMinter's OWN lock
+        # serializes mints (never svc.fifo: a plain Lock that svc.run re-acquires inside would
+        # self-deadlock - audit finding 6).
+        with (cart.lock if cart is not None else self.lock):
+            if caught_up:
+                # The stamp-churn law (audit finding 1): the rendered bytes have not moved -
+                # only the source row's updated_at clock did, from a re-learn the INLINE hook
+                # correctly ignored and the SCAN cannot tell apart. Catch the ledger up without
+                # the engine: no seed, no save, no hand-back, no scar, tokens as recorded. The
+                # scan can afford its conservative clock precisely because this path is free.
+                tokens, nbytes = int(existing[0]["tokens"]), int(existing[0]["bytes"])
+            else:
+                try:
+                    svc.load()
+                except Exception as e:                            # noqa: BLE001 - report per op
+                    raise memory_api.StoreError(f"engine cannot load for mint: {e}")
+                try:
+                    ids, thinking, max_new = svc.prepare(
+                        [{"role": "system", "content": MINT_LEAD + text},
+                         {"role": "user", "content": "Acknowledge with OK only."}], None, {}, 24)
+                    for kind_, x in svc.run(ids, thinking, None, max_new or 24, {},
+                                            threading.Event()):
+                        if kind_ == "done":
+                            break
+                except Exception as e:                            # noqa: BLE001 - the mint reports
+                    raise memory_api.StoreError(f"mint seed failed: {e}")
+                code, r = svc.slot_action("0", "save", file)
+                if code != 200:
+                    raise memory_api.StoreError(f"mint save refused {code}: {str(r)[:120]}")
+                tokens, nbytes = int(r.get("n_saved") or 0), int(r.get("n_written") or 0)
+                if cart is not None and cart.applied and cart.state in ("loaded", "seeded"):
+                    applied_was = cart.applied
+                    rc, rr = svc.slot_action("0", "restore", applied_was)  # hand the slot back
+                    if rc != 200:                                   # honest noise, never fatal -
+                        cart.applied = None                         # but drop the claim: ensure's
+                        print(f"[strata] carts: restore of {applied_was} after mint refused "
+                              f"({str(rr)[:100]}) - the next standing request re-installs it",
+                              flush=True)                           # fast path must NOT keep
+                                                                    # vouching for bytes the
+                                                                    # slot no longer holds
+                                                                    # (audit finding 5)
         src = dict(sources)
+        if sources.get("row_ids") or sources.get("shelf_prefixes"):
+            src["n_sources"] = n_rows      # the count the scan's absence arms watch (a purge
+                                           # leaves no timestamp; only a count sees the hole)
         if cart is not None and cart.applied:
             src["base"] = cart.applied    # composed ALONGSIDE this standing file (provenance for
                                           # S4's graft; the cart's own rows were seeded from 0 and
                                           # the graft re-anchors them - the graft law, not here)
         reg = svc.memory.cart_register(name, file, kind, src, tokens, nbytes)
-        reg.update({"tokens": tokens, "bytes": nbytes, "text_chars": len(text), "facts": n_rows})
+        reg.update({"tokens": tokens, "bytes": nbytes, "text_chars": len(text), "facts": n_rows,
+                    "caught_up": caught_up})
         if gone:
             reg["dropped_rows"] = gone        # the re-mint law: gone rows drop with an
-        print(f"[strata] carts: {'re-minted' if reg['previous_file'] else 'minted'} {name} "   # announcement,
+        mode = ("caught up (same bytes, engine untouched)" if caught_up else      # announcement,
+                "re-minted" if reg["previous_file"] and not reg["created"] else "minted")
+        print(f"[strata] carts: {mode} {name} "                                  # never silence,
               f"({kind}, {len(text):,} chars -> {tokens:,} tok, {nbytes / 1e6:.1f} MB, {file})"
               + (f", dropped gone rows {'+'.join(str(i) for i in gone[:6])}" if gone else ""),
               flush=True)
@@ -7108,8 +7144,10 @@ class CartMinter:
 
     def carts(self, name: str = "") -> list:
         """The ledger with one honest extra field: whether the .bin the row names ACTUALLY stands
-        in the vault (the surfaces report absences, they do not assume them)."""
-        rows = self.svc.memory.carts_get(name)
+        in the vault (the surfaces report absences, they do not assume them). The filter speaks
+        the ledger's own tongue: names are stored lowercase (NAME_RE), so "Page1" must FIND
+        page1, not answer an empty list that reads like an absence (audit finding 12)."""
+        rows = self.svc.memory.carts_get(str(name or "").strip().lower())
         vault = self.svc.slot_save_path or ""
         for r in rows:
             r["file_exists"] = bool(vault) and os.path.exists(os.path.join(vault, r["file"]))
@@ -10455,13 +10493,16 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         # M3b: the tier-2 standing cartridge rides the same config - {"cartridges": {"enabled": true,
         # "class_prefixes": [...], "max_chars": N}} - and needs slot_save_path for its session file.
         cart_cfg = mcfg.get("cartridges")
-        if isinstance(cart_cfg, dict) and cart_cfg.get("enabled") not in (None, False, 0, "", "off"):
+        if isinstance(cart_cfg, dict) and cart_cfg.get("enabled") is not None \
+                and not _memory_switch_off(cart_cfg.get("enabled")):      # opt-IN: absent is off
             if not svc.slot_save_path:
                 print("[strata] memory: cartridges need slot_save_path - staying off", flush=True)
             else:
                 svc.cartridges = Cartridges(svc, cart_cfg)
-                if cart_cfg.get("minted", True) not in (None, False, 0, "", "off"):   # S3 (2026-10-25)
-                    svc.carts = CartMinter(svc, cart_cfg)          # the mint pipeline stands WITH
+                if not _memory_switch_off(cart_cfg.get("minted", True)):   # S3 (2026-10-25):
+                    svc.carts = CartMinter(svc, cart_cfg)   # the mint pipeline stands WITH the
+                                                           # cart; minted:false opts out by any
+                                                           # honest spelling (audit finding 13)
                 print(f"[strata] memory cartridge on: shelves {', '.join(svc.cartridges.prefixes) or '(none)'} "
                       f"up to {svc.cartridges.max_chars:,} chars, file dir {svc.slot_save_path} "
                       f"(restored at the first standing request; the engine pins the file to model+engine)",

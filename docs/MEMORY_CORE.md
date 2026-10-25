@@ -2669,6 +2669,49 @@ hand-back counted, the index line riding and going quiet). Suite: 1,255 passed, 
 the boot that carries this: `carts` table on the prod store, the row zero registering itself, one
 real episode cart minted from a fetched page, and `m8` reporting a clean ledger each tick.
 
+**Addendum, 2026-10-25 - the adversarial audit and the fix pass.** A fresh-eyes review of the
+S3 commit returned 13 findings (3 MAJOR). All three majors were real and are fixed the same
+day; nothing in the design moved, three places where the law was thinner than its promise:
+
+1. **Stamp churn.** The scan's clock (`updated_at > minted_at`) cannot tell a harvest re-learn
+   STAMP from a content move, so an actively re-learned source row made its cart pay a full
+   re-mint - seed plus a ~236 MB save - every tick, forever. The mint now knows its own bytes:
+   when a re-mint renders to the SAME content-hash file and the `.bin` still stands in the
+   vault, it catches the ledger up **without the engine** - no seed, no save, no hand-back, no
+   scar (law 6 at the mint level). The scan can afford its conservative clock precisely because
+   this path is free.
+2. **Poisoned sources.** `jsonb_array_elements_text` RAISES on a jsonb scalar and `coalesce`
+   does not catch a jsonb null: one accepted `"row_ids": null` or string `"shelf_prefixes"`
+   could blind every scan, every tick, while the Python twin walked the string char by char
+   and disagreed with the SQL. The mint door now refuses scalars (400), the SQL arms carry
+   `jsonb_typeof` guards for stores that already hold one, the twin skips instead of iterating.
+3. **Absence.** A purge erases a row AND its timestamp together. A purged NAMED row is caught
+   inline (the id arm matches ids, no join); a purged row under a watched PREFIX was invisible
+   to both clocks - the cart's text no longer matched its shelf while the ledger said it stood.
+   The mint now records `n_sources`; the scan grew a left-join arm (vanished named id) and a
+   count arm (the world smaller than at mint); and the inline expansion stopped filtering
+   tombstones, so invalidating a prefix row is heard the same request.
+
+The minor fixes: the hook is ONE set-based UPDATE - Postgres does the matching, the old Python
+loop expanded every watched shelf per write, forever, on the store lock; a refused hand-back
+after a mint now CLEARS `applied`, which makes "the next standing event repairs it" true (the
+window fast path no longer vouches for bytes the slot stopped holding); the no-cartridge mint
+lock is CartMinter's own - `svc.fifo` is a plain Lock that `run()` re-acquires and was a
+self-deadlock landmine, not a 503; the m8 window keeps `--quiet` honestly when the ledger is
+absent, says "store unreachable" instead of wearing the no-ledger costume, PREVIEWs the scan
+in dry mode through the shared `CART_SCAN_WHERE` (one law, two verbs), and treats a dead
+server as a tick, not a traceback; the config gates read `minted` / `enabled` through
+`_memory_switch_off` (absent still means opt-in: carts stay OFF until told); the prefix
+matcher moved to `shelf_sql`'s boundary (X, X.Y, X/Y, never Xyz) so the renderer and the
+staleness law agree about what a cart's shelf IS; `op=carts` lowercases its name filter
+(an uppercase typo used to answer like an absence). Known and accepted, kept on the record:
+`previous_file` is one deep (the count keeps the whole total); `classify` pins `updated_at`,
+so an out-of-process re-shelve is caught by the count arm, not the clock; the 503 arms and
+the no-cartridge fallback are read-verified, not run-verified until the live-verify boot.
+Tests: +7 cases (inline and scan absence arms, the scalar guards, stamp churn catching up
+with the save count pinned, the re-mint scar over HTTP, filter casing, the 400 door), one
+test renamed because its name promised a fact-cap assertion it never made.
+
 
 ## Licensing and attribution
 
