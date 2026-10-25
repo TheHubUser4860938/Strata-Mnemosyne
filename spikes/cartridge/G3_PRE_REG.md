@@ -72,9 +72,9 @@ refit here).
 ## Countersign
 
 - Clio signed 2026-10-25 (rubric fixed before the run; the sweep's classifier scar is in the rubric).
-- Owner countersign: ____________________  date: ____________
+- Owner countersign: verbal "Go", 2026-10-25 (stamped by Clio at the run's start).  date: 2026-10-25
 - Gold addendum (appended before the first ask, both signatures required): appended 2026-10-25,
-  pending countersign (see below).
+  countersigned with the rubric by the same verbal "Go" (the two-stage seal closed at once).
 
 ## Gold addendum (2026-10-25) - three carts minted live, thirty marker QAs
 
@@ -138,4 +138,47 @@ gold 3 ("zero") is asked against a compose that EXCLUDES merge-notes - expected 
 it answers.
 
 - Golds drafted by Clio 2026-10-25; owner countersign of THIS table + the rubric above = the
-  run's two-stage seal: ____________________  date: ____________
+  run's two-stage seal: verbal "Go", 2026-10-25 (stamped by Clio at the run's start).
+
+## Results (dated addendum, appended 2026-10-25 after the run; rows: bench/g3/g3_122759/, log: bench/g3/full_run_1227.log)
+
+Run: 3 passes x 30 golds x 3 arms + 3 control asks = 273 rows; temp 0.8 (bench law),
+X-Strata-Memory-Block: off, tool_choice none, max_tokens 64; standing MEM-CRG-1ae6aa29.bin held
+the whole run (the no-rotation guard was wired and never fired).
+
+**VERDICT: GATE 3 PASS. The graft ships on the composed text-riding arm (A).**
+
+1. RECALL, as scored by the frozen scorer: A 0.900, B 0.933, C 0.256 (n=90 each).
+   Gate A >= 0.9 x B: overall 0.964; per-cart c4 0.926, mam 1.000, merge 0.964. All >= 0.9.
+2. PREFILL-FREE: median eval/ask A 37 tok, C 41 tok (the question-only baseline), B 1,512 tok.
+   A rides at the question's own tokens (band 27-85); B pays the bodies every turn. Clause met.
+3. FOREIGN CONTROL: merge-notes' "zero" asked against a compose that excludes it answered
+   distractor / idk / distractor - never gold. No leak; the misses confabulate numbers
+   ("touched 38 serve/ files"), the honest shape of a composed-prefix guess.
+
+Scars and amendments, in order of discovery. Frozen-instrument law: the scorer was NOT touched
+mid-run; both arms wore the same scorer, so the ratio stands; the correction is reported beside
+the raw, the scar stays visible.
+
+- POST-RUN: the digit/version lookahead (?![\d.]) rejected sentence-final periods - "96.",
+  "0.1.50.", "0.996." counted "other". 6 of A's 9 misses and 3 of B's 6 were this bug; the rest
+  are genuine temp-0.8 early stops ("Must", "The", "0"). Corrected scorer (lookahead (?!\d)):
+  A 0.967, B 0.967, C 0.278; gate 1.000 overall AND per-cart. Verdict identical under both.
+- POST-RUN: B's conversation-0 first ask re-evaluated the WHOLE prompt (exactly 8,057 tok) in all
+  three passes - deterministic, correctness intact (all three answered gold). A conversation-start
+  cost after restore, not steady state; the medians above are the tax claim.
+- PRE-RUN (runner code, logged against the signed rubric): tool_choice none - smoke caught the
+  mounted search tool answering state-only asks (the first control cited store fact 5818: the
+  research arm was reading the store, not its state); m3 gold variants expanded ("none",
+  "no serve"); refusal-position rule (a refusal opening the answer abstains even if a marker
+  arrives later); numeric equivalence for numeric markers ("1.00" is the gold 1.000, "18" is not
+  the gold 8); max_tokens 48->64 after smoke truncation.
+- Compose rebuilds cost 7 eval tok: a restore does not truncate the slot tail and identical LEAD
+  bytes prefix-match the retained rows. Per-ask alignment is verified by A's eval band (27-85).
+
+ARM C, the research line (reported, not gated): the state-only read is NOT dead on this hybrid -
+0.278 corrected, with a cart-driven spread (merge 0.433, c4 0.300, mam 0.100) and 47% honest idk.
+The morning probe's 0/4 was real but pessimistic at n=90. Cartridge CONTENT, not question shape,
+drives the spread - S4.x research territory (seed/read shape, KV_ROT, engine-side anchors).
+
+Signed post-run: Clio 2026-10-25; owner countersign of THIS addendum: ____________________  date: ____________
