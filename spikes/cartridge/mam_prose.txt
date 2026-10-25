@@ -1,0 +1,32 @@
+The AKBASCORE Silicon Hippocampus is a piece of research, not a list of numbers. Its author is
+Mustafa Akbas of AKBASCORE in Mersin, Turkey, who runs a family of programmes named Titan
+Cognitive Core, AkbasCore, SEASC, NIRVANA, and MAM (which stands for Model-Native Associative
+Memory). The reference excerpt is from their demonstration run TEST745, dated 22 Oct 2026 and
+fetched 2026-10-25.
+
+The idea works like this. A cartridge is neither text nor weights. It is internal tensors caught
+at a transformer boundary: the slice called CUT3, meaning hidden state H3 together with the K/V
+of layers 0 through 3, forged by running the model twice over a source body. The cartridge is
+written to SSD with a SHA-256 file hash and tensor-level seals, verified when reloaded, and
+injected at the layer-3 boundary while the frozen model recomputes layers 4 through 79. Because
+of that, a question can be appended to the rebuilt memory and answered while the body text is
+nowhere in the prompt; they call this reading state-without-text.
+
+The run itself was modest in size and careful in its controls. The model was a frozen
+Qwen2.5-72B-Instruct on one A100-80GB. Akbas built eleven physical cartridges: three source
+segments named C01-C03, each carrying 761-762 body tokens and 25.9 MB of state; three subsystem
+synthesis cartridges S01-S03; three cross-system cartridges H01-H03; and two masters, C11, whose
+blind seal was SHA-locked before he read the final report, and C12, a post-outcome master whose
+metadata still points at C11's file hash. Eight review rounds were held, and they were
+text-mediated, which matters because it is one of the run's own listed non-claims: synthesis
+between cartridges is text-mediated, not direct tensor fusion. The other non-claims say that no
+transformer is bypassed (the upper layers still run), that no measured end-to-end speed
+advantage exists, that the cartridges are not shown portable across architectures, and that the
+blind seal is only a procedural access boundary, not freedom from pretraining leakage.
+
+Two numbers from the record belong side by side. Independent post-run verification passed 11/11
+cartridges on file SHA, tensor seal, and re-derived body, while human expert grading of the
+blind answers is still pending. And the routing idea did not arrive from nowhere: TEST610 and
+TEST642 had used PCA128 and FAISS IVF128 indexing to select and retrieve over the cartridge
+pool, so Akbas's own stated next questions - scaling to larger SSD banks, exact-address
+retrieval, selective loading - are our S4 selection law, in his words.
