@@ -125,3 +125,25 @@ v3 0.70 PASSED (17/20 browsed). Pooled across pilots: browsed 21/26 correct vs n
 bench/browse_pilot_2026-10-24.jsonl, browse_pilot_v{2,3}_2026-10-24.jsonl,
 browse_day_2026-10-24.jsonl + .metrics.json sidecar. The hybrid arm (block on + tool on) is a
 NEW arm, not this one's continuation: it gets its own pre-registration and venue day.
+
+**Live-box pilot (appended 2026-10-24 late night; the venue rubric above stays untouched).**
+The pilot question set, 20 fixture questions mined from the LIVE store (gold rows cited per
+question in `LIVEBOX_PILOT_2026-10-24.jsonl`; 5 abstention / 5 temporal / 6 single / 4 multi -
+the venue's 5/5/5/5 composition trimmed to what shelved rows can honestly support), run BOTH
+arms on the daily box under the persona template (the standing cart live), one boot, embedder
+embeddinggemma-2 (the swap landed the same night - cross-arm valid, vs the banked 0.666/0.682
+cross-instrument). Runner imports `ask`/`judge` from the venue harness, not restated. Result:
+**served 0.85 = browsed 0.85**; browsed takes multi-session 1.00 vs 0.75 (the two-row syntheses
+the served block missed), abstention scores 0.80 vs 0.60 but BOTH arms refused all five - the
+misses are the banked bare-`idk` scorer quirk, not model behavior (shape, not score). Temporal
+1.00/1.00 both arms. The two open questions answered: **(1) the daily `calls: 0` ledger is
+neither a model-behavior failure nor a harness fault** - with the block declined the persona
+model drives the tool eagerly (33 calls / 20 answers = 1.65 rounds; searches 29, walks 4), and
+even served it escalates ~1 call/answer on factual questions; real conversational traffic just
+does not need the store, which is the hybrid law working as designed. **No forced rounds.**
+**(2) A latency inversion worth recording: browsed median 3.9 s BEAT served 4.7 s** - on a
+1,789-row store the browsed prompt is smaller than the served block; the venue day's
+"browsing pays 2.2x" was the size of the 10,978-row block, not a law of browsing. And a null
+with a consequence: **`maps: 0` in both arms** - the persona never asked the catalog, it
+already carries the map in skill.md; S3's attach surface should assume non-persona clients
+are the catalog's real audience. Records: bench/livebox_pilot_2026-10-24.jsonl + .metrics.json.
