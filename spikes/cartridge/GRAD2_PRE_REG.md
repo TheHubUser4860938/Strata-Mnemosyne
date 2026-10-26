@@ -99,3 +99,40 @@ gate measured; the ship decision is the owner's, made on the shape: recall 1.000
 zero-ruts, cost median -42% vs prefix, depth -61%, latency -53%. Remaining science,
 not decision: P11 (p11_run.py) probes WHY prefix's parked history stops reusing at
 long-answer depth; its predictions were frozen in the runner's docstring before the run.
+
+## AMENDMENT (same day, from P11 tag 155054 - corrects point 4's attribution above)
+
+P11 (5 arms x 25 turns, predictions frozen in p11_run.py's docstring before the run)
+shows point 4 above MIS-ATTRIBUTED the poison. The head carts are INNOCENT: prefix
+carts with the block OFF run flat at ~34 eval tok/ask (P2; the whole prefix+history
+reuses; carts absorbed). What drives the growth is the server-injected VOLATILE TAIL
+BLOCK: block alone with NO carts grows the same (2,846 -> 6,901; and its turn-25 drop
+to 816 = a checkpoint landing mid-run - direct evidence of checkpoint disruption by
+volatile tails). P10's flat 350 was real but measured a PASTED (history-stabilized)
+block; P5's flat 540 confirms the law: volatile bytes that persist in the client's
+history cache fully - it is cache GEOMETRY, not token count, exactly as predicted.
+
+THE UNIFIED LAW (slopes vs answer length): when the tail is volatile, checkpoints stop
+landing, and each ask re-evaluates everything since the last checkpoint - so per-turn
+cost grows with whatever you GENERATE (answers) plus whatever you INJECT (block,
+anchor). Measured slopes: anchor arm 29-word answers -> +81 tok/turn; block-only 102
+words -> +213; prefix 175 words -> +308. The anchor wins its cost edge twice over:
+terse answers (the fact is in front of the model - ~6x terser) shrink the replayed
+history MORE than its re-presented bodies add. Real production effect, not pure cache
+magic - stated plainly.
+
+TWO SIDE FINDINGS (logged): (a) P3's one sanity miss (pos 19) was an EMPTY completion -
+an engine artifact, not a recall failure; anchor recall across both runs: 90/90 + 24/25
+with the one miss blank. (b) Cart conversations paid ~11K at turn 1 (all cart arms,
+either mode) while the no-cart arm paid 1,302 - carts appear to break the installed
+standing state's reuse at conversation start (n=1 per arm; engine-level question for a
+venue night; if fixable it saves ~10K on every conversation's first ask).
+
+THE SHIP STANDS: under identical conditions (both arms block ON) the anchor won recall
+(1.000 vs 0.989), cost (3,588 vs 6,222 median) and latency (3.42 s vs 7.31 s). grad2
+measured what ships; P11 only corrected the WHY. Open knobs for future nights: tail-block
+freshness vs cost (a pinned tail block would ride P2's flat-34 ceiling but age mid-window);
+the carts x standing-restore question above; and the HARVEST CAVEAT - the store now
+shelves its own bench answers (floor rose 0.400 -> 0.578 across the day; P11's NO-CART
+arm scored 25/25 because the shelves had learned the golds), so future cart benches want
+novel golds or harvest-off windows.
