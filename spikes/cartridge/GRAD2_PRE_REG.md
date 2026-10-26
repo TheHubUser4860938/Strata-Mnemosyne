@@ -153,3 +153,38 @@ victim has a reason in its provenance and the kill list is banked at
 bench/p1/cleanup_killlist_full.txt. The contradiction row (v0.2.5 "nine serve/
 files" vs the merge cart's ZERO) was a phantom the curation sweep kept
 re-annotating - the cart is the ratified record.
+
+## CONFIRM RUN (option B's dice, rolled after the owner's A - 2026-10-26 evening, tag 171027)
+
+    N ANCHOR 0.989 (n=90) | med eval 3,389 | buckets 2,622 3,117 3,786 | per-pass 1.0 0.967 1.0 | med 3.39 s
+    P PREFIX 0.989 (n=90) | med eval 5,514 | buckets 1,965 3,730 7,194 | per-pass 1.0 0.967 1.0 | med 6.53 s
+    C FLOOR  0.367 (n=90) | med eval 35 tok (gauge; moved with the standing text again - 0.400 ->
+             0.578 -> 0.367 across three standings, exactly the Amendment-2 mechanism)
+    LITERAL VERDICT AGAIN: NOT YET - the recall-margin leg again (0.989 < 1.009).
+
+MISS FORENSICS (both draws, both arms): NO RUTS anywhere on the tail stack. This draw's
+two misses: N pass 2 pos 1 = a rambling-preamble drift (verbose answer that never landed
+the phrase, early-window, no cluster); P pass 2 pos 3 = an HONEST refusal at the gold
+boundary ("the cart never gives me a count for C01 alone" - the cart says 761-762 each).
+The main draw's misses were also isolated. Six windows per arm, zero collapses.
+
+JOINED DOCTRINE (the two draws + P11, tail-recall stack):
+1. RECALL IS A TIE. N: 203/206 (three misses, one an empty completion, one a preamble
+   drift, one gold-boundary); P: 178/180 (two gold-boundary/isolated). Statistically
+   equal; neither arm ruts.
+2. THE RUT DISEASE WAS THE HEAD BLOCK'S, NOT THE PREFIX CARTS'. Both arms ride prefix
+   carts now (N in the tail, P in the head); neither collapses (0/6 windows) where the
+   head-block stack collapsed 2-in-6 (A6). If prefix still ruted at 33%, zero in six
+   is p = 0.088 - the tail-block move cured or nearly cured it. The anchor's
+   rut-immunity argument DEMOTES to head-stack history; the A6 finding stays true as
+   measured, its cause was mis-sold: it was the poison block, not the cart position.
+3. THE ANCHOR'S SHIP CASE IS ECONOMICS AND HYGIENE, and it reproduced whole: median
+   -39% (3,389 vs 5,514), depth -47% (3,786 vs 7,194), wall-clock -48% (3.39 s vs
+   6.53 s), history lean, no parked-prefix forking. Weak dominance: tie on recall,
+   win on everything else measured. The owner's Option A stands - sharpened, not
+   changed: it was the cheaper arm AND it stayed that way on the second draw.
+4. Both arms' eval ran slightly under the main draw's (smaller tail blocks post-
+   cleanup, as predicted; store 1,453 vs 1,711).
+GATE CLOSED AS DESIGNED: it asked "does the anchor buy recall margin over prefix" and
+the answer, at n=2 draws, is "no - the tail move already bought that; the anchor buys
+cost." The ship was ratified on the shape, and the shape held.
