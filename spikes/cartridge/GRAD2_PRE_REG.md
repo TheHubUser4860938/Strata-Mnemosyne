@@ -136,3 +136,20 @@ the carts x standing-restore question above; and the HARVEST CAVEAT - the store 
 shelves its own bench answers (floor rose 0.400 -> 0.578 across the day; P11's NO-CART
 arm scored 25/25 because the shelves had learned the golds), so future cart benches want
 novel golds or harvest-off windows.
+
+## AMENDMENT 2 (2026-10-26 evening, correction by Clio - public ledger)
+
+The harvest caveat in the AMENDMENT above mis-attributed the floor rise (0.400 ->
+0.578) to the shelves. The C floor arm runs X-Strata-Memory-Block: OFF and never
+sees the shelves at all; the rise came from the STANDING text - my always.md queue
+rewrites quoted the bench's own numbers into the persona's mouth. (The harvest
+claim itself stands for the block-ON arms: P11's P4 scored 25/25 because the
+shelves had learned the golds.) The hygiene lesson survives, sharpened: benches
+should mint novel golds AND keep their answer numbers out of the standing prose.
+Store cleanup ran the same evening: 1,711 -> 1,453 active, 258 tombstones
+(128 bench echoes, 83 supersession chatter, 37 assistant-behavior chatter, 7 probe
+chatter, 1 each stale-claim/pure-noise/contradicts-cart), zero failures; every
+victim has a reason in its provenance and the kill list is banked at
+bench/p1/cleanup_killlist_full.txt. The contradiction row (v0.2.5 "nine serve/
+files" vs the merge cart's ZERO) was a phantom the curation sweep kept
+re-annotating - the cart is the ratified record.
