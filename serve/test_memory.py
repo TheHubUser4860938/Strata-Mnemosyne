@@ -3264,7 +3264,7 @@ class Attach(Mint):
         st, _ = self.ask("attached ask", [("X-Strata-Carts", "zeta, alpha")])
         self.assertEqual(st, 200, st)
         p = self.prompt_text()
-        self.assertIn("notes below ride on this conversation's prefix", p, "the lead rides")
+        self.assertIn("notes below are carried for this conversation", p, "the lead rides")
         self.assertIn("alpha body AQ", p)
         self.assertIn("zeta body ZQ", p)
         self.assertLess(p.index("[alpha]"), p.index("[zeta]"), "the byte law: names sort")
@@ -3347,10 +3347,66 @@ class Attach(Mint):
         p = self.prompt_text()
         self.assertIn("A cart is pulled to this turn", p)
         self.assertIn("pulled body PQ", p)
-        self.assertIn("Cart pulled to the tail this turn", p, "the index names it as tail, not prefix")
+        self.assertIn("Cart carried at the tail this turn", p, "the index names it as tail, not prefix")
         self.assertLess(p.index("the question"), p.index("pulled body PQ"),
                         "the pull is a pure append: the conversation's bytes come first "
                         "(cache-safe, the C6 call)")
+
+    # ---- ANCHOR MODE (2026-10-26, the graduation/A6/P10 synthesis) -------------------------
+
+    def test_anchor_mode_rides_tail_ahead_of_question(self):
+        self.http("POST", "/memory", {"op": "mint", "name": "anch",
+                                      "sources": {"text": "anchor bytes AX"}})
+        st, _ = self.ask("what did the anchor say", [("X-Strata-Carts", "anch"),
+                                                     ("X-Strata-Carts-Mode", "anchor")])
+        self.assertEqual(st, 200, st)
+        p = self.prompt_text()
+        self.assertIn("anchor bytes AX", p)
+        self.assertLess(p.index("anchor bytes AX"), p.index("what did the anchor say"),
+                        "the anchor rides AHEAD of the question (arm B's proven shape)")
+        self.assertIn("Cart carried at the tail this turn: anch", p)
+        self.assertNotIn("riding this prefix", p, "no prefix claim for anchored carts (honesty law)")
+
+    def test_anchor_mode_keeps_bodies_out_of_the_system_head(self):
+        self.http("POST", "/memory", {"op": "mint", "name": "bx",
+                                      "sources": {"text": "secret body SX never in head"}})
+        st, _ = self.ask("head check", [("X-Strata-Carts", "bx"),
+                                        ("X-Strata-Carts-Mode", "anchor")])
+        self.assertEqual(st, 200, st)
+        p = self.prompt_text()
+        head = p.split("\nuser\n", 1)[0]
+        self.assertNotIn("secret body SX never in head", head,
+                         "the head carries the index clause, not the bodies - cart-set changes "
+                         "never fork the parked prefix (the owner's slot-count concern)")
+        self.assertIn("Cart carried at the tail", head, "the head still ANNOUNCES what rides")
+
+    # ---- TAIL RECALL (P10, 2026-10-26: the block leaves the head, the history caches) ------
+
+    def test_tail_recall_flag_moves_the_block_into_the_newest_turn(self):
+        from serve.memory import request_state
+        mem = self.svc.memory
+        mem.remember("the zygost scale reads 41.2 after calibration", scope="zg")
+        msgs = [{"role": "user", "content": "what does memory say about the zygost scale?"}]
+        hdrs = {"X-Strata-Memory-Scope": "zg"}
+        out_h, _ = request_state(mem, msgs, hdrs, {"model": "m"})
+        sys_h = next(m for m in out_h if m.get("role") == "system")["content"]
+        self.assertIn("zygost", sys_h, "head mode (the default) rides as always - byte-identical")
+        out_t, _ = request_state(mem, msgs, dict(hdrs, **{"X-Strata-Memory-Block": "tail"}),
+                                 {"model": "m"}, block_tail=True)
+        sys_t = next((m.get("content", "") for m in out_t if m.get("role") == "system"), "")
+        self.assertNotIn("zygost", sys_t, "tail mode keeps volatile recall out of the shared head")
+        last_u = [m for m in out_t if m.get("role") == "user"][-1]["content"]
+        self.assertIn("zygost scale reads 41.2", last_u, "tail mode: recall rides the newest turn")
+        self.assertLess(last_u.index("what does memory"), last_u.index("zygost scale reads"),
+                        "the question keeps its slot; the recall follows it (P10's measured arm)")
+        out_b, _ = request_state(mem, msgs, dict(hdrs, **{"X-Strata-Memory-Block": "tail"}),
+                                 {"model": "m"})
+        self.assertNotIn("zygost",
+                         next((m.get("content", "") for m in out_b if m.get("role") == "system"),
+                              ""),
+                         "the header lever alone reaches tail mode (per-request A/B, no config)")
+        self.assertTrue(hasattr(mem, "block_tail") and mem.block_tail is False,
+                        "the constructor default is head: every other box byte-identical")
 
 
 if __name__ == "__main__":

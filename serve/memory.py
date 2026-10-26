@@ -776,6 +776,7 @@ class MemoryService:
                  max_memories: int = 0, dedup_recall: bool = True,
                  encrypt: bool = False, key_file: str = "", passphrase_env: str = "",
                  tool: bool = False, tool_rounds: int = 3, embedder=None, floor_cosine: float = 0.0,
+                 block_position: str = "head",
                  auto_shelve: bool = False, block_min_score: float = 0.0,
                  expose_window: int = 0, expose_step: float = 0.0, expose_cap: int = 3,
                  route_shelves: bool = False, route_demote: float = 0.0):
@@ -871,6 +872,13 @@ class MemoryService:
         # executed by the SERVER (run_with_mcp) - every harness gets browsing with zero client wiring.
         # Off by default: no tool joins the request's list, the prompt bytes stay as they were.
         self.tool = bool(tool)
+        # BLOCK POSITION (P10, 2026-10-26): "head" (the default, byte-identical to every past
+        # build) merges the recall block into the system head; "tail" rides it in the newest user
+        # turn, where the volatile per-turn bytes stop breaking the parked history prefix
+        # (bench/p1/p10_033104: head grows 597->1,340 eval tok with depth, tail holds ~350 flat).
+        # Per-request override rides X-Strata-Memory-Block: tail. Opt-in by config: the default
+        # path stays byte-identical (the fork law).
+        self.block_tail = str(block_position or "head").strip().lower() == "tail"
         # per-request rounds the tool loop runs for THIS store (2026-10-17, the owner's ask after he
         # read the banner's "X-Strata-Memory-Tool: 1 per request" as a count - it is not, 1 is the
         # header's ON value: the count was a bare 3 in run_with_mcp, invisible, until now). 0 =
@@ -1829,7 +1837,7 @@ class MemoryService:
         pulln = [n for n in sorted(by_name)
                  if n in pull_set and n not in attach_set and by_name[n][4] in ("fresh", "stale")]
         if pulln:
-            clauses.append("Cart pulled to the tail this turn: "
+            clauses.append("Cart carried at the tail this turn: "
                            + "; ".join(bit(n, by_name[n][4]) for n in pulln) + ".")
         rest = [n for n in sorted(by_name)
                 if n not in want and by_name[n][4] == "fresh" and by_name[n][1] != "standing"]
@@ -3061,7 +3069,8 @@ class MemoryService:
 
 # ---- server glue ---------------------------------------------------------------
 
-def request_state(mem: "MemoryService | None", messages: list[dict], headers, req: dict) -> tuple[list[dict], dict | None]:
+def request_state(mem: "MemoryService | None", messages: list[dict], headers, req: dict,
+                  block_tail: bool = False) -> tuple[list[dict], dict | None]:
     """/v1/chat/completions' memory step: (messages, ctx). With memory off or muted
     (`X-Strata-Memory: off`), the messages come back untouched and ctx is None -
     the byte-identical upstream path. With nothing recalled, the messages still come back
@@ -3070,7 +3079,14 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
     prepended (pinned per
     conversation), the conversation's newest user message may carry a fresh per-turn block of facts the
     head does not have (see turn_block_for), and ctx carries what to journal when the answer completes.
-    The caller's project scope is `X-Strata-Memory-Scope`."""
+    The caller's project scope is `X-Strata-Memory-Scope`.
+    block_tail=True (P10, 2026-10-26; the owner's experiment lever, config
+    memory.block_position "tail") moves the recall block from the merged system head INTO
+    the newest user turn, AFTER the question and ahead of the turn block: the volatile bytes stop
+    parking in the stable prefix, and the engine re-evaluates only the new turn (measured:
+    head grows 597->1,340 eval tok by depth, tail holds ~350 flat, bench/p1/p10_033104).
+    Per-request A/B rides the header X-Strata-Memory-Block: head|tail, which overrides the
+    config for one request (absent: config value; "off" keeps its Browse-arm meaning untouched)."""
     if mem is None:
         return messages, None
     if (headers.get("X-Strata-Memory") or "").strip().lower() in ("off", "mute", "0"):
@@ -3140,31 +3156,59 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
     # own leading system (OpenCode, Claude Code, ...), merge ours in front of ITS text instead of
     # prepending: the merged head keeps the block's stable bytes at the very front of the prompt,
     # the template sees exactly one system, and the client's instruction is untouched in substance.
-    head = messages[0] if messages and isinstance(messages[0], dict) else None
-    if head is not None and head.get("role") in ("system", "developer"):
-        c = head.get("content")
-        if isinstance(c, list):
-            merged = dict(head, content=[{"type": "text", "text": block}] + list(c))
-        elif isinstance(c, str) and c.strip():
-            merged = dict(head, content=f"{block}\n\n{c}")
-        else:
-            merged = dict(head, content=block)
-        out = [merged] + list(messages[1:])
+    # TAIL MODE (P10, 2026-10-26): the volatile bytes skip the merged system head entirely and
+    # ride the newest user turn instead - the engine reuses the parked prefix up to the last turn
+    # and re-reads only what is new (measured: head grows, tail flat). A newest-user-less request
+    # (system-only) falls back to the head merge: the block always rides or the arm is a lie.
+    _hb = (headers.get("X-Strata-Memory-Block") or "").strip().lower()
+    tail = _hb == "tail" if _hb in ("head", "tail") else bool(block_tail)
+    i_last = next((j for j in range(len(messages) - 1, -1, -1)
+                   if isinstance(messages[j], dict) and messages[j].get("role") == "user"
+                   and text_of(messages[j].get("content")).strip()), None)
+    if tail and i_last is not None:
+        out = list(messages)
     else:
-        out = [{"role": "system", "content": block}] + list(messages)
+        tail = False
+        head = messages[0] if messages and isinstance(messages[0], dict) else None
+        if head is not None and head.get("role") in ("system", "developer"):
+            c = head.get("content")
+            if isinstance(c, list):
+                merged = dict(head, content=[{"type": "text", "text": block}] + list(c))
+            elif isinstance(c, str) and c.strip():
+                merged = dict(head, content=f"{block}\n\n{c}")
+            else:
+                merged = dict(head, content=block)
+            out = [merged] + list(messages[1:])
+        else:
+            out = [{"role": "system", "content": block}] + list(messages)
     # The per-turn block rides the tail, NOT the head: merged into the newest user message, whose bytes
     # are new to the prompt this turn anyway, so the conversation's reused prefix keeps every checkpoint
     # byte it had. The template's one-system rule is untouched - this rides inside a user turn.
+    # Tail mode puts its volatile bytes AFTER the question (P10's measured arm; the question
+    # keeps its slot closest to generation only for the recall that follows it), head mode keeps
+    # the historic prepend. i_last was located in the ORIGINAL list; the head merge only ever
+    # touches index 0, so the position survives either path.
+    def _tail_append(idx, txt):
+        c = out[idx].get("content")
+        if isinstance(c, list):
+            out[idx] = dict(out[idx], content=list(c) + [{"type": "text", "text": txt}])
+        else:
+            out[idx] = dict(out[idx], content=f"{c}\n\n{txt}")
+    if tail:
+        _tail_append(i_last, block)
     if tblock is not None:
         i = next((j for j in range(len(out) - 1, -1, -1)
                   if isinstance(out[j], dict) and out[j].get("role") == "user"
                   and text_of(out[j].get("content")).strip()), None)
         if i is not None:
-            c = out[i].get("content")
-            if isinstance(c, list):
-                out[i] = dict(out[i], content=[{"type": "text", "text": tblock}] + list(c))
+            if tail:
+                _tail_append(i, tblock)
             else:
-                out[i] = dict(out[i], content=f"{tblock}\n\n{c}")
+                c = out[i].get("content")
+                if isinstance(c, list):
+                    out[i] = dict(out[i], content=[{"type": "text", "text": tblock}] + list(c))
+                else:
+                    out[i] = dict(out[i], content=f"{tblock}\n\n{c}")
     return out, ctx
 
 
