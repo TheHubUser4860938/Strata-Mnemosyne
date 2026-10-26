@@ -102,7 +102,12 @@ def chat(messages, headers):
     ans = (ch["message"].get("content") or "").strip().replace("\n", " ")
     return ans, int(u.get("prompt_tokens") or 0), int(det.get("cached_tokens") or 0), dt, ch.get("finish_reason")
 
-NUMTOK = re.compile(r"(?<![a-z0-9.])\d+(?:\.\d+)?(?![\d.])")   # numbers, not "11" inside "C11"
+NUMTOK = re.compile(r"(?<![a-z0-9.])\d+(?:\.\d+)?(?!\d)(?!\.\d)")   # numbers, not "11" inside
+#   "C11", and - the G3 period-fix family, fixed at the shared root between experiments
+#   (2026-10-26): "0.06." at end of sentence or bold ("**0.06.**") now MATCHES - a gold
+#   quoted with its sentence period was scored a miss (grad c6 x2; raw A 0.867 vs re-scored).
+#   Old lookahead (?![\d.]) rejected any trailing dot; (?!\d)(?!\.\d) keeps the decimal-
+#   split guard (never "0" from "0.065") while allowing prose punctuation.
 
 def first_hit(vs, a):
     # Run-prep amendments (logged in Results, the C4 comma-variant precedent): digit boundaries
