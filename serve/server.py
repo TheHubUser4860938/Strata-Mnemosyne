@@ -6986,6 +6986,13 @@ class CartMinter:
         self.attach_max = 10 if _ac is None else max(1, int(_ac))
         _at = cfg.get("attach_max_tokens")
         self.attach_max_tokens = 16000 if _at is None else max(0, int(_at))
+        # Attach MODE (graduation + A6 + P10, 2026-10-26): "prefix" (the S4a default, what grad
+        # and a6 measured: bodies ride the standing prefix once, cache-absorbed - and the A6
+        # rut rate says deep prefix windows collapse 2-in-6) or "anchor" (bodies re-presented
+        # on EVERY request as a tail-side turn ahead of the question - arm B's 90/90 anchor
+        # effect without arm B's history bloat, since the anchor bytes never enter the client's
+        # history). Per-request override rides X-Strata-Carts-Mode: anchor|prefix.
+        self.attach_mode = str(cfg.get("attach_mode") or "prefix").strip().lower()
         # the fallback slot-serial lock (S3 audit finding 6): beside a cartridge, cart.lock is
         # THE lock seed/restore already hold; without one, svc.fifo is NOT the answer - it is a
         # plain Lock that svc.run() re-acquires inside, and a non-reentrant lock held across run()
@@ -7173,7 +7180,7 @@ class CartMinter:
     # itself. Byte law: names sort, bodies render verbatim from the ledger - the same set always
     # composes the same bytes, or the conversation cache pays a re-prefill for nothing.
 
-    ATTACH_LEAD = ("The notes below ride on this conversation's prefix as learned carts. They "
+    ATTACH_LEAD = ("The notes below are carried for this conversation as learned carts. They "
                    "are given knowledge: use them, do not re-learn them, do not restate them.")
     PULL_LEAD = ("A cart is pulled to this turn for reference:")
 
@@ -7226,8 +7233,12 @@ class CartMinter:
          "asked": [...every name the headers named...]} - empty block when nothing rides.
         A store failure reads as nothing attached (the index_line law: the request path never
         dies for a pointer; the page and the mint show the ledger truth)."""
-        att = {"names": [], "block": "", "pull": {"names": [], "block": ""}, "asked": []}
+        att = {"names": [], "block": "", "pull": {"names": [], "block": ""}, "asked": [],
+               "mode": self.attach_mode}
         try:
+            m = str(headers.get("X-Strata-Carts-Mode") or "").strip().lower() if headers is not None else ""
+            if m in ("anchor", "prefix"):
+                att["mode"] = m
             pre = self._attach_names(headers.get("X-Strata-Carts")
                                      if headers is not None else None)
             pul = self._attach_names(headers.get("X-Strata-Carts-Pull")
@@ -7292,8 +7303,33 @@ def stand_on(svc: Service, messages, headers):
     text, the attach-aware cart index line, the attached carts' bodies, and a pulled cart as
     ONE appended user turn. One entry point so every dialect rides the same bytes (the parity
     law - the same lesson as the token-count mirror's review); muted conversations never call
-    it (upstream bytes), and a box without the mint surface gets the cartridge alone."""
+    it (upstream bytes), and a box without the mint surface gets the cartridge alone.
+
+    ANCHOR MODE (2026-10-26, the graduation/A6/P10 synthesis): the attach block skips the
+    system prefix and rides PREPENDED into the newest user turn instead - ahead of the
+    question, which request_state has already fitted with its tail recall. Effect: arm B's
+    per-ask anchor (90/90, no ruts) without arm B's history bloat (the anchor bytes are
+    server-side, never in the client's history), and the prefix stays byte-identical across
+    cart-set changes, so parked conversations stop forking on attach. If the request has no
+    user turn to anchor into, the block falls back to the prefix - the carts ride or the
+    arm says so, never silence."""
     att = svc.carts.attach(headers) if getattr(svc, "carts", None) else None
+    if att and att.get("mode") == "anchor" and att["block"]:
+        i = next((j for j in range(len(messages) - 1, -1, -1)
+                  if isinstance(messages[j], dict) and messages[j].get("role") == "user"
+                  and memory_api.text_of(messages[j].get("content")).strip()), None)
+        if i is not None:
+            messages = list(messages)
+            c = messages[i].get("content")
+            if isinstance(c, list):
+                messages[i] = dict(messages[i],
+                                   content=[{"type": "text", "text": att["block"]}] + list(c))
+            else:
+                messages[i] = dict(messages[i], content=f"{att['block']}\n\n{c}")
+            rode = list(att["names"])                     # the prefix must not double-carry
+            pull = dict(att["pull"])                      # them; the index names them as tail
+            pull["names"] = sorted(set(pull["names"]) | set(rode))   # riders either way
+            att = dict(att, block="", names=[], pull=pull, anchored=True)
     messages = svc.cartridges.prepend(messages, att)
     return svc.carts.apply_pull(messages, att) if att else messages
 
@@ -8949,7 +8985,8 @@ def make_handler(svc: Service):
             # memory-core fork: when the store is on and the request is not muted (X-Strata-Memory: off), a
             # hidden system block of recalled facts is prepended and mem_ctx says what to journal after.
             # With memory off or nothing recalled, messages comes back the exact list it was - upstream path.
-            messages, mem_ctx = memory_api.request_state(svc.memory, messages, self.headers, req)
+            messages, mem_ctx = memory_api.request_state(svc.memory, messages, self.headers, req,
+                                          block_tail=bool(getattr(svc.memory, "block_tail", False)))
             no_tools = tool_choice_of(req.get("tool_choice"))[0] == "none"   # as the Responses route: none offered
             if no_tools:
                 tools = None
@@ -9200,7 +9237,8 @@ def make_handler(svc: Service):
             # memory-core fork (beta item B, 2026-10-12): Codex CLI rides this route, so the
             # harness-independence claim needs the injection here too. After prepare_format so
             # the format's own system text is already part of the head request_state merges into.
-            messages, mem_ctx = memory_api.request_state(svc.memory, messages, self.headers, req)
+            messages, mem_ctx = memory_api.request_state(svc.memory, messages, self.headers, req,
+                                          block_tail=bool(getattr(svc.memory, "block_tail", False)))
             if svc.cartridges is not None:                        # M3b parity, same law as the other routes
                 if mem_ctx is not None:
                     svc.cartridges.ensure()
@@ -9286,7 +9324,8 @@ def make_handler(svc: Service):
             # memory-core fork (beta item B): the count must reflect the prompt this server ACTUALLY
             # reads - with memory on, the injected block is bytes in that prompt, and a client that
             # budgets by this number (Claude Code's context bar) deserves the honest figure.
-            messages, mem_ctx_ct = memory_api.request_state(svc.memory, messages, self.headers, req)
+            messages, mem_ctx_ct = memory_api.request_state(svc.memory, messages, self.headers, req,
+                                          block_tail=bool(getattr(svc.memory, "block_tail", False)))
             # THE SAME MIRROR AS THE ROUTE ITSELF (review 2026-10-24): /v1/messages renders standing
             # (soul + files, one string when the cart rides) -> block -> client, and this count carried
             # soul -> block -> client. Claude Code budgets by this number, so its context bar lay by
@@ -9319,7 +9358,8 @@ def make_handler(svc: Service):
             # /v1/chat/completions got at Stage 1 - Claude Code rides this route, and the
             # harness-independence claim is only as wide as the dialects that carry it. With
             # memory off or muted, messages comes back the exact list it was (upstream path).
-            messages, mem_ctx = memory_api.request_state(svc.memory, messages, self.headers, req)
+            messages, mem_ctx = memory_api.request_state(svc.memory, messages, self.headers, req,
+                                          block_tail=bool(getattr(svc.memory, "block_tail", False)))
             if svc.cartridges is not None:                        # M3b parity: Claude Code conversations stand on
                 if mem_ctx is not None:                           # the same cartridge prefix (one slot is shared
                     svc.cartridges.ensure()                       # by every dialect, so the prefix law is too)
@@ -10605,6 +10645,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 route_shelves=mcfg.get("route_shelves") is True
                               or str(mcfg.get("route_shelves") or "").lower() in ("1", "on", "true"),
                 route_demote=float(mcfg.get("route_demote") or 0.0),
+                block_position=str(mcfg.get("block_position") or "head"),
                 embedder=ed or None)
         except (ValueError, OSError, TypeError) as e:
             raise SystemExit(f"[strata] memory: {e}")
@@ -10653,9 +10694,12 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 print(f"[strata] memory cartridge on: shelves {', '.join(svc.cartridges.prefixes) or '(none)'} "
                       f"up to {svc.cartridges.max_chars:,} chars, file dir {svc.slot_save_path} "
                       f"(restored at the first standing request; the engine pins the file to model+engine)"
-                      + (f"; attach: X-Strata-Carts: name,name (prefix, max {svc.carts.attach_max} "
-                         f"carts / {svc.carts.attach_max_tokens:,} tok), X-Strata-Carts-Pull: name "
-                         f"(tail block, one turn)" if getattr(svc, "carts", None) else ""),
+                      + (f"; attach: X-Strata-Carts: name,name ({svc.carts.attach_mode}, max "
+                         f"{svc.carts.attach_max} carts / {svc.carts.attach_max_tokens:,} tok), "
+                         f"X-Strata-Carts-Pull: name (tail, one turn); levers X-Strata-Carts-Mode: "
+                         f"anchor|prefix" if getattr(svc, "carts", None) else "")
+                      + f"; recall block: {'tail' if svc.memory.block_tail else 'head'} "
+                        f"(lever X-Strata-Memory-Block: tail|head)",
                       flush=True)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
