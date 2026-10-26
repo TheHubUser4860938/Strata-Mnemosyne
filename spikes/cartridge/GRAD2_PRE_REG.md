@@ -87,3 +87,15 @@ DECISION THIS HANDS THE OWNER (the gate is mine; the ship call is his):
 - B. CONFIRM first: re-run grad2 (~35 min, engine free) and let the dice roll again on
   the recall-margin leg.
 - C. Keep prefix default, anchor opt-in - now the conservative choice costs MORE per ask.
+
+## RATIFICATION (2026-10-26 afternoon, the owner's word on the decision menu)
+
+"Option A it is then if it performs the best." - OWNER CALL: the ANCHOR SHIPS as this
+box's attach shape (config attach_mode:"anchor" stays the opt-in lever; the CODE default
+stays "prefix" so every other box remains byte-identical, the fork law intact). C3 is
+CLOSED: the deep-window countermeasure is per-ask anchoring; P8's roll-up demotes to the
+toolbox (0.444 vs 1.000 is not a contest). The literal NOT YET stands above as what the
+gate measured; the ship decision is the owner's, made on the shape: recall 1.000
+zero-ruts, cost median -42% vs prefix, depth -61%, latency -53%. Remaining science,
+not decision: P11 (p11_run.py) probes WHY prefix's parked history stops reusing at
+long-answer depth; its predictions were frozen in the runner's docstring before the run.
