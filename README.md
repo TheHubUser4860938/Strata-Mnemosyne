@@ -6,22 +6,23 @@ itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one s
 harness ever has to re-send history. The server remembers, and it remembers the same way no
 matter which app is knocking.
 
-This fork is based on upstream Strata 0.2.5 — app, Terminal and Control at 0.2.5 / 0.1.50, and every
-engine package (Qwen and DeepSeek) rebuilt at 0.1.50 for this release, so a Qwen install now has a
-newer engine to take. Upstream's own headline list for this round: **one installer per system**
-(Windows and Linux no longer carry an engine — the first start names the one for your card and offers a
-Download button, or "I already have the file" for offline), **DeepSeek V4.1-Flash in the app**, and a
-**Speed choice** for DeepSeek — Faster uses 5 of the model's 6 experts per word and is the default on
-16 GB of graphics memory or less and on shared-memory PCs (upstream measured +16% decode on an
-RTX 5070 and +11 to 13% on Strix Halo, with no quality difference found on an MI325X). DeepSeek got the
-bulk of the work: the RAM store can now hold every expert (it stopped at 48 GB; 12.6 → 21.4 tokens/s on
-one R9700 with 251 GB), the CPU starts on experts it already has (+13.5% on an RTX 5070), and prompts
-now always take the same path for the same length, which is what made answers drift between runs before.
-**For the Qwen path there is one engine change:** on a single CUDA card with all experts in RAM, the
-engine tries the asynchronous tier itself, measures it over 64 windows and keeps it only if it is not
-more than 2% slower. The 0.2.3 round's Strix Halo gains, Intel Arc package, DFlash2 drafter,
-full-context agent chat, OS certificates (#3722) and the CPU worker, VRAM and conversation-cache
-defaults (#3493) all still stand. This fork adds the memory system and the reason-mode steering
+This fork is based on upstream Strata 0.2.7 — app and Terminal at 0.2.7, Control and every engine
+package (Qwen and DeepSeek) at 0.1.52, because both engines changed, so a Qwen install now has a
+newer engine to take. (The 0.2.6 round between was the packaging and docs round: the slimmed landing
+READMEs, the Windows uninstaller fixes, the DeepSeek engine at 0.1.51.) Upstream's own headline list
+for this round: **faster answers on 12 GB NVIDIA cards** — the router prefers experts already on the
+card (+15 to +37% decode on an RTX 3060; cards over 13 GiB unchanged; `STRATA_ROUTE_PRIOR=0` turns it
+off), **faster Qwen on Radeon RX 9000** (+14 to +31% decode on one R9700), **DeepSeek reads pictures
+by default** (the engine's own 319 MiB vision tower, a one-time ~1 GB download, `--vision off` leaves
+it out), **DeepSeek on Strix Halo Windows**, **DeepSeek at 512K and 1M contexts**, **two NVIDIA cards
+pipeline by default and read long prompts layer-major** (the first word after a 32K prompt in 27.7 s
+instead of 141.8 s on two RTX A4000), and a **large refresh of the served web chat page** — wide
+layout, saved chats with edit and rewind, sending while an answer streams, KaTeX math — the very page
+this fork's Memory tab rides on. `STRATA_DEFAULTS=026` (Qwen) and `DS4_DEFAULTS=026` (DeepSeek) return
+every changed default to 0.2.6 in one step. The earlier rounds' gains — the Strix Halo and Intel Arc
+packages, the DFlash2 drafter, full-context agent chat, one installer per system, the DeepSeek RAM
+store and speed-ups — all still stand. Every number in this paragraph is upstream's, from
+docs/release-notes-0.2.7.md. This fork adds the memory system and the reason-mode steering
 described below.
 
 ## The two names, and they are not decoration
@@ -55,7 +56,7 @@ cd Strata
 
 <img width="1278" height="263" alt="image" src="https://github.com/user-attachments/assets/f6f63206-afdb-439a-a9d4-d58ce0ee054a" />
 
-Version 0.2.5 (app and Terminal 0.2.5, Control 0.1.50) · every engine package rebuilt at 0.1.50
+Version 0.2.7 (app and Terminal 0.2.7, Control 0.1.52) · every engine package rebuilt at 0.1.52
 
 <img width="1879" height="434" alt="image" src="https://github.com/user-attachments/assets/1643c829-dc1b-43f5-9952-0d5c4f67f924" />
 
@@ -129,15 +130,15 @@ Download the file for your computer, open it, and press install on the model it 
 
 **Windows 10 / 11**
 
-[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.5-windows-x64-setup.exe)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.7-windows-x64-setup.exe)
 
 **Linux**
 
-[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.5-linux-x86_64.AppImage)
+[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.7-linux-x86_64.AppImage)
 
 **Mac** (Apple Silicon, macOS 15 or newer)
 
-[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.5-macos-arm64.dmg)
+[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.7-macos-arm64.dmg)
 
 The app picks the right engine for your graphics card by itself. All files are on the [releases page](https://github.com/Niko1221/Strata/releases/latest).
 
