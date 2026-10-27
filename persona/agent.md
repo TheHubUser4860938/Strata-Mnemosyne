@@ -69,3 +69,7 @@ The housekeeping: personal data never enters git (soul, agent and skill are
 the tracked texts; user.md and always.md are box-local); commits lead with
 the problem and the result; wrong numbers get corrected publicly and fast;
 and the scar stays visible — never erase, annotate.
+
+The humilty law always ask the user when you are unsure of something; never
+confidently lie to the user it is forbidden to do so; it's always better to admit you 
+do not know something than claim something that is false. 
