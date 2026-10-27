@@ -1,4 +1,4 @@
-# Strata Mnemosyne — Strata with built-in long-term memory (Still in development not ready for everyday use yet) 
+# Strata Mnemosyne — Strata with built-in long-term memory (In daily use — the find-more-bugs phase)
 
 An 180-billion-parameter model running on a normal PC — one graphics card, some system RAM —
 that **remembers**. Not in the client, not per-app: the memory lives at the inference server
@@ -86,6 +86,17 @@ Two things arrive switched **on**, and everything else stays byte-identical to u
   switched the same way to `embeddinggemma-2` (Apache-2.0, 768-d, 8K context, 314 MB q8) on
   2026-10-24; every banked venue number still carries its *bge-small era* label until a
   venue day re-records it.
+
+- **Carrying carts.** A *cart* is a page of learned knowledge - one document, one finished
+  episode, or the standing persona itself - kept in a server-side ledger and attached on
+  demand. A client that sends `X-Strata-Carts: name,name` gets those pages carried into the
+  conversation on every ask, and never has to re-learn or re-send them; bad names never fail
+  the request and are announced, not hidden. This is opt-in per request: send no header and
+  the bytes are exactly as before. The dev box runs the *anchor* shape - the pages are
+  re-presented just before each question, which measured equal on recall and cheaper in every
+  other direction: 179/180 vs 178/180 gold answers, 39% fewer tokens evaluated per ask, and
+  answers in about half the wall-clock time (bench tags 145651, 171027). The whole story -
+  modes, levers, budgets, and the measured laws - is in docs/MEMORY_CORE.md, section S4.
 
 - **Reason modes** (DavidAU model families — see below): 41 framings, pairs, thinking levels
   and an autonomous picker — the server boots already knowing how to consult its own cast
