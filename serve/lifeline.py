@@ -25,6 +25,8 @@ import sys
 import threading
 import time
 
+from pathlib import Path
+
 from serve import winjob
 from strata_control import procs
 
@@ -99,18 +101,25 @@ pid, token = int(sys.argv[1]), sys.argv[2]
 for s in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM):
     signal.signal(s, signal.SIG_IGN)               # it ends with its pipe, not with the terminal
 def start_of(p):
+    # Start time ONLY. `ps`'s stat column changes while a process runs (R while it starts, S while it
+    # sleeps), so including it made this token disagree with the one taken at start and the watcher
+    # spared the child it was meant to end.
     try:
-        out = subprocess.run(["ps", "-o", "lstart=,stat=", "-p", str(p)], capture_output=True, text=True, timeout=5).stdout.strip()
+        with open("/proc/%d/stat" % p, "rb") as f:   # closed explicitly: start_of runs up to 42 times per child
+            raw = f.read().decode("utf-8", "replace")
+        fields = raw[raw.rindex(")") + 2:].split()
+        if fields[0] == "Z":                       # exited; only its parent has not collected it
+            return None
+        return "l:" + fields[19]
+    except Exception:
+        pass
+    if os.path.exists("/proc/self/stat"):          # Linux, and that PID has no /proc entry any more
+        return None
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(p)], capture_output=True, text=True, timeout=5).stdout.strip()
     except Exception:
         return None
-    # IDENTITY = lstart ONLY (the first five fields: "Sat Oct 24 12:34:56 2026"). The old token
-    # carried the STAT column too, and STAT is ephemeral: a child captured mid-exec reads "R"
-    # and sleeps as "S" one heartbeat later, so the comparison said "not my process" and the
-    # watcher walked away from the very orphan it was hired to end (test_lifeline caught it on
-    # Linux via the forced-watcher case, 2026-10-24 - the bug's real home is macOS, the only
-    # production platform without PR_SET_PDEATHSIG). Zombie rejection stays: it never outlives
-    # the capture, the Z check reads the raw line before the trim below.
-    return None if not out or out.endswith("Z") else "s:" + " ".join(out.split()[:5])
+    return None if not out else "p:" + out
 os.set_blocking(0, True)
 data = b""
 while True:
@@ -141,18 +150,37 @@ _watchers_lock = threading.Lock()
 
 
 def _start_token(pid: int) -> str:
-    """The watcher's identity for a child: its start time, which no reused PID can share.
-    Five fields, never the STAT column - see the IDENTITY note in _WATCHER (the R->S drift in
-    a child's first seconds is exactly what made the old token mismatch and orphan the child)."""
+    """The same string for the life of one process, different for a later process with that PID.
+
+    Identity is the start time alone. The previous version ran `ps -o lstart=,stat=` and kept the whole
+    line, so the token changed whenever the process changed state - measured here: one child reported
+    '... R' once and '... S' eleven times inside 150 ms. The watcher then compared its own reading with
+    the token from start time, saw "different process", and exited without ending the child, which is
+    exactly the flake `serve/test_lifeline.py` reported as "the child outlived a killed server".
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+            rest = fields[fields.rindex(")") + 2:].split()
+            return "" if rest[0] == "Z" else "l:" + rest[19]      # starttime, clock ticks since boot
+        except (OSError, ValueError, IndexError):
+            # procfs IS there and the entry is not readable: the process is gone (or is not ours), and there is
+            # nothing to fall back to. Without procfs at all, fall through to `ps` - otherwise this side would
+            # return "" while the watcher's start_of() returns "p:...", the two can never match, and the child
+            # outlives the server: exactly the failure this change removes, restored for that environment.
+            if os.path.exists("/proc/self/stat"):
+                return ""
     try:
-        out = subprocess.run(["ps", "-o", "lstart=,stat=", "-p", str(pid)], capture_output=True, text=True,
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
                              timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
-    return "" if not out or out.endswith("Z") else "s:" + " ".join(out.split()[:5])
+    return "" if not out else "p:" + out
 
 
 def _watch(child: subprocess.Popen) -> None:
+    if not isinstance(child, _REAL_POPEN) or getattr(child, "pid", None) is None:
+        return
     try:
         watcher = subprocess.Popen([sys.executable, "-S", "-c", _WATCHER, str(child.pid), _start_token(child.pid)],
                                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

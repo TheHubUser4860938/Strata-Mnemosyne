@@ -81,6 +81,10 @@ tools/state/retro_*.jsonl
 # text (the retro labeling sheet is a .txt); nothing in it is tracked - ignore it all.
 tools/state/
 
+# Optional MCP raster cache
+*.tool-media/
+/.tool-media/
+
 # local Windows HIP packaging output
 dist-hip/
 

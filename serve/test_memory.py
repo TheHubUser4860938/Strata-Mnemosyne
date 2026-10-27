@@ -1022,8 +1022,15 @@ class MemoryToolRounds(unittest.TestCase):
         ran = [e for e in trace if e.get("event") == "call"]
         self.assertEqual(len(ran), 3, "the default budget is exactly the old bare constant")
         self.assertTrue([e for e in trace if e.get("event") == "limit"])
-        self.assertTrue([e for e in trace if e.get("event") == "result" and e.get("skipped")],
-                        "the fourth call is announced, never run - and says so in the trace")
+        # v0.2.7 loop law (upstream's finalizing round, merged 2026-10-27): the round after the cap
+        # runs with NO declared tool, so a fourth call cannot even be announced-skipped - the engine
+        # recovers its markup as text (#3796) and it lands in the answer. The fork's cap claim is
+        # unchanged and still measured: exactly three browses ran (3 calls, 3 results), the fourth
+        # never did, and its markup is visible in what the reply is.
+        self.assertEqual(len([e for e in trace if e.get("event") == "result"]), 3,
+                         "the results say so too: three ran, none skipped, none beyond the cap")
+        self.assertIn("zygost calibration round 4", msg["content"],
+                      "the fourth call never ran: its markup came back as the answer itself")
 
     def test_unlimited_browses_until_the_model_is_satisfied(self):
         self.boot({"tool_rounds": 0})          # the box's setting, the owner's law
