@@ -2728,3 +2728,56 @@ ledger with `file_exists`.
 - Technical disclosures cited: doi 10.5281/zenodo.23127434, 10.5281/zenodo.23143605, 10.5281/zenodo.23146475,
   10.5281/zenodo.23381336 (MAM / Silicon Hippocampus v1.4, 2026-10-15).
   Closest published systems work: CacheBlend (arXiv 2405.16444), Prompt Cache (arXiv 2311.04934).
+
+
+## S4 - the attach surface: carrying carts, anchoring them, and tail recall (built 2026-10-25/26; LIVE on the dev box, live-verified at the 2026-10-26 14:53 boot)
+
+The mint pipeline (S3) can MAKE carts; S4 is how a conversation GETS them. One header per
+request, nothing else to install: `X-Strata-Carts: name,name` carries those carts' text into
+the conversation, `X-Strata-Carts-Pull: name` offers one cart for this turn only (appended at
+the tail, cache-safe). Bad names and over-budget sets never fail the request and never pass
+silently: the standing index line announces what rode and what did not. Budgets:
+`attach_max_carts` (default 10 - a hygiene count; the real cap is tokens) and
+`attach_max_tokens` (default 16,000). All of this is opt-IN per request: a client that sends
+no header gets exactly yesterday's bytes.
+
+**Two modes** (`memory.cartridges.attach_mode`, lever `X-Strata-Carts-Mode: anchor|prefix`):
+- `prefix` (the code default): bodies ride the standing prefix once and the engine's
+  conversation cache absorbs them. Cheapest when it caches - see the catch below.
+- `anchor` (the dev box's ship shape since 2026-10-26): bodies are re-presented by the SERVER
+  on every ask, ahead of the question, and never enter the client's history. This is what the
+  graduation bench's paste arm proved by accident: re-presenting the text every ask anchors
+  ATTRIBUTION, not just recall.
+
+**Tail recall** (`memory.block_position: head|tail`, lever `X-Strata-Memory-Block: tail|head`):
+with `tail` the tier-3 recall block rides the newest user turn after the question instead of
+the merged system head. Measured reason (bench/p1/p10_033104): volatile bytes in the stable
+prefix make every later ask re-read history (eval grew 597 -> 1,340 tok with window depth);
+the same bytes at the tail hold flat (~350). This box runs tail; the block-off browse switch
+(`X-Strata-Memory-Block: off`) is untouched.
+
+**What was measured** (this box, engine 0.1.50, temp default 1.0, max_tokens 500, answer-phrase
+scorer; full contracts, tables and addenda in `spikes/cartridge/GRAD_PRE_REG.md`,
+`GRAD2_PRE_REG.md`, rows under `/home/eugene/Strata-data/bench/p1/`):
+- Graduation of PREFIX attach against naive per-ask paste: NOT YET - prefix windows collapsed
+  2-of-6 on the head-block stack (A6), and the collapses were confident MIS-ATTRIBUTION
+  (right number, wrong cart named), which is worse than forgetting.
+- grad2 + confirm run (tags 145651, 171027), ANCHOR vs PREFIX both on tail recall:
+  recall 1.000 vs 0.989, then 0.989 vs 0.989 - a TIE with zero ruts in either arm over six
+  windows each. The ruts were the HEAD BLOCK's disease, not the prefix carts' (prefix carts
+  with the block off run flat at ~34 eval tok/ask, P11 tag 155054).
+- The anchor's case is economics and hygiene, reproduced on two draws: median 3,389 vs 5,514
+  eval tok (-39%), deep-window bucket 3,786 vs 7,194 (-47%), wall clock 3.39 s vs 6.53 s
+  (-48%), client history lean, parked conversations stop forking when the cart set changes.
+- P11's law for the record: a volatile tail stops the engine's checkpoints landing, so per-ask
+  cost grows with what the model GENERATES plus what the server INJECTS. Consequence: anchored
+  answers run ~6x terser, which is part of why the anchor is the cheaper arm.
+
+**Known edges, owned on the record:** the injected recall block itself is the largest remaining
+per-ask cost at depth (a pinned tail block would ride the flat-34 ceiling at the price of
+mid-window freshness - open knob P12, unbuilt); a fresh conversation's first ask re-prefills
+~10K even though the standing state is installed (when the engine reuses it is an open
+engine-side question, NOT a cart problem - an early "carts break it" reading failed to
+replicate at n=2); one empty completion per ~200 anchored asks (an engine artifact class,
+recorded); the harvest re-shelves's cart content whenever the bench is discussed in a window -
+periodic store cleanups are the standing remedy (2026-10-26: 1,711 -> 1,454 active).
