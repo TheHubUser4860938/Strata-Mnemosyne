@@ -239,6 +239,14 @@ def scope_name(value, fallback: str = DEFAULT_PROJECT) -> str:
     return v if SCOPE_RE.fullmatch(v) else fallback
 
 
+def muted(headers) -> bool:
+    """One law, one verb (audit m1/m2, 2026-10-27): the mute header exactly as request_state
+    declines on it - now readable by the routes too. They read "ctx is None" as "muted", which
+    conflated muting with a tool-continuation that carries no user text: on that arm carts
+    silently declined and the standing vanished mid-loop."""
+    return (headers.get("X-Strata-Memory") or "").strip().lower() in ("off", "mute", "0")
+
+
 def norm_text(text: str) -> str:
     """Casefolded, whitespace-collapsed: dedup identity and cache keys."""
     return " ".join("".join([c if c.isalnum() or c.isspace() else " " for c in str(text).casefold()]).split())
@@ -1798,14 +1806,20 @@ class MemoryService:
         return header + "\n" + "\n".join(lines), len(lines), left
 
     @_heals
-    def cart_index(self, attached=None, asked=None, pulled=None) -> str:
-        """The one-line cartridge index behind the standing text (S3's attach surface, the Grok
-        interface; S4 made it ATTACH-AWARE, 2026-10-25). Three honest clauses, each present only
-        when its subject exists (the anti-vacuity law): carts RIDING this prefix are named as
-        loaded; fresh carts that stay in the ledger are named as attachable; names the client
-        ASKED for that cannot ride are ANNOUNCED with their reason - an absent thing is never
-        silently "not enough". Row zero is excluded - it IS the prefix the line rides behind.
-        Nothing stands and nothing was asked: '' - no bytes ride."""
+    def cart_index(self, attached=None, asked=None, pulled=None, anchored=False) -> str:
+        """The one-line cart index behind the standing text (S3's attach surface; ATTACH-AWARE
+        since S4; TWO SHAPES since the M1 amendment, 2026-10-27). Every clause appears only
+        when its subject exists (the anti-vacuity law); Row zero is excluded - it IS the
+        prefix the line rides behind; nothing stands and nothing was asked: '' - no bytes ride.
+        HEAD shape (prefix mode, or anchor with nothing riding): the full announcement - carts
+        RIDING this prefix are named as loaded, fresh carts waiting in the ledger are named as
+        attachable, and names ASKED for that cannot ride are ANNOUNCED with their reason. A
+        PULL gets no clause here: the appended turn self-announces via PULL_LEAD, and keeping
+        the clause in the head forked it twice over every one-shot pull (audit M1's trigger A).
+        ANCHOR shape (anchored=True - this request's bodies ride at the tail): the ledger
+        catalog ONLY, so the head is request-invariant and a parked conversation does not fork
+        on attach; what a turn carries and what it skipped is announced at the tail, where the
+        bytes are."""
         names = [str(n) for n in (attached or [])]
         pulls = [str(n) for n in (pulled or [])]
         ride = {n.lower() for n in names + pulls}
@@ -1828,6 +1842,14 @@ class MemoryService:
                     + (", stale - re-mint" if state == "stale" else "") + ")")
         clauses = []
         attach_set, pull_set = {n.lower() for n in names}, {n.lower() for n in pulls}
+        if anchored:
+            ledger = [n for n in sorted(by_name)
+                      if by_name[n][4] == "fresh" and by_name[n][1] != "standing"]
+            if ledger:
+                clauses.append("Carts in the ledger (attach by name with X-Strata-Carts within"
+                               " the budget; what a turn carries is announced where it rides):"
+                               " " + "; ".join(bit(n, "fresh") for n in ledger) + ".")
+            return " ".join(clauses)
         rode = [n for n in sorted(by_name)
                 if n in attach_set and by_name[n][4] in ("fresh", "stale")]
         if rode:
@@ -1836,9 +1858,6 @@ class MemoryService:
                                                                 for n in rode) + ".")
         pulln = [n for n in sorted(by_name)
                  if n in pull_set and n not in attach_set and by_name[n][4] in ("fresh", "stale")]
-        if pulln:
-            clauses.append("Cart carried at the tail this turn: "
-                           + "; ".join(bit(n, by_name[n][4]) for n in pulln) + ".")
         rest = [n for n in sorted(by_name)
                 if n not in want and by_name[n][4] == "fresh" and by_name[n][1] != "standing"]
         if rest:
@@ -3089,7 +3108,7 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
     config for one request (absent: config value; "off" keeps its Browse-arm meaning untouched)."""
     if mem is None:
         return messages, None
-    if (headers.get("X-Strata-Memory") or "").strip().lower() in ("off", "mute", "0"):
+    if muted(headers):
         return messages, None
     scope = scope_name(headers.get("X-Strata-Memory-Scope"))
     # the class axis (PHASE 4.5): "X-Strata-Memory-Class: STR,USR" pulls engine talk off the eval
@@ -3162,9 +3181,13 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
     # (system-only) falls back to the head merge: the block always rides or the arm is a lie.
     _hb = (headers.get("X-Strata-Memory-Block") or "").strip().lower()
     tail = _hb == "tail" if _hb in ("head", "tail") else bool(block_tail)
+    # The CARRIER for volatile tail bytes is the LAST user message, text or not (audit m3,
+    # 2026-10-27): in the Anthropic dialect a tool round's newest message is a tool_result
+    # block under role=user - the bytes belong at the true tail, not on a stale question
+    # three turns back. The QUERY still needs text (last_user above); a history with no user
+    # message at all falls back to the head merge, where the block always rode.
     i_last = next((j for j in range(len(messages) - 1, -1, -1)
-                   if isinstance(messages[j], dict) and messages[j].get("role") == "user"
-                   and text_of(messages[j].get("content")).strip()), None)
+                   if isinstance(messages[j], dict) and messages[j].get("role") == "user"), None)
     if tail and i_last is not None:
         out = list(messages)
     else:
@@ -3193,17 +3216,17 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
         if isinstance(c, list):
             out[idx] = dict(out[idx], content=list(c) + [{"type": "text", "text": txt}])
         else:
-            out[idx] = dict(out[idx], content=f"{c}\n\n{txt}")
+            out[idx] = dict(out[idx], content=(f"{c}\n\n{txt}" if c else txt))
     if tail:
         _tail_append(i_last, block)
     if tblock is not None:
-        i = next((j for j in range(len(out) - 1, -1, -1)
-                  if isinstance(out[j], dict) and out[j].get("role") == "user"
-                  and text_of(out[j].get("content")).strip()), None)
-        if i is not None:
-            if tail:
-                _tail_append(i, tblock)
-            else:
+        if tail:                                   # the turn block rides the CARRIER too
+            _tail_append(i_last, tblock)           # (audit m3): the true tail, text or not
+        else:
+            i = next((j for j in range(len(out) - 1, -1, -1)
+                      if isinstance(out[j], dict) and out[j].get("role") == "user"
+                      and text_of(out[j].get("content")).strip()), None)
+            if i is not None:
                 c = out[i].get("content")
                 if isinstance(c, list):
                     out[i] = dict(out[i], content=[{"type": "text", "text": tblock}] + list(c))

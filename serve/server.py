@@ -6747,24 +6747,30 @@ class Cartridges:
     def prepend(self, messages, att=None):
         """The standing text rides at the very front; behind it the cart index line and (S4,
         2026-10-25) the bodies of the carts ATTACHED to this conversation - att is
-        CartMinter.attach()'s dict, or None for the plain standing ride. The index and the
-        bodies ride AFTER the standing bytes, never inside them: the content hash covers the
-        standing text and prefix reuse counts bytes from token 0 - so the attached set can
-        change between turns without ever rotating the cart file. Zero carts, zero asks: zero
-        extra bytes ride, and the prompt is byte-identical to the pre-S3 one (the anti-vacuity
-        law - an absent thing is never silently "not enough")."""
-        if not self.standing:
-            return messages
+        CartMinter.attach()'s dict (or stand_on's anchored shape: block moved to the tail),
+        or None for the plain standing ride. The index and the bodies ride AFTER the
+        standing bytes, never inside them: the content hash covers the standing text and
+        prefix reuse counts bytes from token 0. The M1 amendment (2026-10-27) gives the
+        index its anchored SHAPE: when the request's bodies ride at the tail, only the
+        request-invariant ledger clause is asked of the head, so a cart-set change cannot
+        fork a parked conversation. Zero carts, zero asks: zero extra bytes ride, and the
+        prompt is byte-identical to the pre-S3 one (the anti-vacuity law). Nothing to stand
+        (audit m7): an empty standing text with carts that want to ride still carries the
+        index and the block - the prefix arm must not silently drop what the anchor and
+        pull arms carry; nothing at all: the messages are untouched."""
+        a = att or {}
         text = self.standing
         if getattr(self.svc, "carts", None):
-            a = att or {}
             idx = self.svc.carts.index_line(attached=a.get("names"), asked=a.get("asked"),
-                                            pulled=(a.get("pull") or {}).get("names"))
+                                            pulled=(a.get("pull") or {}).get("names"),
+                                            anchored=bool(a.get("anchored")))
             if idx:
-                text = f"{text}\n\n{idx}"
+                text = f"{text}\n\n{idx}" if text else idx
             block = (a.get("block") or "").strip()
             if block:
-                text = f"{text}\n\n{block}"
+                text = f"{text}\n\n{block}" if text else block
+        if not text:
+            return messages
         return memory_api.prepend_head(messages, text)
 
     def invalidate(self):
@@ -6993,6 +6999,9 @@ class CartMinter:
         # effect without arm B's history bloat, since the anchor bytes never enter the client's
         # history). Per-request override rides X-Strata-Carts-Mode: anchor|prefix.
         self.attach_mode = str(cfg.get("attach_mode") or "prefix").strip().lower()
+        if self.attach_mode not in ("anchor", "prefix"):
+            self.attach_mode = "prefix"    # an out-of-vocabulary value (5, "ancher") RUNS as prefix
+                                           # and must be BANNERED as prefix too (audit n2a, 2026-10-27)
         # the fallback slot-serial lock (S3 audit finding 6): beside a cartridge, cart.lock is
         # THE lock seed/restore already hold; without one, svc.fifo is NOT the answer - it is a
         # plain Lock that svc.run() re-acquires inside, and a non-reentrant lock held across run()
@@ -7152,13 +7161,15 @@ class CartMinter:
 
     # ---- the surfaces that ride every turn ------------------------------------------------
 
-    def index_line(self, attached=None, asked=None, pulled=None) -> str:
-        """The one-line cart index behind the standing text (S4 made it attach-aware: it tells the
-        model what RIDES, what WAITS in the ledger, and what was ASKED but could not ride). The
-        request path must never die for a pointer: a store failure reads as no carts (the /memory
-        page shows the ledger truth)."""
+    def index_line(self, attached=None, asked=None, pulled=None, anchored=False) -> str:
+        """The one-line cart index behind the standing text (S4 made it attach-aware; the M1
+        amendment of 2026-10-27 gave it the anchored SHAPE: when this request's bodies ride at
+        the tail, the head carries only the request-invariant ledger clause and the tail lead
+        tells the per-request truth where the bytes are). The request path must never die for
+        a pointer: a store failure reads as no carts (the /memory page shows the ledger truth)."""
         try:
-            return self.svc.memory.cart_index(attached=attached, asked=asked, pulled=pulled)
+            return self.svc.memory.cart_index(attached=attached, asked=asked, pulled=pulled,
+                                              anchored=anchored)
         except Exception:                                        # noqa: BLE001 - metadata, not a gate
             return ""
 
@@ -7207,32 +7218,62 @@ class CartMinter:
         except (ValueError, memory_api.StoreError):
             return ""                                    # nothing live to render: not riding
 
-    def _attach_set(self, names, budget_on: bool):
-        """Resolve requested names to (name, body) pairs that may ride: sorted (the byte law),
-        capped at attach_max, then budgeted at attach_max_tokens (first rider always fits -
-        one cart over budget rides alone rather than announcing nothing)."""
-        kept, tok = [], 0
-        for nm in sorted(names)[:self.attach_max]:
+    def _attach_set(self, names, budget_on: bool, cap: int | None = None):
+        """Resolve requested names to ((name, body, tokens) rides, [(name, reason) skips]).
+        Sorted (the byte law), capped (attach_max, or the tighter cap the caller holds for the
+        COMBINED request - audit m6, 2026-10-27: the owner's ten is TEN RIDERS per request, not
+        ten per header), then budgeted at attach_max_tokens (first rider always fits - one cart
+        over budget rides alone rather than announcing nothing). The budget counts what the
+        block RENDERS, not only the mint-time ledger figure: a stale rows-cart re-renders live
+        and its text can outgrow the ledger's number (audit m5), so the estimate is
+        max(ledger tokens, rendered chars / 4) - no engine tokenizer stands on the request
+        path, and the guard is a crowding choice, not an accounting one."""
+        kept, skipped, tok = [], [], 0
+        limit = max(0, self.attach_max if cap is None else cap)
+        ordered = sorted(names)
+        for nm in ordered[:limit]:
             got = self.svc.memory.carts_get(nm)
             row = got[0] if got else None
-            if row is None or row["state"] == "retired" or nm == "standing":
-                continue                                 # the index line announces each arm
+            if row is None:
+                skipped.append((nm, "no such cart"))
+                continue
+            if row["state"] == "retired":
+                skipped.append((nm, "retired"))
+                continue
+            if nm == "standing":
+                skipped.append((nm, "is the standing prefix"))
+                continue
             body = self._attach_body(row)
             if not body:
+                skipped.append((nm, "nothing live to render"))
                 continue
-            t = int(row.get("tokens") or 0)
+            t = max(int(row.get("tokens") or 0), (len(body) + 3) // 4)
             if budget_on and kept and tok + t > self.attach_max_tokens:
-                continue                                 # over budget: stays in the ledger
+                skipped.append((nm, "over the token budget"))
+                continue
             tok += t
-            kept.append((nm, body))
-        return kept
+            kept.append((nm, body, t))
+        skipped.extend((nm, "over the rider count") for nm in ordered[limit:])
+        return kept, skipped
+
+    def _tail_lead(self, kept) -> str:
+        """M1's announcement channel (2026-10-27): in anchor mode the per-request truth rides
+        WHERE THE BYTES RIDE - the head keeps only the request-invariant ledger clause, so a
+        parked conversation truly stops forking on attach (the claim the anchor made from day
+        one, which the audit caught the old index clause breaking)."""
+        bits = ", ".join(f"{nm} ({t:,} tok)" for nm, _, t in kept)
+        return ("Carts carried for this turn as learned notes (loaded whole, never restated,"
+                " never searched for): " + bits + ". They are given knowledge: use them, do"
+                " not re-learn them, do not restate them.")
 
     def attach(self, headers) -> dict:
         """Parse and validate one request's attach headers. Returns
         {"names": [...prefix riders...], "block": str, "pull": {"names": [...], "block": str},
-         "asked": [...every name the headers named...]} - empty block when nothing rides.
-        A store failure reads as nothing attached (the index_line law: the request path never
-        dies for a pointer; the page and the mint show the ledger truth)."""
+         "asked": [...every name the headers named...], "mode": anchor|prefix} - empty block
+         when nothing rides. A store failure reads as nothing attached (the index_line law:
+         the request path never dies for a pointer; the page and the mint show the ledger
+         truth). In ANCHOR mode the block carries its own lead (what rides, what skipped);
+         the prefix-mode block keeps the ATTACH_LEAD bytes the bench measured."""
         att = {"names": [], "block": "", "pull": {"names": [], "block": ""}, "asked": [],
                "mode": self.attach_mode}
         try:
@@ -7246,18 +7287,27 @@ class CartMinter:
             att["asked"] = sorted(set(pre) | set(pul))       # EVERY ask: the cap and the budget
             if not att["asked"]:                             # skip announced, never silently
                 return att
-            kept = self._attach_set(pre, budget_on=True)
-            att["names"] = [nm for nm, _ in kept]
-            att["block"] = (self.ATTACH_LEAD + "\n\n"
-                            + "\n\n".join(f"[{nm}]\n{b}" for nm, b in kept)) if kept else ""
-            rode = {nm for nm, _ in kept}                # a name in BOTH headers rides once:
-            pul = [n for n in pul if n not in rode]      # the prefix copy wins (the tail would
-                                                         # be double tokens for the same bytes)
-            kept_p = self._attach_set(pul, budget_on=False)   # a pull is one turn of tail: no
-            att["pull"]["names"] = [nm for nm, _ in kept_p]   # budget, but the same skip arms
+            kept, skipped = self._attach_set(pre, budget_on=True)
+            att["names"] = [nm for nm, _, _ in kept]
+            pul = [n for n in pul if n not in att["names"]]  # a name in BOTH headers rides
+            kept_p, skipped_p = self._attach_set(            # once: the prefix copy wins (the
+                pul, budget_on=False,                        # tail would be double tokens for
+                cap=self.attach_max - len(att["names"]))     # the same bytes); m6: the pull
+            att["pull"]["names"] = [nm for nm, _, _ in kept_p]   # arm inherits the spare slots
             att["pull"]["block"] = (self.PULL_LEAD + "\n\n"
-                                    + "\n\n".join(f"[{nm}]\n{b}" for nm, b in kept_p)
+                                    + "\n\n".join(f"[{nm}]\n{b}" for nm, b, _ in kept_p)
                                     ) if kept_p else ""
+            lead = self.ATTACH_LEAD if att["mode"] != "anchor" else self._tail_lead(kept)
+            att["block"] = (lead + "\n\n"
+                            + "\n\n".join(f"[{nm}]\n{b}" for nm, b, _ in kept)) if kept else ""
+            if att["mode"] == "anchor":             # the skips ride where the bytes ride (M1's
+                rode = set(att["names"]) | set(att["pull"]["names"])   # channel), even when ZERO
+                late = sorted((nm, why) for nm, why in skipped + skipped_p   # riders: the head
+                              if nm not in rode)                         # stays request-invariant,
+                if late:                                                 # so the tail must speak or
+                    notice = ("Cart asks that did not ride - "           # the ask goes silently
+                              + "; ".join(f"{nm}: {why}" for nm, why in late) + ".")
+                    att["block"] = f"{att['block']} ({notice})" if att["block"] else notice
         except Exception:                                        # noqa: BLE001 - never die here;
             att["asked"] = att.get("asked") or []                # asked is computed before any
             att["names"], att["block"] = [], ""                  # store call - keep the ASK even
@@ -7309,15 +7359,25 @@ def stand_on(svc: Service, messages, headers):
     system prefix and rides PREPENDED into the newest user turn instead - ahead of the
     question, which request_state has already fitted with its tail recall. Effect: arm B's
     per-ask anchor (90/90, no ruts) without arm B's history bloat (the anchor bytes are
-    server-side, never in the client's history), and the prefix stays byte-identical across
-    cart-set changes, so parked conversations stop forking on attach. If the request has no
-    user turn to anchor into, the block falls back to the prefix - the carts ride or the
-    arm says so, never silence."""
+    server-side, never in the client's history), and the head stops forking on attach:
+    the M1 amendment (2026-10-27) moved the per-request announcement out of the head too,
+    so a parked conversation rides one stable prefix whatever a turn carries. The CARRIER
+    is the LAST user message, text or not (audit m3, same law request_state found for the
+    recall block): an Anthropic tool round puts its tool_result blocks under role=user with
+    no plain text, and the anchor belongs at the true tail, ahead of the newest turn, not
+    three messages upstream. A request with no user message at all falls back to the prefix
+    - and the un-anchored index then says "riding this prefix", which is exactly what the
+    bytes do (the m2 fix: the fallback is now reachable and honest, where it used to be
+    dead code behind the route gate)."""
     att = svc.carts.attach(headers) if getattr(svc, "carts", None) else None
-    if att and att.get("mode") == "anchor" and att["block"]:
+    if att and att.get("mode") == "anchor":
+        # The HEAD takes the anchored shape because the MODE says so, not because a rider
+        # happens to ride: the zero-ask turn and the full-ask turn must compose ONE head, or
+        # the shape flip itself forks the parked conversation (M1's test caught exactly this).
+        att = dict(att, anchored=True)
+    if att and att.get("anchored") and att["block"]:
         i = next((j for j in range(len(messages) - 1, -1, -1)
-                  if isinstance(messages[j], dict) and messages[j].get("role") == "user"
-                  and memory_api.text_of(messages[j].get("content")).strip()), None)
+                  if isinstance(messages[j], dict) and messages[j].get("role") == "user"), None)
         if i is not None:
             messages = list(messages)
             c = messages[i].get("content")
@@ -7325,11 +7385,12 @@ def stand_on(svc: Service, messages, headers):
                 messages[i] = dict(messages[i],
                                    content=[{"type": "text", "text": att["block"]}] + list(c))
             else:
-                messages[i] = dict(messages[i], content=f"{att['block']}\n\n{c}")
+                messages[i] = dict(messages[i],
+                                   content=f"{att['block']}\n\n{c}" if c else att["block"])
             rode = list(att["names"])                     # the prefix must not double-carry
-            pull = dict(att["pull"])                      # them; the index names them as tail
-            pull["names"] = sorted(set(pull["names"]) | set(rode))   # riders either way
-            att = dict(att, block="", names=[], pull=pull, anchored=True)
+            pull = dict(att["pull"])                      # them; the tail lead names them
+            pull["names"] = sorted(set(pull["names"]) | set(rode))   # where the bytes ride
+            att = dict(att, block="", names=[], pull=pull)   # anchored already rides on it
     messages = svc.cartridges.prepend(messages, att)
     return svc.carts.apply_pull(messages, att) if att else messages
 
@@ -9023,14 +9084,19 @@ def make_handler(svc: Service):
             if reason_feature_on(svc) and not no_tools and "reason_mode" not in own:
                 tools = (tools or []) + [REASON_TOOL]
                 reason_name = "reason_mode"
+            # THE GATE READS THE MUTE HEADER, NOT "ctx WAS BUILT" (audit m1/m2, 2026-10-27): a
+            # tool continuation whose history carries no plain-text user turn builds no ctx, and
+            # the old proxy dropped the standing text and the carts mid-loop - the one arm that
+            # could not even announce. Muted is muted; textless is not.
+            mem_live = svc.memory is not None and not memory_api.muted(self.headers)
             if svc.cartridges is not None:                        # M3b: standing text first, recall block after
-                if mem_ctx is not None:
+                if mem_live:
                     svc.cartridges.ensure()                       # seed once or restore ~0.1 s; best-effort
                     if svc.cartridges.state in ("loaded", "seeded"):
                         messages = stand_on(svc, messages, self.headers)   # S4: standing + index + carts
                 else:
-                    svc.cartridges.invalidate()                   # muted: this conversation will replace the slot
-            if svc.soul and mem_ctx is not None and not (svc.cartridges and
+                    svc.cartridges.invalidate()                   # muted or no memory: the slot is not this conversation's
+            if svc.soul and mem_live and not (svc.cartridges and
                                                          svc.cartridges.standing_rides()):
                 # soul.md slot 0: the LAST prepend, the FIRST bytes (order = prepend order). Muted
                 # conversations keep the byte-identical upstream path. While the standing text carries
@@ -9239,14 +9305,15 @@ def make_handler(svc: Service):
             # the format's own system text is already part of the head request_state merges into.
             messages, mem_ctx = memory_api.request_state(svc.memory, messages, self.headers, req,
                                           block_tail=bool(getattr(svc.memory, "block_tail", False)))
+            mem_live = svc.memory is not None and not memory_api.muted(self.headers)   # m1/m2 parity
             if svc.cartridges is not None:                        # M3b parity, same law as the other routes
-                if mem_ctx is not None:
+                if mem_live:
                     svc.cartridges.ensure()
                     if svc.cartridges.state in ("loaded", "seeded"):
                         messages = stand_on(svc, messages, self.headers)   # S4 parity: same prefix, Codex too
                 else:
                     svc.cartridges.invalidate()
-            if svc.soul and mem_ctx is not None and not (svc.cartridges and
+            if svc.soul and mem_live and not (svc.cartridges and
                                                          svc.cartridges.standing_rides()):
                 # soul.md slot 0 (parity: every dialect stands on the same prefix, or the prefix law
                 # is a suggestion) - skipped while the standing text carries the soul inside it.
@@ -9331,18 +9398,23 @@ def make_handler(svc: Service):
             # soul -> block -> client. Claude Code budgets by this number, so its context bar lay by
             # exactly the FILES leg (~9.1k chars of persona on this box, and the whole text leg on a
             # facts-mode box) - the failure the comment below was written to prevent, re-introduced one
-            # feature later. No ensure(): a token count asks nothing of the slot, and if the cart has not
-            # stood yet the real request would not prepend it either, so the count stays honest.
-            if svc.cartridges is not None and svc.cartridges.state in ("loaded", "seeded") \
-                    and mem_ctx_ct is not None:               # muted asks nothing of the prefix
-                messages = stand_on(svc, messages, self.headers)   # S4: the count must ride the SAME
-                                                                    # bytes as the route it mirrors -
-                                                                    # standing, index, attached carts,
-                                                                    # pulled tail (the review lesson of
-                                                                    # 2026-10-24: a mirror that skips a
-                                                                    # leg makes the context bar lie)
-            if svc.soul and mem_ctx_ct is not None and not (svc.cartridges
-                                                            and svc.cartridges.standing_rides()):
+            # feature later. THE MIRROR ENSURES LIKE THE ROUTE DOES (audit m4, 2026-10-27): the old
+            # comment claimed "if the cart has not stood yet the real request would not prepend it
+            # either" - it lied: the real request ensures FIRST and then prepends, so a count asked of
+            # a fresh boot read low by the whole standing prefix and the anchored bodies. One ensure()
+            # (windowed, ~free after the first) makes the count the bytes the route would have sent.
+            mem_live_ct = svc.memory is not None and not memory_api.muted(self.headers)   # m1/m2 parity
+            if svc.cartridges is not None and mem_live_ct:
+                svc.cartridges.ensure()
+                if svc.cartridges.state in ("loaded", "seeded"):
+                    messages = stand_on(svc, messages, self.headers)   # S4: the count must ride the SAME
+                                                                        # bytes as the route it mirrors -
+                                                                        # standing, index, attached carts,
+                                                                        # pulled tail (the review lesson of
+                                                                        # 2026-10-24: a mirror that skips a
+                                                                        # leg makes the context bar lie)
+            if svc.soul and mem_live_ct and not (svc.cartridges
+                                                 and svc.cartridges.standing_rides()):
                 messages = memory_api.prepend_head(messages, svc.soul)   # bytes too, or the context bar
                                                                          # lies by exactly the soul
             stop_strings(req)                                 # the same 400 as the request itself would get
@@ -9360,14 +9432,15 @@ def make_handler(svc: Service):
             # memory off or muted, messages comes back the exact list it was (upstream path).
             messages, mem_ctx = memory_api.request_state(svc.memory, messages, self.headers, req,
                                           block_tail=bool(getattr(svc.memory, "block_tail", False)))
+            mem_live = svc.memory is not None and not memory_api.muted(self.headers)   # m1/m2 parity
             if svc.cartridges is not None:                        # M3b parity: Claude Code conversations stand on
-                if mem_ctx is not None:                           # the same cartridge prefix (one slot is shared
+                if mem_live:                                      # the same cartridge prefix (one slot is shared
                     svc.cartridges.ensure()                       # by every dialect, so the prefix law is too)
                     if svc.cartridges.state in ("loaded", "seeded"):
                         messages = stand_on(svc, messages, self.headers)   # S4 parity: same bytes, Claude Code too
                 else:
                     svc.cartridges.invalidate()
-            if svc.soul and mem_ctx is not None and not (svc.cartridges and
+            if svc.soul and mem_live and not (svc.cartridges and
                                                          svc.cartridges.standing_rides()):
                 # soul.md slot 0 (Anthropic parity: Claude Code rides the same bytes as every other
                 # dialect) - skipped while the standing text carries the soul inside it.
@@ -10669,6 +10742,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
               f"request; the header X-Strata-Memory-Tool: 1/on/true turns the tool ON for one request - it "
               f"is a switch, not a count; X-Strata-Memory-Block: off declines the block for one request, "
               f"the tool and the journal stay on - the browse arm); "
+              f"recall block {'TAIL (the newest user turn)' if svc.memory.block_tail else 'HEAD (the system prompt)'} "
+              f"per memory.block_position - the lever takes tail|head too; "
               f"embedder {svc.memory.embedder and 'on: ' + getattr(svc.memory.embedder, 'model_name', '?') + ' (CPU, hybrid rerank)' or (svc.memory.embedder_error and 'FAILED - lexical only: ' + svc.memory.embedder_error or 'off')}; "
               f"GET /memory to inspect)", flush=True)
         # The swap law made the vectors a MODEL-SCOPED asset (2026-10-24): vectors written by
@@ -10697,9 +10772,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                       + (f"; attach: X-Strata-Carts: name,name ({svc.carts.attach_mode}, max "
                          f"{svc.carts.attach_max} carts / {svc.carts.attach_max_tokens:,} tok), "
                          f"X-Strata-Carts-Pull: name (tail, one turn); levers X-Strata-Carts-Mode: "
-                         f"anchor|prefix" if getattr(svc, "carts", None) else "")
-                      + f"; recall block: {'tail' if svc.memory.block_tail else 'head'} "
-                        f"(lever X-Strata-Memory-Block: tail|head)",
+                         f"anchor|prefix" if getattr(svc, "carts", None) else ""),
                       flush=True)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
