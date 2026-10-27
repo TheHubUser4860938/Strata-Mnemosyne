@@ -188,3 +188,32 @@ JOINED DOCTRINE (the two draws + P11, tail-recall stack):
 GATE CLOSED AS DESIGNED: it asked "does the anchor buy recall margin over prefix" and
 the answer, at n=2 draws, is "no - the tail move already bought that; the anchor buys
 cost." The ship was ratified on the shape, and the shape held.
+
+## AMENDMENT 3 (2026-10-27): the M1 correction - one doctrine clause was a claim, not a measurement
+
+Public correction, mine, filed per the law. Joined-doctrine clause 3 ended "no
+parked-prefix forking" and the S4b commit message generalized it: "parked
+conversations STOP FORKING ON ATTACH." The grad2 windows ran ONE frozen cart set
+per conversation, so the draws measured economics for a fixed set - true as
+measured - but the generalization was mine, and the fresh-eyes static audit of
+2ac28be3 (finding M1) proved the bytes did not support it: the anchor arm moved
+the cart BODIES to the tail yet left their per-request index CLAUSE riding the
+system head, so a mid-session attach change or one-shot pull still changed the
+head and forked the parked conversation.
+
+Fix: the claim held to the bytes, not the bytes to the claim (commit 6923c4d6,
+the full audit-fix batch). The anchored head now carries only the
+request-invariant ledger clause; the per-request announcement rides the tail
+with the bodies; a new regression test asserts head bytes do not move across a
+no-ask turn, an attach turn, and a changed set plus a skipped one-shot pull -
+it caught one further fork on first run (the anchored shape keyed on riders
+rather than mode) before it shipped.
+
+Effect on the science here: NONE of the grad2 numbers move - every window rode
+a frozen set, which is exactly what was measured. The forking law now holds in
+full generality (verified by the byte-stability test, static + test, not bench-
+re-measured); mid-session cart changes cost zero re-prefill in anchor mode from
+this commit on. INSTRUMENT NOTE: the anchored N-arm bytes CHANGE post-fix (new
+tail lead, head clause moved); the P-arm bytes are unchanged; any re-run of
+this instrument rides the new bytes, logged as an amendment between experiments
+per the frozen-instrument law.
