@@ -125,6 +125,16 @@ def hf(repo: str) -> str:
     return f"{hf_endpoint()}/{repo}/resolve/{HF_REVISIONS[repo]}/"
 
 
+def hf_shard(fam: dict, quant: str) -> str:
+    """One law for a shard's download URL: the family's pinned folder template, or its
+    per-quant folder when the repository keeps that ONE quant elsewhere. Today's only
+    case is huihui-ai's unsloth-UD-Q4_K_XL-V2/ (their 2026-10-26 re-quant: same shard
+    names, same sizes, imatrix_micro3/calibration3 pass, slightly lower PPL - the
+    dev box's daily arm runs it, and its four bytes-exact local hashes re-pinned the
+    table below). A family without folder_q formats its template as always."""
+    return (fam.get("folder_q") or {}).get(quant) or fam["hf"].format(q=quant)
+
+
 def hf_unpinned(url: str) -> str:
     """The same file at the repository's current revision (main)."""
     return re.sub(r"^(https?://[^/]+/.+?/resolve/)[0-9a-f]{40}/", r"\1main/", url, count=1)
@@ -636,8 +646,13 @@ UNSLOTH_BIG_SHARDS = {
 # experts differ - UD-Q5_K_XL shard 4 is 49,990,245,824 B / 9ee6bbe4... at unsloth and the same size /
 # d9c78b3c... here - which is exactly why every repository is pinned per file, not by name.  The head shard
 # and the 54 GB n-gram table (the Q5/Q6/Q8 shards 2 and 3) are the family's shared files again, byte-
-# identical across the two repositories.  Their swift-* folders (the Swift 1.5 base under its own names) and
-# their duplicate UD-Q4_K_XL-V2 folder are not offered.
+# identical across the two repositories.  Their swift-* folders (the Swift 1.5 base under its own names) are not
+# offered.  UD-Q4_K_XL is OFFERED FROM A DIFFERENT FOLDER now: their unsloth-UD-Q4_K_XL-V2/ re-quant of
+# 2026-10-26 (imatrix_micro3 + calibration3, same shard names and sizes, slightly lower PPL - the owner's daily
+# arm runs it).  The three expert sums were re-pinned 2026-10-27 from the Hub's LFS pointers and cross-checked
+# byte-exact against this box's local files (sha256sum, bench/p1/v2_sha256.txt); the shared head shard is
+# unchanged, which is the two-folders-same-base story told honestly.  The older unsloth-UD-Q4_K_XL/ folder is
+# the one not offered now.  The URL law is hf_shard(): one template, the folder_q map for its one exception.
 HUIHUI_SHARDS = {
     "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf":
         (10946624, "5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4"),
@@ -648,11 +663,11 @@ HUIHUI_SHARDS = {
     "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf":
         (10946624, "4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082"),
     "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf":
-        (49859583136, "6f3e21a5ae10c9124c2405061d89f90b575a0704b2927f059621b7936850b276"),
+        (49859583136, "ab283aba22daee321944dad65b09180810140fc75502c0791200cf01b85f9c75"),
     "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf":
-        (49376141504, "bb24c1d9c42c129ad93d427d3be6ca9a8d5ca6bf07ca9a50ddca03328d08c702"),
+        (49376141504, "2a8d2e69ba47fef6b42c953c07a24b5d4c59c1c2cdc89b2bc17e13e000a62fa0"),
     "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf":
-        (12087983520, "3d6a9aee4ade5740394da9bcb9fa22ea9343471f246af6914f8fcc8327ceab8e"),
+        (12087983520, "0d626450754c554235f93653b8f7c874c7c2d35380b9efab5b0852d616b84702"),
     "Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf":
         (10946624, "6c537059d79c060aeb9a942f23a2d21a1b56360c8c27b9ab380539fa4c476eb2"),
     "Qwen3.8-Flash-Next-UD-Q5_K_XL-00002-of-00006.gguf":
@@ -784,6 +799,8 @@ FAMILIES = {
                         "Unsloth Dynamic sizes of the abliterated model - it answers plainly where the original "
                         "declines; the reason modes do not ride it (stock template)",
                "hf": hf("huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF") + "unsloth-{q}/",
+               "folder_q": {"UD-Q4_K_XL": hf("huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF")
+                            + "unsloth-UD-Q4_K_XL-V2/"},   # the 2026-10-26 re-quant (see the table note)
                "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00004.gguf", "shards": 4, "tag": "huihui-",
                "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
                "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-abliterated",
@@ -8672,7 +8689,7 @@ def preview_family(a) -> int:
         warn(f"little free disk space in {folder}: {free_gb(folder):.1f} GB free for about {left:.1f} GB. Setup goes on and should fit")
     step(5, f"downloading {fam['title']} {model}")
     for f in files:
-        url = (fam["mmproj_hf"] if f.name == fam["mmproj"] else fam["hf"]) + f.name
+        url = (fam["mmproj_hf"] if f.name == fam["mmproj"] else hf_shard(fam, model)) + f.name
         download(url, f, "vision encoder" if f.name == fam["mmproj"] else None)
         verify_sha256(f, *fam["sha256"][f.name])
     ok(f"{fam['title']} {model}: {folder}")
@@ -8816,7 +8833,7 @@ def mac_control_setup(a) -> int:
             if s.exists() and done(s):
                 ok(f"{s.name} already downloaded")
                 continue
-            download(fam["hf"].format(q=model) + s.name, s)
+            download(hf_shard(fam, model) + s.name, s)
     check_shards(files)
     ok("model files present")
     mmproj = None
@@ -9851,7 +9868,7 @@ def main() -> int:
                 except OSError:
                     pass
             download(hf(PLE_Q8["ista"][0]) + PLE_Q8["ista"][1] if ple_swap and s.name.endswith("-00002-of-00002.gguf")
-                     else fam["hf"].format(q=model) + s.name, s)
+                     else hf_shard(fam, model) + s.name, s)
     if not ready:
         check_shards(shards)
     for s in ([] if ready else shards):                # the Unsloth files: pinned sizes and SHA-256

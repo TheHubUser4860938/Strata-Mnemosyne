@@ -49,6 +49,25 @@ class Pins(unittest.TestCase):
         self.assertFalse(fam.get("experimental"))
         self.assertEqual(list(setup.FAMILIES)[0], "qwen")             # not the default choice
 
+    def test_huihui_q4_ships_from_the_v2_folder(self):
+        # The 2026-10-26 re-quant: huihui's UD-Q4_K_XL is OFFERED from unsloth-UD-Q4_K_XL-V2/
+        # (their imatrix_micro3/calibration3 pass: same shard names, same sizes, lower PPL);
+        # the family's other sizes keep flowing through the {q} template. The three expert
+        # sums are this box's own measured bytes (sha256sum, bench/p1/v2_sha256.txt,
+        # 2026-10-27), the head shard unchanged - the two-folders-same-base story.
+        fam = setup.FAMILIES["huihui"]
+        base = ("https://huggingface.co/huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF"
+                "/resolve/411f1f7349c9711e6f75aa8d20e1612eb3a4d55d/")
+        self.assertEqual(setup.hf_shard(fam, "UD-Q4_K_XL"), base + "unsloth-UD-Q4_K_XL-V2/")
+        self.assertEqual(setup.hf_shard(fam, "UD-Q5_K_XL"), base + "unsloth-UD-Q5_K_XL/")
+        self.assertEqual(setup.hf_shard(setup.FAMILIES["unsloth"], "UD-Q4_K_XL"),
+                         f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-Q4_K_XL/")
+        sha = {i: fam["sha256"][fam["file"].format(q=M, i=i)][1] for i in (1, 2, 3, 4)}
+        self.assertEqual(sha[1], "4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082")
+        self.assertEqual(sha[2], "ab283aba22daee321944dad65b09180810140fc75502c0791200cf01b85f9c75")
+        self.assertNotEqual(sha[2],  # the unsloth repository's own shard 2 is different bytes
+                            setup.UNSLOTH_SHARDS["Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf"][1])
+
     def test_not_in_the_other_families(self):
         for f in ("qwen", "swift", "coder"):
             self.assertNotIn(M, [m for m in setup.MODELS if f in setup.MODELS[m].get("families", ("qwen", "swift"))])
