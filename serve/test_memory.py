@@ -16,7 +16,7 @@ from pathlib import Path
 
 from serve.frontend import ChatTemplate
 from serve.memory import MemoryService as _BaseMemoryService, request_state, time_bound, tool_result
-from serve.server import ByteTokenizer, Cartridges, CartMinter, MockEngine, Service, serve
+from serve.server import ByteTokenizer, Cartridges, CartMinter, MockEngine, Service, serve, stand_on
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -3347,7 +3347,10 @@ class Attach(Mint):
         p = self.prompt_text()
         self.assertIn("A cart is pulled to this turn", p)
         self.assertIn("pulled body PQ", p)
-        self.assertIn("Cart carried at the tail this turn", p, "the index names it as tail, not prefix")
+        self.assertNotIn("Cart carried at the tail this turn", p,
+                         "M1 (2026-10-27): a pull gets NO head clause in either mode - the "
+                         "appended turn self-announces via PULL_LEAD, so the one-shot pull "
+                         "that once forked the head twice now never forks it at all")
         self.assertLess(p.index("the question"), p.index("pulled body PQ"),
                         "the pull is a pure append: the conversation's bytes come first "
                         "(cache-safe, the C6 call)")
@@ -3364,7 +3367,9 @@ class Attach(Mint):
         self.assertIn("anchor bytes AX", p)
         self.assertLess(p.index("anchor bytes AX"), p.index("what did the anchor say"),
                         "the anchor rides AHEAD of the question (arm B's proven shape)")
-        self.assertIn("Cart carried at the tail this turn: anch", p)
+        self.assertIn("Carts carried for this turn as learned notes", p,
+                      "M1: the per-request announcement rides at the TAIL, where the bytes are")
+        self.assertIn("anch (", p, "the lead names the rider with its token count")
         self.assertNotIn("riding this prefix", p, "no prefix claim for anchored carts (honesty law)")
 
     def test_anchor_mode_keeps_bodies_out_of_the_system_head(self):
@@ -3378,7 +3383,157 @@ class Attach(Mint):
         self.assertNotIn("secret body SX never in head", head,
                          "the head carries the index clause, not the bodies - cart-set changes "
                          "never fork the parked prefix (the owner's slot-count concern)")
-        self.assertIn("Cart carried at the tail", head, "the head still ANNOUNCES what rides")
+        self.assertIn("Carts in the ledger", head,
+                      "M1 (2026-10-27): the head carries the request-INVARIANT ledger clause "
+                      "only; the per-request lead rides at the tail with the bodies, so the "
+                      "old head clause - which forked the prefix on every cart-set change - "
+                      "is gone and the claim the anchor shipped on is now true in the bytes")
+        self.assertNotIn("Carts carried for this turn", head,
+                         "the per-request lead must NOT ride the head (that was the M1 bug)")
+
+    # ---- S4 AUDIT-FIX BATCH (M1, m1-m7, n1-n3; 2026-10-27) --------------------------------
+    # Each test below pins one finding of the fresh-eyes audit of HEAD 2ac28be3 (static).
+    # They are the law the fix shipped with: an audit finding without a regression test is
+    # a fix that waits to regress.
+
+    def test_head_bytes_stable_across_cart_set_changes(self):
+        # M1 (the MAJOR): in anchor mode the per-request announcement rides the TAIL with the
+        # bodies, so the SYSTEM head is request-invariant - no attach change forks a parked
+        # conversation. This is the claim the anchor shipped on; the audit proved the old head
+        # clause broke it, these bytes are the proof it holds now.
+        self.http("POST", "/memory", {"op": "mint", "name": "m1a", "sources": {"text": "m1 body MA"}})
+        self.http("POST", "/memory", {"op": "mint", "name": "m1b", "sources": {"text": "m1 body MB"}})
+        hdr = [("X-Strata-Carts-Mode", "anchor")]
+        self.ask("turn one", hdr)
+        head1 = self.prompt_text().split("\nuser\n", 1)[0]
+        self.ask("turn two", hdr + [("X-Strata-Carts", "m1a")])
+        head2 = self.prompt_text().split("\nuser\n", 1)[0]
+        self.ask("turn three", hdr + [("X-Strata-Carts", "m1a,m1b"), ("X-Strata-Carts-Pull", "ghost")])
+        head3 = self.prompt_text().split("\nuser\n", 1)[0]
+        self.assertEqual(head1, head2, "a cart-set change must not move ONE head byte")
+        self.assertEqual(head2, head3, "not even a one-shot pull with a skipped ask")
+        self.assertIn("Carts in the ledger", head1, "the ledger clause stays: it names the store, "
+                                                    "not the request - that is what makes it stable")
+
+    def test_combined_rider_cap_is_per_request(self):
+        # m6: the owner's C1 said TEN RIDERS - per REQUEST, not per header. A 2-cap box with
+        # 2 attaches plus a pull gets no third rider; the pull arm inherits only the spare slots.
+        for nm in ("c1x", "c2x", "c3x"):
+            self.http("POST", "/memory", {"op": "mint", "name": nm, "sources": {"text": f"body {nm}"}})
+        self.svc.carts.attach_max = 2
+        self.ask("cap check", [("X-Strata-Carts", "c1x,c2x"), ("X-Strata-Carts-Pull", "c3x")])
+        p = self.prompt_text()
+        self.assertIn("body c1x", p)
+        self.assertIn("body c2x", p)
+        self.assertNotIn("[c3x]", p, "m6: the pull asked past the combined cap - it does not ride")
+        self.assertIn("did not ride", p, "and it is ANNOUNCED, never silently dropped (law 2)")
+
+    def test_anchor_skips_announce_at_the_tail(self):
+        # M1's channel, both shapes: with riders the notice rides parenthetically behind the
+        # block; with ZERO riders it rides alone - an absent thing is never silently missing,
+        # and in anchor mode the head must not carry the per-request ask at all.
+        self.http("POST", "/memory", {"op": "mint", "name": "keeps", "sources": {"text": "keeper body KK"}})
+        self.ask("ghost only", [("X-Strata-Carts", "ghost"), ("X-Strata-Carts-Mode", "anchor")])
+        p = self.prompt_text()
+        head = p.split("\nuser\n", 1)[0]
+        self.assertIn("Cart asks that did not ride - ghost: no such cart.", p,
+                      "anchor mode with zero riders still speaks the ask - at the tail")
+        self.assertNotIn("ghost", head, "and the head stays request-invariant (M1)")
+        self.ask("both", [("X-Strata-Carts", "keeps,ghost"), ("X-Strata-Carts-Mode", "anchor")])
+        p = self.prompt_text()
+        self.assertIn("keeper body KK", p)
+        self.assertIn("did not ride - ghost: no such cart.", p, "the notice trails the riders' block")
+        self.assertNotIn("ghost: no such cart", p.split("\nuser\n", 1)[0], "still nothing per-request in the head")
+
+    def test_textless_user_carrier_is_the_last_user_turn(self):
+        # m3: the CARRIER of volatile tail bytes is the LAST user message, text or not - an
+        # Anthropic tool round puts its tool_result blocks under role=user, and the block
+        # belongs at the true tail, not on a stale question three turns back.
+        from serve.memory import request_state
+        self.svc.memory.remember("the zygost scale reads 41.2 after calibration", scope="zg")
+        msgs = [{"role": "user", "content": "what does memory say about the zygost scale?"},
+                {"role": "assistant", "content": "looking it up"},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "41"}]}]
+        out, ctx = request_state(self.svc.memory, msgs, {"X-Strata-Memory-Block": "tail",
+                                                         "X-Strata-Memory-Scope": "zg"},
+                                 {"model": "m"}, block_tail=True)
+        last = out[-1]["content"]
+        self.assertIsInstance(last, list, "the carrier is the tool_result turn")
+        self.assertTrue(any(isinstance(pt, dict) and "zygost scale reads" in (pt.get("text") or "")
+                            for pt in last),
+                        "m3: the recall rides the TRUE tail (the block is a text part on the carrier)")
+        first = out[0]["content"]
+        self.assertNotIn("zygost scale reads",
+                         first if isinstance(first, str) else json.dumps(first),
+                         "the stale question stays clean")
+
+    def test_textless_continuation_carts_ride_via_stand_on(self):
+        # m1 + m2 + m3 on the anchor leg: a tool continuation whose newest user turn has no
+        # plain text is NOT muted - the carts ride, at the true tail, announced there. Before
+        # the fix the route gate read "ctx is None" as mute and the carts silently declined.
+        self.http("POST", "/memory", {"op": "mint", "name": "toolr", "sources": {"text": "tool round body TR"}})
+        self.svc.cartridges.ensure()                          # the route would have ensured
+        msgs = [{"role": "user", "content": "open the pod"},
+                {"role": "assistant", "content": "handing you the wrench"},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1"}]}]
+        out = stand_on(self.svc, msgs, {"X-Strata-Carts": "toolr", "X-Strata-Carts-Mode": "anchor"})
+        last = out[-1]["content"]
+        self.assertIsInstance(last, list, "m1: a textless tool round no longer declines the carts")
+        self.assertEqual(last[0].get("type"), "text", "the anchor LEADS the carrier it rides on")
+        self.assertIn("tool round body TR", last[0]["text"], "m3: the anchor rides the true tail")
+        head = next(m for m in out if m.get("role") == "system")["content"]
+        self.assertNotIn("tool round body TR", head, "the bodies stay out of the head (M1)")
+
+    def test_empty_standing_still_carries_carts(self):
+        # m7: an empty standing text with carts that want to ride must not silently drop the
+        # prefix bodies (the anchor and pull arms never asked this function's leave).
+        self.http("POST", "/memory", {"op": "mint", "name": "em", "sources": {"text": "empty box body EB"}})
+        self.ask("seed standing")                             # route ensures; standing is built
+        cart = self.svc.cartridges
+        saved = cart.standing
+        try:
+            cart.standing = ""
+            att = self.svc.carts.attach({"X-Strata-Carts": "em"})
+            out = cart.prepend([{"role": "user", "content": "q"}], att)
+            sysm = next((m for m in out if m.get("role") == "system"), None)
+            self.assertIsNotNone(sysm, "m7: the carts get a carrier even where the standing is empty")
+            self.assertIn("empty box body EB", sysm["content"])
+            out2 = cart.prepend([{"role": "user", "content": "q"}], None)
+            self.assertEqual([m.get("role") for m in out2], ["system", "user"],
+                             "with nothing asked but carts in the ledger, the LEDGER clause still "
+                             "rides alone - the index speaks where carts exist (anti-vacuity)")
+            self.http("POST", "/memory", {"op": "retire", "name": "em", "reason": "test edge"})
+            out3 = cart.prepend([{"role": "user", "content": "q"}], None)
+            self.assertEqual([m.get("role") for m in out3], ["user"],
+                             "nothing to say, zero bytes: the messages ride untouched")
+        finally:
+            cart.standing = saved
+
+    def test_budget_estimates_rendered_bytes(self):
+        # m5: the token budget guards what the block RENDERS, not only the mint-time ledger
+        # figure - a ledger that says 10 tok over a body that renders ~400 must not both fit.
+        self.http("POST", "/memory", {"op": "mint", "name": "big1", "sources": {"text": "one " * 400}})
+        self.http("POST", "/memory", {"op": "mint", "name": "big2", "sources": {"text": "two " * 400}})
+        for nm in ("big1", "big2"):
+            self.svc.memory.conn.execute("update carts set tokens = 10 where name = %s", (nm,))
+        self.svc.carts.attach_max_tokens = 500
+        kept, skipped = self.svc.carts._attach_set(["big1", "big2"], budget_on=True)
+        self.assertEqual([nm for nm, _, _ in kept], ["big1"], "the first rider always fits")
+        self.assertIn(("big2", "over the token budget"), skipped,
+                      "m5: the ledger sums 20 tok, the renders say ~800 - the bytes govern")
+
+    def test_mirror_ensures_before_counting(self):
+        # m4: the count mirror ENSURES like the route it mirrors - a count asked of a fresh
+        # boot used to read low by the whole standing prefix, because the route ensures first
+        # and only THEN prepends. The old comment swore the count stayed honest. It lied.
+        self.assertIn(self.svc.cartridges.state, ("none", "pending"),
+                      "a fresh boot has not stood yet")
+        st, body = self.http("POST", "/v1/messages/count_tokens",
+                             {"model": "m", "max_tokens": 8,
+                              "messages": [{"role": "user", "content": "count me"}]})
+        self.assertEqual(st, 200, body)
+        self.assertEqual(self.svc.cartridges.state, "seeded",
+                         "m4: the mirror ensured - the count it returns now rides the real bytes")
 
     # ---- TAIL RECALL (P10, 2026-10-26: the block leaves the head, the history caches) ------
 
