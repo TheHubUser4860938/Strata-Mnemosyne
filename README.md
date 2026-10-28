@@ -65,8 +65,6 @@ cd Strata
 
 <img width="1265" height="542" alt="image" src="https://github.com/user-attachments/assets/238eb87c-45f2-4be4-8cb8-91d922efbda8" />
 
-
-
 Version 0.2.7.1 (app and Terminal 0.2.7, Control 0.1.53) · the x86 engine packages stay at 0.1.52,
 the new DGX Spark (linux-aarch64) engines are 0.1.53
 
