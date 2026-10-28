@@ -400,7 +400,11 @@ function renderConvCache(c) {
   const k = c.carts;
   $("cc-carts").hidden = !k;
   if (k) {
-    $("cc-carts-text").textContent = `${fmt(k.sets)} / ${fmt(k.pool)} in play · ${fmt(k.asks)} cart asks`;
+    // The engine's own number, when it has the fence (--conversation-cache-cart-slots): how many parked
+    // conversations it is holding APART from ordinary traffic, where only another cart can evict one.
+    // Without the fence the ledger is all anyone can honestly say, so the phrase is left out, not zeroed.
+    const apart = k.engine_slots ? ` · engine ${fmt(k.engine_parked || 0)} / ${fmt(k.engine_slots)} apart` : "";
+    $("cc-carts-text").textContent = `${fmt(k.sets)} / ${fmt(k.pool)} in play · ${fmt(k.asks)} cart asks${apart}`;
     $("cc-carts-bar").style.width = pct(k.sets, k.pool);
   }
   const share = c.prompt_tokens ? ` (${fmt((100 * c.reused_tokens) / c.prompt_tokens)}% of all prompt tokens)` : "";
@@ -422,7 +426,11 @@ function renderConvCache(c) {
   $("cc-note").textContent = c.enabled
     ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
-  if (k) $("cc-note").textContent += " Cart sets are the distinct groups of carts the server has attached: the engine's slots count conversations, not carts, so the two bars are two pools.";
+  if (k) $("cc-note").textContent += k.engine_slots
+    ? " Cart sets are the distinct groups of carts the server attached. The engine parks cart traffic apart in its own quota"
+      + " (--conversation-cache-cart-slots): only another cart evicts one."
+    : " Cart sets are the distinct groups of carts the server has attached: the engine's slots count conversations, not carts,"
+      + " so the two bars are two pools. Add \"--conversation-cache-cart-slots\", \"10\" to park cart traffic apart.";
 }
 
 function renderTotals(t) {

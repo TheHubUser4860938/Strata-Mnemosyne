@@ -1291,7 +1291,7 @@ class ConvCacheLog:
     cache: parked N tokens ...; parked=P bytes=B evictions=E" and "restored N tokens ...; parked=P bytes=B" to stderr,
     which is the log): read on from where it was last read, from the start of the engine's current run."""
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
-                       r"(?: evictions=(\d+))?")
+                       r"(?: evictions=(\d+))?(?: carts=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
@@ -1301,7 +1301,11 @@ class ConvCacheLog:
 
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
-                      "last_tokens": None, "last_at": None}
+                      "last_tokens": None, "last_at": None,
+                      # memory-core's fence: how many of the parked conversations are cart traffic, straight from the
+                      # engine's own line.  None = this engine has never said (no --conversation-cache-cart-slots,
+                      # or an engine older than the fence) - which is a fact the card shows, never a zero.
+                      "cart_parked": None}
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
@@ -1333,6 +1337,8 @@ class ConvCacheLog:
                 st["parked"], st["bytes"] = int(m.group(3)), int(m.group(4))
                 if m.group(5) is not None:
                     st["evictions"] = int(m.group(5))
+                if m.group(6) is not None:      # the fence's own number, when the engine has one
+                    st["cart_parked"] = int(m.group(6))
                 if m.group(1) != "skipped":
                     st["parks" if m.group(1) == "parked" else "restores"] += 1
                     st["last_event"], st["last_tokens"], st["last_at"] = m.group(1), int(m.group(2)), now
@@ -1354,6 +1360,21 @@ def conversation_slots(engine) -> int | None:
             pass
     slots = (getattr(engine, "info", None) or {}).get("conversation_cache_slots")
     return slots if isinstance(slots, int) else None
+
+
+def conversation_cart_slots(engine) -> int | None:
+    """The engine's CART quota (--conversation-cache-cart-slots, memory-core's fence 2026-10-28): the run
+    config's argument, which is known before the engine has started, else the INFO line it reported, else
+    None - and None means the engine has no fence at all, which the card says by hiding the number rather
+    than printing 0 and implying ten parked carts of nothing."""
+    args = (engine.spawn[1] if getattr(engine, "spawn", None) and len(engine.spawn) > 1 else [])
+    if "--conversation-cache-cart-slots" in args[:-1]:
+        try:
+            return int(args[args.index("--conversation-cache-cart-slots") + 1])
+        except ValueError:
+            pass
+    n = (getattr(engine, "info", None) or {}).get("conversation_cache_cart_slots")
+    return n if isinstance(n, int) and n > 0 else None
 
 
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict,
@@ -1993,6 +2014,11 @@ class StrataEngine:
             pn = prefix.get("tokens")
             if isinstance(pn, int) and not isinstance(pn, bool) and pn > 0:
                 keys += f" pin={pn}"
+        # "strata_cart" (set by stand_on when a cart set rode the prompt): memory-core's fence (2026-10-28).
+        # The engine parks THIS conversation in --conversation-cache-cart-slots, where only another cart can
+        # evict it.  Absent = the shared pool, exactly as before; an engine without the fence skips the key.
+        if sampling.get("strata_cart"):
+            keys += " cart=1"
         # logprobs: the engine writes an `LP` line after each `T` line (an engine without them ignores
         # the key, so an older engine answers exactly as it did).  Absent = no LP lines at all.
         k = top_logprobs(sampling)
@@ -5377,11 +5403,24 @@ class Service:
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(
-                    engine, hist, totals, parked,
-                    self.carts.attach_view() if getattr(self, "carts", None) is not None else None),
+                    engine, hist, totals, parked, self._cart_view(parked)),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
+
+    def _cart_view(self, parked: dict) -> dict | None:
+        """The Monitor's cart block: this server's ledger, and - when the engine has the fence - the engine's
+        own numbers beside it.  The two answer different questions and are kept apart on purpose: the ledger
+        says what the server ATTACHED (sets in play, riders, refusals), the engine says what it is HOLDING
+        apart from ordinary conversations (parked carts, of its quota).  An engine without
+        --conversation-cache-cart-slots reports neither, and the card says so by leaving them out."""
+        cm = getattr(self, "carts", None)
+        if cm is None:
+            return None
+        v = cm.attach_view()
+        v["engine_slots"] = conversation_cart_slots(self.engine)
+        v["engine_parked"] = parked.get("cart_parked")
+        return v
 
     def prometheus(self) -> str:
         """GET /metrics/prometheus: the totals and what is running in Prometheus' text format, under llama-server's
@@ -7609,7 +7648,7 @@ class CartMinter:
         return self.carts()
 
 
-def stand_on(svc: Service, messages, headers):
+def stand_on(svc: Service, messages, headers, req=None):
     """The full standing prefix for one request (S4, 2026-10-25): the cartridge's standing
     text, the attach-aware cart index line, the attached carts' bodies, and a pulled cart as
     ONE appended user turn. One entry point so every dialect rides the same bytes (the parity
@@ -7631,6 +7670,11 @@ def stand_on(svc: Service, messages, headers):
     bytes do (the m2 fix: the fallback is now reachable and honest, where it used to be
     dead code behind the route gate)."""
     att = svc.carts.attach(headers) if getattr(svc, "carts", None) else None
+    if req is not None and att and (att["names"] or att["pull"]["names"]):
+        # memory-core's fence: the prompt that leaves this function carries cart BODIES, so the conversation
+        # it builds must park in the cart quota.  A cart that was ASKED but refused is not cart traffic -
+        # nothing of it rides, so the conversation is ordinary and may be evicted by ordinary traffic.
+        req["strata_cart"] = True
     if att and att.get("mode") == "anchor":
         # The HEAD takes the anchored shape because the MODE says so, not because a rider
         # happens to ride: the zero-ask turn and the full-ask turn must compose ONE head, or
@@ -9647,7 +9691,7 @@ def make_handler(svc: Service):
                 if mem_live:
                     svc.cartridges.ensure()                       # seed once or restore ~0.1 s; best-effort
                     if svc.cartridges.state in ("loaded", "seeded"):
-                        messages = stand_on(svc, messages, self.headers)   # S4: standing + index + carts
+                        messages = stand_on(svc, messages, self.headers, req)   # S4: standing + index + carts
                 else:
                     svc.cartridges.invalidate()                   # muted or no memory: the slot is not this conversation's
             if svc.soul and mem_live and not (svc.cartridges and
@@ -9864,7 +9908,7 @@ def make_handler(svc: Service):
                 if mem_live:
                     svc.cartridges.ensure()
                     if svc.cartridges.state in ("loaded", "seeded"):
-                        messages = stand_on(svc, messages, self.headers)   # S4 parity: same prefix, Codex too
+                        messages = stand_on(svc, messages, self.headers, req)   # S4 parity: same prefix, Codex too
                 else:
                     svc.cartridges.invalidate()
             if svc.soul and mem_live and not (svc.cartridges and
@@ -9961,7 +10005,7 @@ def make_handler(svc: Service):
             if svc.cartridges is not None and mem_live_ct:
                 svc.cartridges.ensure()
                 if svc.cartridges.state in ("loaded", "seeded"):
-                    messages = stand_on(svc, messages, self.headers)   # S4: the count must ride the SAME
+                    messages = stand_on(svc, messages, self.headers, req)   # S4: the count must ride the SAME
                                                                         # bytes as the route it mirrors -
                                                                         # standing, index, attached carts,
                                                                         # pulled tail (the review lesson of
@@ -9991,7 +10035,7 @@ def make_handler(svc: Service):
                 if mem_live:                                      # the same cartridge prefix (one slot is shared
                     svc.cartridges.ensure()                       # by every dialect, so the prefix law is too)
                     if svc.cartridges.state in ("loaded", "seeded"):
-                        messages = stand_on(svc, messages, self.headers)   # S4 parity: same bytes, Claude Code too
+                        messages = stand_on(svc, messages, self.headers, req)   # S4 parity: same bytes, Claude Code too
                 else:
                     svc.cartridges.invalidate()
             if svc.soul and mem_live and not (svc.cartridges and

@@ -3644,6 +3644,37 @@ class CartSlotLedger(Mint):
         self.assertIsNone(m["conversation_cache"]["carts"],
                           "no ledger, no block: the card hides it rather than printing zeros")
 
+    def test_the_engine_is_told_which_conversations_carry_carts(self):
+        # The fence needs a per-request signal, because a parked conversation has no other way to know it
+        # was built by cart traffic: stand_on marks the REQUEST, sampling_keys turns the mark into the engine's
+        # cart=1, and an ask that rode NOTHING is not cart traffic (nothing of it is in the prompt to protect).
+        from serve.server import StrataEngine
+        self._mint("rides")
+        req = {}
+        stand_on(self.svc, [{"role": "user", "content": "with carts"}], {"X-Strata-Carts": "rides"}, req)
+        self.assertTrue(req.get("strata_cart"), "riders rode: the request says so")
+        self.assertIn(" cart=1", StrataEngine.sampling_keys(dict(req)), "and the engine key follows")
+        self.assertNotIn("cart=", StrataEngine.sampling_keys({}), "no mark, no key: upstream bytes, byte for byte")
+        plain = {}
+        stand_on(self.svc, [{"role": "user", "content": "no headers"}], {}, plain)
+        self.assertNotIn("strata_cart", plain, "a turn with no riders is ordinary traffic")
+        ghost = {}
+        stand_on(self.svc, [{"role": "user", "content": "asked badly"}], {"X-Strata-Carts": "ghost"}, ghost)
+        self.assertNotIn("strata_cart", ghost, "a refused ask leaves nothing to protect")
+
+    def test_the_fence_numbers_reach_the_card_as_the_engine_gave_them(self):
+        # The card shows the engine's quota beside the ledger's.  This test engine has no fence, so the honest
+        # answer is None twice - and with an INFO line that names the cap, the cap appears.
+        st, m = self.http("GET", "/metrics")
+        k = m["conversation_cache"]["carts"]
+        self.assertIsNone(k["engine_slots"], "booted without --conversation-cache-cart-slots: no quota to print")
+        self.assertIsNone(k["engine_parked"], "and no cart count either - None, never a zero")
+        self.svc.engine.info = dict(getattr(self.svc.engine, "info", None) or {},
+                                    conversation_cache_cart_slots=10)
+        st, m = self.http("GET", "/metrics")
+        self.assertEqual(m["conversation_cache"]["carts"]["engine_slots"], 10,
+                         "the INFO line is the cap's other source, read live")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -206,6 +206,13 @@ class ConversationCacheCard(unittest.TestCase):
             "snapshot_bytes=104857600 reused_kv_bytes=0\n")
     RESTORE = "strata serve: conversation cache: restored 4000 tokens (exact) in 30.0 ms; parked=2 bytes=209715200\n"
 
+    # memory-core's cart fence (2026-10-28): the engine's own count of parked CART conversations rides the
+    # same lines.  The pre-fence format above is kept on purpose: absence must read as None, not as zero.
+    CART_PARK = ("strata serve: conversation cache: parked 900 tokens from slot 1 in 4.0 ms; parked=2 "
+                 "bytes=209715200 evictions=1 carts=1 snapshot_bytes=104857600 reused_kv_bytes=0\n")
+    CART_RESTORE = ("strata serve: conversation cache: restored 900 tokens (checkpoint) in 2.0 ms; "
+                    "parked=2 bytes=209715200 carts=1\n")
+
     def test_the_log(self):
         from serve.server import ConvCacheLog
         import tempfile
@@ -225,6 +232,29 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertEqual(c.poll(str(log), start)["parked"], 1)
             self.assertEqual(c.poll(str(log), log.stat().st_size)["parked"], 0)   # the engine started again
             self.assertEqual(c.poll(None, None)["parked"], 0)
+
+    def test_the_fence_count_is_scraped_and_absence_is_not_zero(self):
+        # What the engine parks APART (its --conversation-cache-cart-slots quota) is a number only the engine
+        # has.  An engine without the fence prints the old line, and "never said" has to stay None: showing 0
+        # would read as "no carts parked apart" on a box where nothing is fenced at all, and showing the
+        # ledger's count as the engine's would be a claim nobody measured.
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text("an earlier run\n", encoding="utf-8")
+            start = log.stat().st_size
+            c = ConvCacheLog()
+            self.assertIsNone(c.poll(str(log), start)["cart_parked"], "no line yet: the engine has said nothing")
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(self.PARK + self.RESTORE)         # the pre-fence format, exactly as it still ships
+            self.assertIsNone(c.poll(str(log), start)["cart_parked"], "an engine without the fence: still None")
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(self.CART_PARK + self.CART_RESTORE)
+            st = c.poll(str(log), start)
+            self.assertEqual(st["cart_parked"], 1, "the park line's own count of cart conversations")
+            self.assertEqual((st["parked"], st["evictions"], st["restores"]), (2, 1, 2),
+                             "and the ordinary numbers still parse, carts field or not")
 
     def test_metrics(self):
         tok = ByteTokenizer()
@@ -266,6 +296,28 @@ class ConversationCacheCard(unittest.TestCase):
         self.assertIn('$("cc-carts").hidden = !k', js)
         self.assertIn(".cc-carts {", (web / "app.css").read_text(encoding="utf-8"),
                       "the cart row is a grid row of its own, not a half-filled cell")
+
+class ConversationCartCap(unittest.TestCase):
+    """conversation_cart_slots() (memory-core's fence, 2026-10-28): the cap comes from the run config's
+    argument, which is known before the engine has started, or from its INFO line - and when the engine
+    has no fence the answer is None, never 0, because the card hides what was never measured."""
+
+    class E:
+        def __init__(self, spawn=None, info=None):
+            self.spawn, self.info = spawn, info or {}
+
+    def test_the_three_shapes(self):
+        from serve.server import conversation_cart_slots
+        self.assertEqual(conversation_cart_slots(
+            self.E((["strata"], ["--conversation-cache-cart-slots", "10"]))), 10, "the arg, before the boot")
+        self.assertEqual(conversation_cart_slots(self.E(info={"conversation_cache_cart_slots": 7})), 7,
+                         "the INFO line, after it")
+        self.assertIsNone(conversation_cart_slots(self.E(info={"conversation_cache_slots": 4})),
+                          "an engine with no cart flag at all: None")
+        self.assertIsNone(conversation_cart_slots(self.E(info={"conversation_cache_cart_slots": 0})),
+                          "the flag given as 0 = the shared pool: still None, the fence is off")
+        self.assertIsNone(conversation_cart_slots(self.E((["strata"], ["--conversation-cache-cart-slots", "x"]))),
+                          "a broken argument is not a cap")
 
 
 if __name__ == "__main__":
