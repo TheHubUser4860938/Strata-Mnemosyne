@@ -751,7 +751,7 @@ FAMILIES = {
     # writes it into the pack and the server prefers that over its shipped one - and the server keeps the modes
     # switchable from its own side too (GET|POST /reason, docs/MEMORY_CORE.md); a stock template REFUSES a mode
     # name in the render context (measured), which is why that feature follows this template and nothing else.
-    "dau": {"title": "Qwen3.8-Flash-Next (Turbo-Brilliance, abliterated)", "by": "DavidAU's reason-mode build on SC117's abliterated GSQ-RCO quant",
+    "dau": {"title": "Turbo-Brilliance (abliterated)", "by": "DavidAU's reason-mode build on SC117's abliterated GSQ-RCO quant",
             "about": "the {REASON:} model: answers to 41 reason modes, switchable by the user in a chat or from the "
                      "server side; abliterated; same size and speed as IQ3_S",
             "hf": hf("DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF"),
@@ -766,7 +766,7 @@ FAMILIES = {
     # reason modes ride the chat template embedded in his file (his card documents the 27+27+9 mode system and
     # the pairing guide; the server's flavor check is content-based, so if the template ever lacked the grammar
     # the feature would stay off with a banner saying so - the same measured refusal law as every stock file).
-    "daureg": {"title": "Qwen3.8-Flash-Next (Turbo-Brilliance)",
+    "daureg": {"title": "Turbo-Brilliance (regular)",
                "by": "DavidAU's reason-mode re-quant of the original IQ3_S, without the abliteration",
                "about": "the {REASON:} model in its regular dress: the same reason modes, the same size and "
                         "speed as IQ3_S; the abliterated family is the one with the refusal shaping removed",
@@ -795,7 +795,7 @@ FAMILIES = {
     # the honest trade for the higher-fidelity voice; the memory system and the picture reader work as usual.
     # Their own mmproj is byte-identical to ISTA's (the pinned shared file), so the vision reader comes from
     # ISTA's repository like the dau, unsloth and gyro families' does.
-    "huihui": {"title": "Qwen3.8-Flash-Next (Huihui, abliterated)",
+    "huihui": {"title": "Qwen3.8-Flash-Next (Huihui)",
                "by": "huihui-ai's re-quants of their abliterated v2 model",
                "about": "UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 (94 to 188 GB downloads): the "
                         "Unsloth Dynamic sizes of the abliterated model - it answers plainly where the original "

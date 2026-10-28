@@ -104,12 +104,12 @@ FALLBACK_FAMILIES = {
                                              "authors' numbers)", "tag": "swift-"},
     "coder": {"title": "Qwen3.8-Flash-Next Coder", "about": "half the experts (code, tools, images kept): needs ~32 GB "
                                                             "of RAM, faster; weaker outside coding", "tag": "coder-"},
-    "dau": {"title": "Qwen3.8-Flash-Next (Turbo-Brilliance, abliterated)", "about": "the {REASON:} model: answers to "
+    "dau": {"title": "Turbo-Brilliance (abliterated)", "about": "DavidAU's {REASON:} model (Turbo-Brilliance, abliterated): answers to "
                                                                                     "reason modes, switchable by the "
                                                                                     "user or from the server side; "
                                                                                     "abliterated; same size and speed "
                                                                                     "as IQ3_S", "tag": "dau-"},
-    "daureg": {"title": "Qwen3.8-Flash-Next (Turbo-Brilliance)", "about": "the {REASON:} model in its regular dress: "
+    "daureg": {"title": "Turbo-Brilliance (regular)", "about": "DavidAU's {REASON:} model (Turbo-Brilliance) in its regular dress: "
                                                                           "the same reason modes, the same size and "
                                                                           "speed as IQ3_S", "tag": "daureg-"},
     "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "about": "UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 "
@@ -117,7 +117,7 @@ FALLBACK_FAMILIES = {
                                                                   "~80 GB (UD-IQ4_XS) to ~136 GB (Q8_0) of RAM, else "
                                                                   "part of them read from the SSD",
                 "tag": "unsloth-", "vision": True},
-    "huihui": {"title": "Qwen3.8-Flash-Next (Huihui, abliterated)", "about": "the Unsloth Dynamic sizes of the "
+    "huihui": {"title": "Qwen3.8-Flash-Next (Huihui)", "about": "the Unsloth Dynamic sizes of the "
                                                                              "abliterated model - it answers plainly "
                                                                              "where the original declines; the reason "
                                                                              "modes do not ride it (stock template)",
