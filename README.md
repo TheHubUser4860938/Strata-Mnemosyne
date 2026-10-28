@@ -6,9 +6,9 @@ itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one s
 harness ever has to re-send history. The server remembers, and it remembers the same way no
 matter which app is knocking.
 
-This fork is based on upstream Strata 0.2.7 — app and Terminal at 0.2.7, Control and every engine
-package (Qwen and DeepSeek) at 0.1.52, because both engines changed, so a Qwen install now has a
-newer engine to take. (The 0.2.6 round between was the packaging and docs round: the slimmed landing
+This fork is based on upstream Strata 0.2.7.1 — app and Terminal at 0.2.7, Control at 0.1.53, the
+engine packages (Qwen and DeepSeek) at 0.1.52, and the new DGX Spark engine packages at 0.1.53.
+0.2.7 rebuilt both engines, so a Qwen install has a newer engine to take. (The 0.2.6 round between was the packaging and docs round: the slimmed landing
 READMEs, the Windows uninstaller fixes, the DeepSeek engine at 0.1.51.) Upstream's own headline list
 for this round: **faster answers on 12 GB NVIDIA cards** — the router prefers experts already on the
 card (+15 to +37% decode on an RTX 3060; cards over 13 GiB unchanged; `STRATA_ROUTE_PRIOR=0` turns it
@@ -18,7 +18,12 @@ it out), **DeepSeek on Strix Halo Windows**, **DeepSeek at 512K and 1M contexts*
 pipeline by default and read long prompts layer-major** (the first word after a 32K prompt in 27.7 s
 instead of 141.8 s on two RTX A4000), and a **large refresh of the served web chat page** — wide
 layout, saved chats with edit and rewind, sending while an answer streams, KaTeX math — the very page
-this fork's Memory tab rides on. `STRATA_DEFAULTS=026` (Qwen) and `DS4_DEFAULTS=026` (DeepSeek) return
+this fork's Memory tab rides on. The 0.2.7.1 hotfix on top adds two things: Strata on the
+NVIDIA DGX Spark (Linux ARM64, the Terminal only) and DeepSeek-V4.1-Flash on Apple silicon Macs
+with 64 GB or more, text only ([DGX Spark](docs/DGX_SPARK_LINUX.md),
+[the Mac](docs/DEEPSEEK_MAC.md)); an x86 Windows or Linux PC gets no new engine and no speed
+change, only Control's feed reader that skips entries it does not understand instead of stopping.
+`STRATA_DEFAULTS=026` (Qwen) and `DS4_DEFAULTS=026` (DeepSeek) return
 every changed default to 0.2.6 in one step. The earlier rounds' gains — the Strix Halo and Intel Arc
 packages, the DFlash2 drafter, full-context agent chat, one installer per system, the DeepSeek RAM
 store and speed-ups — all still stand. Every number in this paragraph is upstream's, from
@@ -56,7 +61,8 @@ cd Strata
 
 <img width="1278" height="263" alt="image" src="https://github.com/user-attachments/assets/f6f63206-afdb-439a-a9d4-d58ce0ee054a" />
 
-Version 0.2.7 (app and Terminal 0.2.7, Control 0.1.52) · every engine package rebuilt at 0.1.52
+Version 0.2.7.1 (app and Terminal 0.2.7, Control 0.1.53) · the x86 engine packages stay at 0.1.52,
+the new DGX Spark (linux-aarch64) engines are 0.1.53
 
 <img width="1879" height="434" alt="image" src="https://github.com/user-attachments/assets/1643c829-dc1b-43f5-9952-0d5c4f67f924" />
 
@@ -426,9 +432,9 @@ For swift models you can run them with the Q8 PLE N-gram table adjust your .json
   "/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-Q8PLETable.gguf", 
   Change to the name of the Q8 PLE table.
 
-### DeepSeek V4.1-Flash (Terminal, from 0.2.4)
+### DeepSeek V4.1-Flash (Terminal from 0.2.4, the desktop app from 0.2.7)
 
-[DeepSeek V4.1-Flash](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF) is a different, much bigger model. ISTA-DASLab made the three sets below. Strata runs them on a PC with one 12 GB graphics card and 46 to 64 GB of RAM, and reads the rest from your SSD. It runs on NVIDIA RTX 30 to 50 cards and on the Radeon AI PRO R9700. It uses its own engine package, `strata-dsv41`, which `strata launch` downloads when you pick DeepSeek. The desktop app does not offer it yet.
+[DeepSeek V4.1-Flash](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF) is a different, much bigger model. ISTA-DASLab made the three sets below. Strata runs them on a PC with one 12 GB graphics card and 46 to 64 GB of RAM, and reads the rest from your SSD. It runs on NVIDIA RTX 30 to 50 cards (Windows and Linux), on the Radeon AI PRO R9700 (Linux), on AMD Ryzen AI Max (Strix Halo, Windows), and on Apple silicon Macs with 64 GB or more, text only, from 0.2.7.1 ([the Mac page](docs/DEEPSEEK_MAC.md)). It uses its own engine package, `strata-dsv41`, which `strata launch` downloads when you pick DeepSeek.
 
 | Set | Download | Quality | Writes code at |
 | --- | ---: | --- | --- |
