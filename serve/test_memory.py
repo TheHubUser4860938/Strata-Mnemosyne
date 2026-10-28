@@ -3585,6 +3585,31 @@ class CartSlotLedger(Mint):
                                                  "sources": {"text": f"{name} body {name.upper()}"}})
         self.assertEqual(st, 200, body)
 
+    def test_the_graft_header_names_a_file_for_the_engine_to_stage(self):
+        # memory-core (2026-10-28): the graft lever. X-Strata-Carts-Graft names a minted cart whose STATE
+        # should ride instead of its text: stand_on resolves the name to a file in the slot vault and marks
+        # the request, sampling_keys turns the mark into the engine's graft=1, and the header alone must not
+        # smuggle the bodies back into the prompt - a graft that also re-sends its source measures nothing.
+        from serve.server import StrataEngine
+        self._mint("graftme")
+        req = {}
+        stand_on(self.svc, [{"role": "user", "content": "grafted ask"}],
+                 {"X-Strata-Carts-Graft": "graftme"}, req)
+        self.assertEqual(req.get("strata_graft"), self.svc.memory.carts_get("graftme")[0]["file"],
+                         "the named cart's file is what the engine is asked to stage")
+        self.assertIn(" graft=1", StrataEngine.sampling_keys(dict(req)), "and the engine key follows")
+        self.assertNotIn("strata_cart", req, "state rode, text did not: this is not cart traffic")
+        self.assertNotIn("graft=", StrataEngine.sampling_keys({}), "no header, no key: upstream bytes")
+        ghost = {}
+        stand_on(self.svc, [{"role": "user", "content": "asked badly"}],
+                 {"X-Strata-Carts-Graft": "ghost"}, ghost)
+        self.assertNotIn("strata_graft", ghost, "a name the ledger does not know grafts nothing")
+        both = {}
+        stand_on(self.svc, [{"role": "user", "content": "text AND state"}],
+                 {"X-Strata-Carts": "graftme", "X-Strata-Carts-Graft": "graftme"}, both)
+        self.assertTrue(both.get("strata_cart"), "bodies rode, so the fence still applies")
+        self.assertIn("strata_graft", both, "and the graft was asked for too: both keys, honestly marked")
+
     def test_no_cart_ask_leaves_the_ledger_empty(self):
         # an absent thing is never "zero of something": before any cart ask the ledger says nothing
         # rode, and a plain request must not make it say otherwise (the anti-vacuity law)
