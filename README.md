@@ -543,9 +543,9 @@ flags and exit codes: [docs/AI_SETUP.md](docs/AI_SETUP.md). Repository rules for
 
 | Your app speaks | Base URL |
 | --- | --- |
-| OpenAI API (most apps and agents) | `http://127.0.0.1:8080/v1` (any API key, any model name) |
-| Anthropic API (Claude Code) | `http://127.0.0.1:8080`, without `/v1`. Claude Code: `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` |
-| OpenAI Responses API (Codex CLI) | `http://127.0.0.1:8080/v1/responses` ([setup](docs/DETAILS.md#the-responses-api-and-codex-cli)) |
+| OpenAI API (most apps and agents) | `http://127.0.0.1:8005/v1` (any API key, any model name) |
+| Anthropic API (Claude Code) | `http://127.0.0.1:8005`, without `/v1`. Claude Code: `ANTHROPIC_BASE_URL=http://127.0.0.1:8005` |
+| OpenAI Responses API (Codex CLI) | `http://127.0.0.1:8005/v1/responses` ([setup](docs/DETAILS.md#the-responses-api-and-codex-cli)) |
 
 `strata connect` prints the exact settings for OpenCode, Codex CLI, Claude Code, oh-my-pi, pi, Hermes Agent and OpenClaw,
 and `strata connect opencode --write` writes them for you (with a backup).
@@ -573,7 +573,7 @@ right away. Which size fits your Mac: [docs/MAC.md](docs/MAC.md).
 The installer finds your card and sets up the right engine. It asks which model and size, how much context (how much text
 the model keeps in mind) and whether it should read pictures. Press Enter for the recommended answer. Then it downloads the
 model (about 70 GB) and starts it. If the download stops, run it again and it continues. Your browser opens the Strata
-page at `http://127.0.0.1:8080`.
+page at `http://127.0.0.1:8005`.
 
 > While the model starts, your PC can be slow or stop responding for 1-3 minutes (longest the first time). Strata loads
 > 35-55 GB into your RAM and locks part of it for the graphics card. Wait, and don't close the window.
@@ -636,7 +636,7 @@ The longer explanation: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). Every part
   (browsers use a lot), or pick a smaller size such as Q2_0 or IQ2_XS.
 - **It says there is no engine for this PC.** In the app, open **Settings, Engine** and press **Update engine**. In the
   Terminal, run `strata update`.
-- **It says port 8080 is already in use.** Strata is already running. Look for its window.
+- **It says port 8005 is already in use.** Strata is already running. Look for its window.
 
 More fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Still stuck? Open an
 [issue](https://github.com/Niko1221/Strata/issues) and attach the logs: in the app from **Settings, Engine, Diagnostics,
