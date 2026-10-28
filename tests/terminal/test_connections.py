@@ -219,7 +219,11 @@ class ConnectionTests(unittest.TestCase):
             thread.join(timeout=2)
 
     def test_deeply_nested_telemetry_returns_one_redacted_error(self):
-        depth = 20000  # Python 3.13 parses 1100 levels; the recursion limit is reached at a few thousand on every version
+        # memory-core (#4532): 20,000 levels PARSE on Python 3.14 (measured: json.loads returns a
+        # list, so client.py:131 answers "non-object" instead), and the depth that overflows moves
+        # with the stack the process already used. 200,000 overflows here (RecursionError, 8,156 kB
+        # of 8 MB stack) and overflows no later on any older interpreter.
+        depth = 200000
         body = b"[" * depth + b"0" + b"]" * depth
 
         class Handler(BaseHTTPRequestHandler):

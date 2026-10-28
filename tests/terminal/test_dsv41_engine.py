@@ -217,8 +217,11 @@ class HipPackageLibraryPath(unittest.TestCase):
     def test_rocm_bin_comes_after_the_package_folder(self):
         folder = self.package({"lib_dirs": ["rocm/bin"]})
         self.assertEqual(dsv41_engine.lib_dirs(folder / EXE), [str(folder), str(folder / "rocm" / "bin")])
-        env = dsv41_engine.start_env(folder / EXE, {"PATH": "C:\\Windows"})
-        first = env["PATH"].split(os.pathsep)[:2]
+        # memory-core (#4531): start_env writes LIB_VAR - "PATH" on Windows, "LD_LIBRARY_PATH" on
+        # POSIX (dsv41_engine.py:41) - so the test reads back the same name it wrote. The upstream
+        # form asserts on "PATH" and can therefore only pass on a Windows host.
+        env = dsv41_engine.start_env(folder / EXE, {dsv41_engine.LIB_VAR: "C:\\Windows"})
+        first = env[dsv41_engine.LIB_VAR].split(os.pathsep)[:2]
         self.assertEqual(first, [str(folder), str(folder / "rocm" / "bin")])
 
     def test_a_cuda_package_needs_only_its_folder(self):
