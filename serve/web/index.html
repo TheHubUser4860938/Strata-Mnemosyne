@@ -179,6 +179,13 @@
           <div><div class="bar-row"><span>Their memory (RAM)</span><span class="muted" id="cc-mem-text">&ndash;</span></div>
             <div class="st-progress"><div class="st-progress__bar" id="cc-mem-bar" style="width:0%"></div></div></div>
         </div>
+        <!-- memory-core (the owner's ask 2026-10-28): the cart ledger, its own row and its own cap.
+             The engine's parked slots count CONVERSATIONS and know nothing of carts, so the two
+             counts ride this card side by side and are never added together. -->
+        <div class="cc-bars cc-carts" id="cc-carts" hidden>
+          <div><div class="bar-row"><span>Cart sets (of their ten)</span><span class="muted" id="cc-carts-text">&ndash;</span></div>
+            <div class="st-progress"><div class="st-progress__bar" id="cc-carts-bar" style="width:0%"></div></div></div>
+        </div>
         <dl class="facts" id="cc-facts"></dl>
         <p class="muted small cc-note" id="cc-note"></p>
       </div>

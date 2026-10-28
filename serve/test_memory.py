@@ -3570,6 +3570,80 @@ class Attach(Mint):
         self.assertTrue(hasattr(mem, "block_tail") and mem.block_tail is False,
                         "the constructor default is head: every other box byte-identical")
 
+class CartSlotLedger(Mint):
+    """The cart SLOT LEDGER (the owner's ask 2026-10-28: "give the cartridges their own dedicated
+    slot with a max of ten"). The engine's parked pool counts CONVERSATIONS and carries no class for
+    a cart (include/strata/core/conversation_cache.hpp: one budget_, one slots_, oldest-first
+    evict_oldest), so a flag alone only enlarges the shared pool. What the server owns is the ledger
+    that pool is read from: which DISTINCT cart sets are in play (a set is the fingerprint a parked
+    conversation forks on), newest-first and capped at the same ten the rider budget uses, plus what
+    the last cart-bearing ask attached, refused and spent in tokens. /metrics carries it as
+    conversation_cache.carts; the Monitor's Conversation cache card prints it."""
+
+    def _mint(self, name):
+        st, body = self.http("POST", "/memory", {"op": "mint", "name": name,
+                                                 "sources": {"text": f"{name} body {name.upper()}"}})
+        self.assertEqual(st, 200, body)
+
+    def test_no_cart_ask_leaves_the_ledger_empty(self):
+        # an absent thing is never "zero of something": before any cart ask the ledger says nothing
+        # rode, and a plain request must not make it say otherwise (the anti-vacuity law)
+        v = self.svc.carts.attach_view()
+        self.assertEqual((v["asks"], v["sets"], v["last_names"]), (0, 0, []), "fresh: nothing asked")
+        self._mint("quiet")
+        self.ask("no headers at all")
+        self.assertEqual(self.svc.carts.attach_view()["asks"], 0,
+                         "a request that named no cart is not the pool's business")
+
+    def test_one_set_many_asks_is_one_set(self):
+        self._mint("alpha"); self._mint("zeta")
+        for hdr in (("alpha,zeta",), ("zeta, alpha",), ("alpha,zeta",)):
+            self.ask(f"ask {hdr}", [("X-Strata-Carts", hdr[0])])
+        v = self.svc.carts.attach_view()
+        self.assertEqual(v["asks"], 3, "every cart ask is counted")
+        self.assertEqual(v["sets"], 1, "the same SET is one parked conversation, however it is spelled")
+        self.assertEqual(v["last_names"], ["alpha", "zeta"], "the ledger sorts, like the byte law does")
+        self.assertEqual(v["riders"], 6, "riders counts the asks' bytes, sets counts the pool's shape")
+        self.assertGreater(v["last_tokens"], 0, "the token figure is the block's own, not a guess")
+        self.assertLessEqual(v["last_tokens"], v["token_cap"], "and it stays inside the guardrail it names")
+
+    def test_the_pool_holds_ten_sets_and_no_more(self):
+        for i in range(1, 13):
+            self._mint(f"c{i}")
+        for i in range(1, 13):
+            self.ask(f"set {i}", [("X-Strata-Carts", f"c{i}")])
+        v = self.svc.carts.attach_view()
+        self.assertEqual((v["sets"], v["pool"]), (10, 10), "twelve distinct sets, ten slots: the cap holds")
+        self.assertEqual(v["set_names"][0], "c12", "newest first, so the card reads like the pool does")
+        self.assertNotIn("c1", v["set_names"], "the eleventh and twelfth pushes the oldest out of the ledger")
+        self.assertNotIn("c2", v["set_names"])
+        self.assertEqual(self.svc.carts.sets_max, self.svc.carts.attach_max,
+                         "the owner's ten is ONE number for riders and for the pool they form")
+
+    def test_a_refused_ask_is_recorded_with_its_reason(self):
+        self._mint("keeps")
+        self.ask("half a set", [("X-Strata-Carts", "keeps,ghost")])
+        v = self.svc.carts.attach_view()
+        self.assertEqual(v["last_names"], ["keeps"], "what rode")
+        self.assertEqual(v["last_skipped"], [["ghost", "no such cart"]], "and what did not, with the reason")
+        self.assertEqual(v["skipped"], 1)
+        self.assertEqual(v["sets"], 1, "a refusal does not make a second set")
+
+    def test_metrics_carries_the_ledger_and_no_minter_carries_none(self):
+        self._mint("shown")
+        self.ask("shown ask", [("X-Strata-Carts", "shown")])
+        st, m = self.http("GET", "/metrics")
+        self.assertEqual(st, 200, m)
+        c = m["conversation_cache"]
+        self.assertEqual(c["carts"]["cap"], 10, "the ten the owner set reaches the card")
+        self.assertEqual(c["carts"]["last_names"], ["shown"], "the riders are NAMED, which is the point of the patch")
+        self.assertEqual(c["carts"]["mode"], "prefix", "and the mode that ran is the mode that is said")
+        self.assertIn("file", (c["carts"]["standing"] or {}), "the standing cart rides the same block")
+        self.svc.carts = None                        # memory off, or an older server with no minter
+        st, m = self.http("GET", "/metrics")
+        self.assertIsNone(m["conversation_cache"]["carts"],
+                          "no ledger, no block: the card hides it rather than printing zeros")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

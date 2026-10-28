@@ -129,6 +129,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .cc-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
 .cc-bars { display: grid; grid-template-columns: 1fr 1fr; gap: var(--st-s-2) var(--st-s-6); }
 .cc-bars[hidden] { display: none; }
+.cc-carts { grid-template-columns: 1fr; }   /* memory-core: the cart ledger rides as one full-width row */
 .cc-note { margin: 0; }
 .cc-note:empty { display: none; }
 .mcp-card { display: flex; flex-direction: column; gap: var(--st-s-3); }

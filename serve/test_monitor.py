@@ -256,9 +256,16 @@ class ConversationCacheCard(unittest.TestCase):
     def test_the_card_is_on_the_page(self):
         web = Path(__file__).parent / "web"
         html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
-        for el in ("cc-card", "cc-slots-text", "cc-mem-text", "cc-facts", "cc-note"):
+        for el in ("cc-card", "cc-slots-text", "cc-mem-text", "cc-facts", "cc-note",
+                   "cc-carts", "cc-carts-text", "cc-carts-bar"):     # memory-core 2026-10-28: the cart ledger
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"{el}"', js)
+        # the block reads the new /metrics key and disappears with it (a card that printed zeros for
+        # a box that has no carts would say "no carts" where the truth is "no ledger")
+        self.assertIn("c.carts", js)
+        self.assertIn('$("cc-carts").hidden = !k', js)
+        self.assertIn(".cc-carts {", (web / "app.css").read_text(encoding="utf-8"),
+                      "the cart row is a grid row of its own, not a half-filled cell")
 
 
 if __name__ == "__main__":
