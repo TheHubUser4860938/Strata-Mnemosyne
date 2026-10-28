@@ -720,5 +720,73 @@ int main() {
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
+    {
+        // memory-core's CART FENCE (--conversation-cache-cart-slots, the owner's law 2026-10-28:
+        // "it's only other cartridges that evict other cartridges").  The fence OFF must be the
+        // old pool with the old rule; the fence ON must give cart traffic its own quota that
+        // ordinary traffic cannot touch, while never starving cart traffic on RAM.
+        const size_t one = image({1}).bytes();          // what one parked conversation costs here
+        const size_t roomy = 64 * one;                  // a budget that never binds: quotas only
+        auto parked = [](ConversationCache& c, std::vector<int32_t> ids) {
+            ids.push_back(-1);   // conversation_prefix refuses a prompt the checkpoint EQUALS (the last token starts
+                                 // the next verify window), so a membership probe always asks one token longer
+            return c.best(ids, {}, true).tokens >= (int64_t) ids.size() - 1;
+        };
+        {   // the default: no fence, one pool, oldest first, a cart no class at all
+            ConversationCache off(roomy, 4);
+            check(!off.classed() && off.cap(true) == 4, "no --conversation-cache-cart-slots: one pool, one cap");
+            for (int i = 0; i < 4; ++i) {
+                auto im = image({(int32_t) (10 + i)}); im.cart = true;
+                check(off.put(std::move(im)), "fence off: a cart parks as an ordinary conversation");
+            }
+            check(off.size() == 4 && off.cart_size() == 0, "fence off: the class is not reported, exactly as before");
+            auto fifth = image({99}); fifth.cart = true;
+            check(off.put(std::move(fifth)), "fence off: the fifth cart parks");
+            check(off.size() == 4 && off.evictions() == 1 && !parked(off, {10}) && parked(off, {99}),
+                  "fence off: the oldest goes, cart or not - the rule the fence did not change");
+        }
+        {   // the fence on: two quotas, and an ordinary park that cannot touch a cart
+            ConversationCache cc(roomy, 2, 0, 2);
+            check(cc.classed() && cc.cap(true) == 2 && cc.cap(false) == 2, "fence on: carts get their own cap");
+            for (int i = 0; i < 2; ++i) {
+                auto im = image({(int32_t) (20 + i)}); im.cart = true;
+                check(cc.put(std::move(im)), "the cart quota takes its two");
+            }
+            for (int i = 0; i < 2; ++i) check(cc.put(image({(int32_t) (30 + i)})), "the ordinary quota takes its two");
+            check(cc.size() == 4 && cc.cart_size() == 2,
+                  "four parked on two ordinary slots: the cart quota is ADDITIVE, not a share");
+            check(cc.put(image({40})) && cc.size() == 4 && cc.cart_size() == 2 && cc.evictions() == 1,
+                  "a third ordinary park makes room");
+            check(!parked(cc, {30}) && parked(cc, {31}) && parked(cc, {20}) && parked(cc, {21}),
+                  "and it evicted the OLDEST ORDINARY: a cart lost nothing to traffic that carries no carts");
+            auto third_cart = image({50}); third_cart.cart = true;
+            check(cc.put(std::move(third_cart)) && cc.cart_size() == 2 && cc.size() == 4,
+                  "a third cart parks inside its own quota");
+            check(!parked(cc, {20}) && parked(cc, {21}) && parked(cc, {31}) && parked(cc, {40}),
+                  "the tenth cart pushes a cart, never a user's conversation - the owner's law, both ways");
+        }
+        {   // RAM still rules: a cart park may take an ordinary entry when the carts alone cannot
+            // free enough bytes (otherwise four ordinary slots could starve cart traffic entirely)
+            ConversationCache tight(5 * one / 2, 2, 0, 1);   // room for two and a half images
+            check(tight.put(image({60})) && tight.put(image({61})), "two ordinary entries fill the RAM");
+            auto c1 = image({70}); c1.cart = true;
+            check(tight.put(std::move(c1)), "the cart park takes an ordinary victim when no cart can go");
+            check(tight.cart_size() == 1 && tight.size() == 2 && !parked(tight, {60}) && parked(tight, {61}),
+                  "the oldest ordinary gave the RAM, the cart rode, and the quota held");
+            check(!tight.can_fit(one, 0, true) && tight.can_fit(one, 0, false) == false,
+                  "can_fit reads the same quotas: the cart class is full, the ordinary one is not empty-cap");
+        }
+        {   // a pinned shared prefix outranks both quotas: the fence never unmakes the pin law
+            ConversationCache pinone(roomy, 1, 0, 1);
+            auto p = image({80, 81});
+            p.checkpoints.push_back(p.live);            // pinned() reads the CHECKPOINTS (the shared prefix is a
+            p.checkpoints.back().pinned = true;          // checkpoint a branch comes back to), not the live state
+            p.cart = true;
+            check(pinone.put(std::move(p)), "a pinned cart parks");
+            auto q = image({90, 91}); q.cart = true;
+            check(!pinone.put(std::move(q)) && pinone.size() == 1 && parked(pinone, {80, 81}),
+                  "a second cart cannot evict the pinned one: the pin stays, parking is refused");
+        }
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
