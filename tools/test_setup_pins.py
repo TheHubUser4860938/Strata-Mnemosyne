@@ -429,9 +429,14 @@ class Requirements(unittest.TestCase):
         deps = {"markupsafe", "certifi", "charset-normalizer", "idna", "urllib3", "colorama",
                 "fasteners", "platformdirs"}   # the pinned transitive set, kept current as the
                                                # direct list grows (ADR-002 added the last two)
-        # the packages it has stay as they are; only truststore (#3722: the operating system's certificates) is new, and it is wanted
-        self.assertEqual(self.pip(legacy, lines, installed=deps)[0], ['truststore==0.10.5; python_version >= "3.10"'])
-        deps.add("truststore")
+        # the packages it has stay as they are; three are new, and all three are wanted: truststore (#3722: the
+        # operating system's certificates), pixeltable-pgserver (the store's server on Windows, ADR-002's per-OS
+        # branch) and typing-extensions (pinned 2026-10-28 - psycopg wants it before 3.13, textual always, and an
+        # explicit pin keeps lock_wheels.py's marker prune from pruning it out of a lock that needs it)
+        self.assertEqual(self.pip(legacy, lines, installed=deps)[0],
+                         ['pixeltable-pgserver==0.6.0; sys_platform == "win32"',
+                          'truststore==0.10.5; python_version >= "3.10"', 'typing-extensions==4.16.0'])
+        deps |= {"truststore", "pixeltable-pgserver", "typing-extensions"}
         self.assertEqual(self.pip(legacy, lines, installed=deps)[0], [])
         missing = [p for p in legacy if p != "psutil"]                         # an older list without psutil
         ran, _ = self.pip(missing, lines, installed=deps)

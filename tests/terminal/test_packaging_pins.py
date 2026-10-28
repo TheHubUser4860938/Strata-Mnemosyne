@@ -72,23 +72,32 @@ class WheelLocks(unittest.TestCase):
                     self.assertTrue(e["hashes"], name)
 
     def test_the_locks_agree_with_requirements_txt(self):
-        pins = {}
+        # memory-core's amendment, 2026-10-28: read the pins with the PEP 508 parser lock_wheels.py itself uses.
+        # The regex below could not see an extras pin - `psycopg[binary]==3.3.6` matched nothing, so the store's
+        # driver escaped this check completely - and it was marker-blind, special-casing colorama and numpy by
+        # name, so any other OS-conditional pin was demanded in locks where lock_wheels.py correctly drops it
+        # (embedded-postgres on Windows, pixeltable-pgserver on every other target). Absence is NOT claimed for a
+        # pin the target does not apply to: a lock can still need that package transitively, which is how
+        # typing-extensions belongs in the Linux lock even though only the Windows store server asks for it by pin.
+        import lock_wheels as lw
+        from packaging.requirements import Requirement      # the same parser the lock is made with, lazily like it
+        direct = []
         for name in ("requirements.txt", "requirements-monitor.txt"):
             for line in (ROOT / name).read_text(encoding="utf-8").splitlines():
-                m = re.match(r"^([A-Za-z0-9_.-]+)==([^\s;]+)(?:\s*;\s*(.*))?$", line.split(" #")[0].strip())
-                if m:
-                    pins.setdefault(norm(m.group(1)), []).append((m.group(2), m.group(3) or ""))
+                line = line.split(" #")[0].strip()
+                if line and not line.startswith("#"):
+                    direct.append(Requirement(line))
         for lock in self.locks():
             names = pt.lock_names(lock)
+            target = lock.name[len("runtime-"):-len("-cp312.txt")]
+            env = {"python_version": lw.PYTHON, "python_full_version": lw.PYTHON + ".15",
+                   "implementation_name": "cpython", "platform_python_implementation": "CPython",
+                   **lw.TARGETS[target]["env"]}
             with self.subTest(lock.name):
-                for pkg, versions in pins.items():
-                    if pkg == "colorama":
-                        self.assertEqual(pkg in names, "windows" in lock.name)
+                for req in direct:
+                    if req.marker is not None and not req.marker.evaluate(env):
                         continue
-                    if pkg == "numpy":                       # python_version markers: the 3.12 line applies
-                        self.assertEqual(names[pkg], "2.5.3")
-                        continue
-                    self.assertEqual(names.get(pkg), versions[0][0], pkg)
+                    self.assertEqual(names.get(norm(req.name)), list(req.specifier)[0].version, req.name)
                 self.assertNotIn("cmake", names)             # build tools never ship in the bundle
                 self.assertNotIn("ninja", names)
 

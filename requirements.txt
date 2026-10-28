@@ -15,9 +15,15 @@ psutil==7.2.2
 psycopg[binary]==3.3.6                                  # the store's driver - native Postgres (ADR-002)
 embedded-postgres==18.6.3; sys_platform != "win32"      # the store's own server: PostgreSQL 18.6 inside
 #                                                       # a py3-none wheel, cluster start measured 0.3 s
-#                                                       # (ADR-002 R0). Windows arrives at beta-2 with
+#                                                       # (ADR-002 R0). Windows was left to beta-2 with
 #                                                       # pixeltable-pgserver - wheel and smoke test
 #                                                       # measured together, not one without the other.
+pixeltable-pgserver==0.6.0; sys_platform == "win32"     # the same law's per-OS branch, and the server this
+#                                                       # fork ships on Windows: serve/memory.py imports
+#                                                       # pixeltable_pgserver where embedded_postgres is
+#                                                       # absent. The pin landed 2026-10-28 on the owner's
+#                                                       # ("Windows installs only"); the Windows smoke
+#                                                       # test is still owed - no Windows box on the fork.
 
 # their dependencies
 markupsafe==3.0.3
@@ -29,3 +35,7 @@ urllib3==2.8.0
 colorama==0.4.6; sys_platform == "win32"
 fasteners==0.20
 platformdirs==4.13.3
+typing-extensions==4.16.0                              # pixeltable-pgserver asks for it on Windows,
+#                                                      # and textual asks for it everywhere: the
+#                                                      # pin is unconditional so the prune in
+#                                                      # lock_wheels.py cannot drop it from a lock.
