@@ -891,6 +891,11 @@ class MockEngine:
                 time.sleep(self.delay)
             yield t
 
+    def stage_graft(self, name: str) -> dict:
+        """The graft in the mock: no device, no file grammar - it reports the last prompt as the staged
+        conversation, enough to exercise the request path and the ledger without an engine."""
+        return {"tokens": len(self.last_prompt), "bytes": 0, "ms": 1}
+
     def session_file(self, action: str, path: str) -> dict:
         """Disk sessions in the mock: SAVE writes a stand-in file of the last prompt, RESTORE reads
         it back - enough for the cartridge lifecycle (seed, save, restore, gc) without the engine."""
@@ -2019,6 +2024,11 @@ class StrataEngine:
         # evict it.  Absent = the shared pool, exactly as before; an engine without the fence skips the key.
         if sampling.get("strata_cart"):
             keys += " cart=1"
+        # "strata_graft" (set by stand_on when X-Strata-Carts-Graft named a minted cart): the file's STATE is
+        # staged ahead of this prompt and the request begins on it, where RAM proved no start of its own.
+        # Absent = no graft, exactly as before; an engine without the lever skips the unknown key.
+        if sampling.get("strata_graft"):
+            keys += " graft=1"
         # logprobs: the engine writes an `LP` line after each `T` line (an engine without them ignores
         # the key, so an older engine answers exactly as it did).  Absent = no LP lines at all.
         k = top_logprobs(sampling)
@@ -2810,6 +2820,10 @@ class StrataEngine:
                 raise ValueError("prefill_only is a text prompt and max_new 0")
             head = "GEN 0 prefill=1"
         try:
+            if (sampling or {}).get("strata_graft"):
+                # stage and generate in ONE turn of the pipe: the FIFO is held here, so no other request can
+                # slip between the GRAFT and the GEN written to consume it.
+                self.stage_graft(str(sampling["strata_graft"]))
             self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
             self.proc.stdin.flush()
         except OSError:                                  # the pipe is gone: the engine died (not the client)
@@ -3084,6 +3098,31 @@ class StrataEngine:
                 heard = time.monotonic()
                 continue
             raise out_of_step(line)
+
+    def stage_graft(self, name: str) -> dict:
+        """memory-core's graft (2026-10-28): `GRAFT <name>` stages a saved conversation in the slot vault for
+        the NEXT request to begin on, host-side only - the engine reads and validates the file and writes no
+        device byte, so staging cannot corrupt the conversation in flight. -> {"tokens", "bytes", "ms"}.
+        The answer is exactly one line (`GRAFTED` / `SERR` / `ERR`): the graft reads no progress blocks and
+        announces no blocking step, so there is nothing else to interleave on stdout. An older engine skips
+        the unknown key and answers the way it always has; the graft then simply does not happen."""
+        try:
+            self.proc.stdin.write(f"GRAFT {name}\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        line = (self.proc.stdout.readline() or "").strip()
+        if line.startswith("GRAFTED "):
+            f = line.split()
+            if len(f) != 4 or not f[1].isdigit() or not f[2].isdigit():
+                raise EngineDied(f"the engine answered GRAFT with {line[:200]!r}")
+            return {"tokens": int(f[1]), "bytes": int(f[2]), "ms": float(f[3])}
+        if line.startswith("SERR "):
+            p = line.split(" ", 3)
+            if len(p) == 4 and p[1] in SessionRefused.STATUS and p[2] in ("0", "1"):
+                raise SessionRefused(p[1], p[3].strip(), p[2] == "1")
+            raise EngineDied(f"the engine answered GRAFT with {line[:200]!r}")
+        raise EngineDied(f"the engine answered GRAFT with {line[:200]!r}")
 
     def close(self):
         """End the engine process: STOP + QUIT first (the engine frees its memory itself - unpinning tens of GB can take
@@ -7675,6 +7714,20 @@ def stand_on(svc: Service, messages, headers, req=None):
         # it builds must park in the cart quota.  A cart that was ASKED but refused is not cart traffic -
         # nothing of it rides, so the conversation is ordinary and may be evicted by ordinary traffic.
         req["strata_cart"] = True
+    # X-Strata-Carts-Graft (memory-core, 2026-10-28): a minted cart rides as STATE instead of text. The name
+    # resolves through the ledger to the file in the slot vault, and the engine stages that file ahead of this
+    # request; the graft is honoured only where RAM proved no start of its own, so a conversation that already
+    # has its state parked keeps today's bytes and pays nothing for the ask. A name the ledger does not know,
+    # or a cart with no file, marks nothing: the graft is additive, never a silent substitution.
+    graft_name = str((headers or {}).get("X-Strata-Carts-Graft") or "").strip()
+    if req is not None and graft_name and getattr(svc, "slot_save_path", None):
+        try:
+            rows = svc.memory.carts_get(graft_name)
+        except Exception:                                    # the ledger is a pointer: it never kills a request
+            rows = []
+        gfile = str((rows[0] if rows else {}).get("file") or "")
+        if gfile:
+            req["strata_graft"] = gfile
     if att and att.get("mode") == "anchor":
         # The HEAD takes the anchored shape because the MODE says so, not because a rider
         # happens to ride: the zero-ask turn and the full-ask turn must compose ONE head, or
