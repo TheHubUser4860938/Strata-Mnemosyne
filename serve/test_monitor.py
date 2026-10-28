@@ -294,6 +294,8 @@ class ConversationCacheCard(unittest.TestCase):
         # a box that has no carts would say "no carts" where the truth is "no ledger")
         self.assertIn("c.carts", js)
         self.assertIn('$("cc-carts").hidden = !k', js)
+        self.assertIn("c.parked - apart", js,   # the additive quota must not read as an overflow ("5 / 4")
+                      "the ordinary bar shows the ordinary pool; the rider is named beside it")
         self.assertIn(".cc-carts {", (web / "app.css").read_text(encoding="utf-8"),
                       "the cart row is a grid row of its own, not a half-filled cell")
 
