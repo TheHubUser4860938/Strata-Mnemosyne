@@ -180,6 +180,13 @@ struct SavedConversation {
     std::vector<ConversationCheckpoint> checkpoints;
     std::vector<ConversationKv> kv; // main layers followed by the draft layer
     bool cvec = true;
+    // memory-core's CART FENCE (the owner's law 2026-10-28: "only other cartridges evict other
+    // cartridges").  The request that produced this conversation carried cartridges (the GEN key
+    // cart=1, which serve/server.py sends when a cart set rode the prompt), so with
+    // --conversation-cache-cart-slots N this image lives in its own quota of N and ordinary
+    // traffic cannot evict it.  Run-time only, like `pinned` below: conversation_file.cpp's
+    // put_payload/get_payload never write it, so every session file on disk stays byte-identical.
+    bool cart = false;
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
     // STRATA_PARK_ASYNC: set while a background copy fills this image's K/V; its deleter waits for that copy, and as
@@ -246,9 +253,26 @@ public:
         uint64_t serial = 0;   // the entry's identity; its index shifts when entries before it go
     };
 
-    ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
-        : budget_(budget), slots_(slots), min_tokens_(min_tokens) {}
+    ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0, size_t cart_slots = 0)
+        : budget_(budget), slots_(slots), min_tokens_(min_tokens), cart_slots_(cart_slots) {}
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
+    // --conversation-cache-cart-slots N (memory-core, 2026-10-28): cart traffic gets its OWN quota
+    // of N parked conversations beside the ordinary `slots`, and an ordinary park may not evict a
+    // cart one.  0 (upstream's default, every box that never asks for the flag) = ONE pool, the
+    // oldest-first rule over everything, byte-identical to the day before the fence existed.
+    bool classed() const { return cart_slots_ != 0; }
+    size_t cart_slots() const { return cart_slots_; }
+    /// Parked conversations of one class (with the fence off every entry is ordinary, whatever the
+    /// flag said when it was parked - classed() is the single switch every rule reads).
+    size_t count(bool cart) const {
+        size_t n = 0;
+        for (const auto& e : entries_) if (e.cart == cart) { ++n; }
+        return n;
+    }
+    size_t cart_size() const { return classed() ? count(true) : 0; }
+    /// The slot count that binds an incoming park of this class: carts their own ten, everything
+    /// else the ordinary --conversation-cache-slots.
+    size_t cap(bool cart) const { return classed() && cart ? cart_slots_ : slots_; }
     /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
     /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
     /// with one long conversation spends the cache on the side requests and evicts the long one (oldest first) -
@@ -297,9 +321,10 @@ public:
     }
     size_t retained_bytes() const { return reuse_.bytes(); }
     int64_t retained_tokens() const { return reuse_.kv.empty() ? 0 : reuse_.unchanged_tokens; }
-    bool can_fit(size_t incoming, size_t held = 0) const {
+    bool can_fit(size_t incoming, size_t held = 0, bool cart = false) const {
         return enabled() && held <= budget_ && incoming <= budget_ - held &&
-               entries_.size() < slots_ && bytes() <= budget_ - held - incoming;
+               (classed() ? count(cart) < cap(cart) : entries_.size() < slots_) &&
+               bytes() <= budget_ - held - incoming;
     }
 
     template<class Token>
@@ -380,22 +405,27 @@ public:
 
     // Reserve before allocating a snapshot. held is an incoming image removed
     // with take() but still alive during the exchange; count it against RAM too.
-    bool make_room(size_t incoming, size_t held = 0) {
+    bool make_room(size_t incoming, size_t held = 0, bool cart = false) {
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
         auto stays = [&](size_t i) { return entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_); };
+        // The fence's cap: an incoming cart park counts only cart entries against the cart quota,
+        // and an incoming ordinary park counts only ordinary entries against the ordinary slots.
+        // With the fence off, cap(false) == slots_ and the count is entries_.size(): the old rule.
+        const size_t in_cap = cap(cart);
+        auto full = [&] { return classed() ? count(cart) >= in_cap : entries_.size() >= in_cap; };
         if (guarded_ != 0 && index_of(guarded_) != SIZE_MAX) {
             // with everything else gone, would it fit beside the entries that stay (the guarded donor and any pinned
             // shared prefix)?  If not, evict nothing
             size_t kept = 0, kept_bytes = 0;
             for (size_t i = 0; i < entries_.size(); ++i)
                 if (stays(i)) { ++kept; kept_bytes += entries_[i].bytes(); }
-            if (kept >= slots_ || kept_bytes > budget_ - held - incoming) { guard_blocked_ = true; return false; }
+            if (kept >= in_cap || kept_bytes > budget_ - held - incoming) { guard_blocked_ = true; return false; }
         }
         if (bytes() > budget_ - held - incoming) reuse_ = {};
-        while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
+        while (!entries_.empty() && (full() || bytes_ > budget_ - held - incoming)) {
             // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
             // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
-            if (!evict_oldest()) return false;
+            if (!evict_oldest(cart)) return false;
         }
         return true;
     }
@@ -406,14 +436,27 @@ public:
     // own allocation, far above glibc's mmap threshold, so dropping an entry returns the whole footprint
     // to the kernel at once - the next admission check reads it back from /proc/meminfo.
     // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
-    bool evict_oldest() {
+    bool evict_oldest(bool cart = false) {
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
-        for (size_t i = 0; i < entries_.size(); ++i) {
-            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
-            bytes_ -= entries_[i].bytes();
-            erase(i);
-            ++evictions_;
-            return true;
+        // memory-core's fence, and it is deliberately ASYMMETRIC - the owner's words: "it's only
+        // other cartridges that evict other cartridges".  Pass 0 of a CART park looks only at cart
+        // entries, so the tenth cart pushes the first, never a user's conversation; if the carts
+        // alone cannot free enough RAM, pass 1 may take an ordinary one, which is what keeps cart
+        // traffic from being starved by four ordinary slots that hold the whole budget.  An
+        // ORDINARY park gets one pass and sees only ordinary entries: it can never evict a cart.
+        // Pinned shared prefixes and the guarded donor stay in both passes, exactly as before.
+        const int passes = classed() && cart ? 2 : 1;
+        for (int pass = 0; pass < passes; ++pass) {
+            const bool carts_only = pass == 0;
+            for (size_t i = 0; i < entries_.size(); ++i) {
+                if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
+                if (classed() && !cart && entries_[i].cart) continue;          // traffic evicts no cart
+                if (classed() && cart && carts_only && !entries_[i].cart) continue;   // carts first
+                bytes_ -= entries_[i].bytes();
+                erase(i);
+                ++evictions_;
+                return true;
+            }
         }
         return false;
     }
@@ -491,7 +534,7 @@ public:
         const size_t n = image.bytes();
         if (!enabled() || held > budget_ || n > budget_ - held) return false;   // make_room's refusal, first
         drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
-        if (!make_room(n, held)) return false;
+        if (!make_room(n, held, image.cart)) return false;
         entries_.push_back(std::move(image));
         serials_.push_back(next_serial_++);
         bytes_ += n;
@@ -503,7 +546,7 @@ private:
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         serials_.erase(serials_.begin() + (std::ptrdiff_t) index);
     }
-    size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0, borrowed_ = 0;
+    size_t budget_ = 0, slots_ = 0, cart_slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0, borrowed_ = 0;
     int64_t min_tokens_ = 0;   // --conversation-cache-min-tokens: 0 parks every conversation, whatever its size
     std::deque<SavedConversation> entries_; // least recently active first
     std::deque<uint64_t> serials_;          // entries_[i]'s identity, never reused
