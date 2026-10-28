@@ -58,7 +58,7 @@ int main() {
     }
     // An empty file cannot graft: there is no virtual prefix to speak of.
     {
-        const auto d = graft_decide(ids({7, 8, 9}), true, NAME, {}, 0, true);
+        const auto d = graft_decide(ids({7, 8, 9}), true, NAME, std::vector<int32_t>{}, 0, true);
         check(d.refused(), "a graft file with no ids refuses");
     }
     // The equal-length case: a re-sent source with nothing new still rides the grafted state.

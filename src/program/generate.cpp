@@ -86,6 +86,7 @@
 #include "strata/program/batch_read.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
+#include "strata/core/conversation_graft.hpp"   // memory-core: the graft's decision half (2026-10-28)
 #include "strata/program/split_rules.hpp"
 #include "strata/program/stage_reserve.hpp"
 #include "strata/program/gpu_report.hpp"
@@ -10315,6 +10316,13 @@ int main(int argc, char** argv) {
         bool cvec_cached = true;   // the control vector's state the live session and the checkpoints were read with
         bool live_cart = false;    // memory-core's cart fence: the request that ran this conversation carried
                                    // cartridges (cart=1), so parking it spends the cart quota, not the shared one
+        // memory-core's graft (2026-10-28): a session file STAGED for the next request to start on, the host-side
+        // half of "state without text". `GRAFT <path>` reads and validates it without touching the device; the
+        // request that carries graft=1 consumes it, and only where RAM proved no start of its own (resume == 0).
+        // A graft is asked for and answered in one exchange: it is dropped, never held over, so a staged file can
+        // never leak into a later conversation that did not ask for it.
+        bool graft_staged = false, graft_wanted = false;
+        strata::core::SavedConversation graft_image;
         // without --mtp the conversation cache stays on: a parked image carries the draft layer's K/V only when there is one
         // (the snapshots accept a null draft)
         // #3493: no --conversation-cache-mib given: size the cache for agent use from the RAM that is free now that the model is
@@ -13459,6 +13467,55 @@ int main(int argc, char** argv) {
             // (fingerprint file, state capture, file flush, rename + folder flush, validation, device transfer):
             // that step is allowed <seconds> (session_phase_limit_s) by the watchdog and by the server, no more.
             // (A verifier commit that fails before the command still answers ERR and exits, as for a request.)
+            if (line.rfind("GRAFT ", 0) == 0) {
+                // memory-core (2026-10-28): stage a saved conversation for the NEXT request to begin on. Host-side
+                // only - the parse bounds the file and the validate compares it against this engine, and neither
+                // writes a device byte (conversation_snapshot.hpp:149-150: "Invalid images are rejected before any
+                // CUDA call/write"), so staging cannot corrupt the conversation in flight. GRAFTED / SERR answer in
+                // the SAVE/RESTORE shape, so the server's line reader needs no new grammar.
+                const std::string path = line.substr(6);
+                graft_staged = false;
+                graft_image = strata::core::SavedConversation();
+                if (path.empty() || path.find_first_of("\r\n\0") != std::string::npos) {
+                    std::fprintf(stderr, "strata serve: graft: %s is not a session file name\n", path.c_str());
+                    std::printf("SERR invalid 0 the graft command names no file\n");
+                } else {
+                    const auto tg = Clock::now();
+                    auto msgms = [&] {
+                        return std::chrono::duration<double, std::milli>(Clock::now() - tg).count(); };
+                    strata::core::SessionFileIdentity gid;
+                    std::string gerr;
+                    bool ok = session_identity(gid, gerr, [] {});
+                    strata::core::SavedConversation img;
+                    size_t gbytes = 0;
+                    if (ok) {
+                        strata::core::SessionReadLimits limits;
+                        limits.progress = [](uint64_t, uint64_t) {};
+                        strata::core::SessionStatus gst;
+                        ok = strata::core::session_file_read(path, gid, img, gbytes, gerr, limits, &gst);
+                        if (!ok) {
+                            std::fprintf(stderr, "strata serve: graft %s: read refused: %s\n", path.c_str(), gerr.c_str());
+                            std::printf("SERR %s 0 %s\n", strata::core::session_error_name(gst.error),
+                                        gerr.c_str());
+                        }
+                    }
+                    if (ok && !strata::core::conversation_snapshot_validate(img, ss, g, mtp.kv_state(), gerr)) {
+                        std::fprintf(stderr, "strata serve: graft %s: %s\n", path.c_str(), gerr.c_str());
+                        std::printf("SERR invalid 0 %s\n", gerr.c_str());
+                        ok = false;
+                    }
+                    if (ok) {
+                        graft_image = std::move(img);
+                        graft_staged = true;
+                        std::fprintf(stderr, "strata serve: graft staged %s: %zu tokens, %zu bytes, device untouched (%.1f ms)\n",
+                                     path.c_str(), graft_image.live.ids.size(), gbytes, msgms());
+                        std::printf("GRAFTED %zu %zu %.1f\n", graft_image.live.ids.size(), gbytes, msgms());
+                    }
+                    if (!ok && gerr.empty()) std::printf("SERR io 0 the graft file could not be read\n");
+                }
+                std::fflush(stdout);
+                continue;
+            }
             if (line.rfind("SAVE ", 0) == 0 || line.rfind("RESTORE ", 0) == 0) {
                 const bool save = line[0] == 'S';
                 const std::string path = line.substr(save ? 5 : 8);
@@ -13727,6 +13784,7 @@ int main(int argc, char** argv) {
             // behind parks in --conversation-cache-cart-slots and ordinary traffic cannot evict it.  Absent = 0 = the
             // shared pool, exactly as before; an engine without the fence skips the key (unknown keys are skipped).
             int req_cart = 0;
+            int req_graft = 0;   // memory-core's graft: this request asks to begin on the staged session file
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
@@ -13755,6 +13813,7 @@ int main(int argc, char** argv) {
                     else if (key == "prefill") req_prefill_only = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
                     else if (key == "cart") req_cart = std::atoi(tok.c_str() + eq + 1) != 0;
+                    else if (key == "graft") req_graft = std::atoi(tok.c_str() + eq + 1) != 0;   // memory-core: start on the staged graft
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
@@ -14482,8 +14541,73 @@ int main(int argc, char** argv) {
                     return 1;
                 }
             }
+            // One exchange, one graft (2026-10-28): if this request resumed from RAM and never consumed the staged
+            // file, the file goes now. Holding it over would let a later conversation start on a graft it did not
+            // ask for, which is the quiet failure mode a lever like this must not have.
+            if (graft_staged || graft_wanted) {
+                if (graft_wanted && resume != 0)
+                    std::fprintf(stderr, "strata serve: graft requested and not used: RAM proved %lld tokens already\n",
+                                 (long long) resume);
+                graft_staged = false;
+                graft_wanted = false;
+            }
             int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
+            if (req_graft != 0 && !graft_wanted) graft_wanted = true;   // decided once, before the branches below
             if (resume == 0) {
+                // memory-core's graft (2026-10-28): the request asked to begin on a staged file and RAM proved no
+                // start of its own, so the file's state goes under it instead of a cold zero. conversation_graft.hpp
+                // owns the decision; today's path is the fall-through when no graft is in play.
+                if (graft_wanted && graft_staged) {
+                    const auto gd = strata::core::graft_decide(ids, true, std::string_view("staged"),
+                                                               graft_image.live.ids, resume, true);
+                    if (gd.applies()) {
+                        const int64_t need = (int64_t) graft_image.live.ids.size() + n + 256;
+                        if (!kvg_ensure(need, adapt_quiesce)) {
+                            std::printf("ERR the K/V cannot grow to the grafted conversation: no VRAM is left\n");
+                            std::fflush(stdout);
+                            graft_wanted = false;
+                            continue;
+                        }
+                        conversations.take_reuse();   // the retained K/V described the outgoing session
+                        live_ok = false;
+                        if (strata::core::conversation_snapshot_restore(graft_image, ss, g, mtp.kv_state(), err) !=
+                            strata::core::ConversationRestore::restored) {
+                            // validated at GRAFT time: a failure now is a transfer failure after device writes began,
+                            // so the same rule as RESTORE applies - never decode from a partial state, start again.
+                            std::fprintf(stderr, "strata serve: graft transfer failed: %s\n", err.c_str());
+                            std::printf("FATAL the graft transfer failed after the device state was changed: %s\n",
+                                        err.c_str());
+                            std::fflush(stdout);
+                            return 1;
+                        }
+                        checks.clear();
+                        cvec_cached = graft_image.cvec;
+                        // The graft is a VIRTUAL PREFIX: the file's ids stand in front of the request's own and its
+                        // text begins at the graft's length. `live` is NOT assigned here - the request's ids now ARE
+                        // the session, so the ordinary park at the end records the grafted conversation and a second
+                        // ask from the same client resumes from RAM instead of grafting twice (the same route any
+                        // normal conversation takes). The serve loop counts tokens in int64_t while a file stores
+                        // int32_t; n is the const count taken at parse time, so the read's window is re-derived here.
+                        if (gd.prepend) {
+                            std::vector<int64_t> merged;
+                            merged.reserve(ids.size() + graft_image.live.ids.size());
+                            for (const int32_t t : graft_image.live.ids) merged.push_back((int64_t) t);
+                            merged.insert(merged.end(), ids.begin(), ids.end());
+                            ids = std::move(merged);
+                            const_cast<int64_t&>(n) = (int64_t) ids.size();   // NOLINT: see the note above
+                        }
+                        resume = gd.resume;
+                        std::fprintf(stderr, "strata serve: conversation cache: grafted %lld tokens, prompt %lld, %s\n",
+                                     (long long) resume, (long long) n, gd.prepend ? "ids prepended" : "source re-sent");
+                    }
+                    graft_staged = false;
+                    graft_wanted = false;
+                } else if (graft_wanted) {
+                    std::printf("ERR this request asked for a graft and none is staged (send GRAFT <path> first)\n");
+                    std::fflush(stdout);
+                    graft_wanted = false;
+                    continue;
+                }
                 strata::core::session_zero(ss, g, nullptr, main_cs);
                 cudaStreamSynchronize(main_stream);
                 for (auto& st : stages) {

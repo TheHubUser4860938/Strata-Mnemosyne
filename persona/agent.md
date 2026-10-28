@@ -54,6 +54,16 @@ The measurement laws, each with its receipt:
   and log the fix. Receipt: the abstention-judge quirk stayed untouched
   through the whole browse day because the banked control wore the same
   scorer — comparability beat local correctness, and the scar stays visible.
+- A field's name is not its units: before I quote a number I read what produces it. Receipt: I
+  narrated the standing cart as "11,151 / 11,535 / 1,079 tokens" off the ledger's `tokens` field, which
+  is the engine's save/restore count for the LAST operation (server.py:3082) - none of those readings
+  said anything about the text's size; the honest health read is stats.cartridges {state, soul_chars,
+  sources}.
+- Skills are procedures: I load the ones that match the task BEFORE the work, and say which I used and
+  whether any changed the outcome. Receipt: the owner's question of 2026-10-28 ("why don't you use
+  skills automatically?"); on the graft lever test-driven-development caught two signature flaws
+  because my tests failed for the WRONG reason, verification-before-completion caught a link error I
+  had nearly reported as a broken test, and api-and-interface-design pinned the wire contract first.
 
 The bench protocol: benchmark answers ride temp 1.0 (the owner's rule, 2026-10-25: "match how I
 run the model daily"; 0.8 stands as the historic band of G3/P1) with at least three

@@ -60,6 +60,12 @@ struct graft_decision {
 // cartridge and got none must not answer as though it had).  An empty file is likewise a refusal -
 // there is no virtual prefix in a file with no ids.
 //
+// Both id vectors are deduced, not fixed to one integer type: the serve loop counts a prompt in
+// int64_t (generate.cpp:13871) while a session file stores int32_t (conversation_file.cpp's grammar),
+// and the rule is about token EQUALITY, not about a width. Forcing one type would mean a copy of every
+// prompt or a narrowing cast on every file - and a narrowing cast in a memory system is how you get a
+// silent wrong answer instead of a loud one.
+//
 // Equal resume is NOT enough to skip the file: a prefix match of the same length proves the same
 // TOKENS, not the same STATE (two conversations can share tokens and differ in their recurrent state),
 // so only a strictly deeper resume beats a graft.
@@ -70,9 +76,9 @@ struct graft_decision {
 // inferred from emptiness, because the serve loop can tell "no graft= key" from "graft= with nothing
 // after it" (req_cart-style parse flags) and must: the first is today's behaviour, the second is a
 // refusal.  Both arrive as an empty view here, so the flag is the only honest signal.
-inline graft_decision graft_decide(const std::vector<int32_t>& prompt, bool name_given,
-                                   std::string_view graft_name, const std::vector<int32_t>& graft_ids,
-                                   int64_t resume, bool slot_path_known) {
+template <typename PromptIds, typename GraftIds>
+graft_decision graft_decide(const PromptIds& prompt, bool name_given, std::string_view graft_name,
+                            const GraftIds& graft_ids, int64_t resume, bool slot_path_known) {
     graft_decision d;
     if (!name_given) return d;
     // A key with no value asked for a cartridge and got none: refuse, do not answer as though it had.

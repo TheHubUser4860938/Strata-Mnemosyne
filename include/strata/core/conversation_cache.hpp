@@ -254,7 +254,7 @@ public:
     };
 
     ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0, size_t cart_slots = 0)
-        : budget_(budget), slots_(slots), min_tokens_(min_tokens), cart_slots_(cart_slots) {}
+        : budget_(budget), slots_(slots), cart_slots_(cart_slots), min_tokens_(min_tokens) {}
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
     // --conversation-cache-cart-slots N (memory-core, 2026-10-28): cart traffic gets its OWN quota
     // of N parked conversations beside the ordinary `slots`, and an ordinary park may not evict a
