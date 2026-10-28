@@ -542,9 +542,9 @@ class IQ4XS(Base):
         # answered "6" from here on
         # the owner's late-evening menu law (2026-10-17): the family menu shows the model's NAME
         # only - the by/about prose is gone, so the lines assert names and the absence of prose
-        self.assertIn("Turbo-Brilliance, abliterated",
+        self.assertIn("Turbo-Brilliance (abliterated)",     # shortened 2026-10-28: see FamilyTitleWidth
                       next(ln for ln in out.splitlines() if ln.startswith("  4) ")))
-        self.assertIn("Qwen3.8-Flash-Next (Turbo-Brilliance)",
+        self.assertIn("Turbo-Brilliance (regular)",
                       next(ln for ln in out.splitlines() if ln.startswith("  5) ")))
         fam_line = next(ln for ln in out.splitlines() if ln.startswith("  6) "))
         self.assertIn("Qwen3.8-Flash-Next (Unsloth)", fam_line)
@@ -895,6 +895,46 @@ class BigFiles(Base):
             self.assertEqual(code, 1)
             self.assertIn(f"{m} needs engine 0.1.44 or newer; this one is 0.1.43", out)
             self.assertEqual(self.downloads, [])
+
+
+class FamilyTitleWidth(unittest.TestCase):
+    """The launch wizard's model list gives the Model column 42 cells (strata_cli/launch/screens.py,
+    `widths()`: ("Model", 42) - 41 in the 80-column layout), and a row is "family title" + " " +
+    "pack label".  The fork's own families were 40, 43 and 56 cells - "Qwen3.8-Flash-Next
+    (Turbo-Brilliance, abliterated)", "(Turbo-Brilliance)" and "(Huihui, abliterated)" - so the pack
+    label ran into the Download column and printed as "…IQ3_S84 GB", and the crowded list pushed the
+    "too big (can still try)" rows out of the visible window (upstream's
+    tests/terminal/test_launch_tui.py::ModelStep saw exactly that).  The owner shortened the three
+    titles on 2026-10-28; this is the law that keeps them short, checked against BOTH tables the
+    fork keeps (setup.py's FAMILIES and tools/strata_mcp.py's FALLBACK_FAMILIES), because the TUI
+    reads one and the installer menu the other."""
+
+    MODEL_COLUMN = 42                     # screens.py widths(): the Model column in the wide layout
+
+    def _pack_labels(self, setup):
+        import re
+        out = set()
+        for name in ("UNSLOTH_SHARDS", "HUIHUI_SHARDS"):
+            for fname in getattr(setup, name, {}):
+                m = re.match(r"Qwen3\.8-Flash-Next-(.+)-\d{5}-of-\d{5}\.gguf$", fname)
+                if m:
+                    out.add(m.group(1))
+        return out or {"UD-Q4_K_XL"}
+
+    def test_no_family_title_can_overflow_the_model_column(self):
+        import importlib.util
+        import setup
+        budget = self.MODEL_COLUMN - 1 - max(len(p) for p in self._pack_labels(setup))   # 31 today (UD-Q4_K_XL)
+        spec = importlib.util.spec_from_file_location("sm_for_width", str(ROOT / "tools" / "strata_mcp.py"))
+        sm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sm)
+        for where, table in (("setup.py FAMILIES", setup.FAMILIES),
+                             ("tools/strata_mcp.py FALLBACK_FAMILIES", sm.FALLBACK_FAMILIES)):
+            for fam, info in table.items():
+                title = info.get("title") or ""
+                self.assertLessEqual(len(title), budget,
+                                     f"{where}: the {fam!r} title is {len(title)} cells, over the {budget}-cell "
+                                     f"budget - the pack label would run into the next column: {title!r}")
 
 
 if __name__ == "__main__":
