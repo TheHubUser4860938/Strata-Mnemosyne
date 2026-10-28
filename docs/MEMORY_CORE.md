@@ -2741,6 +2741,19 @@ silently: the standing index line announces what rode and what did not. Budgets:
 `attach_max_tokens` (default 16,000). All of this is opt-IN per request: a client that sends
 no header gets exactly yesterday's bytes.
 
+**Cart slots of their own** (`--conversation-cache-cart-slots N`; this fork, the owner's law of
+2026-10-28: *"it's only other cartridges that evict other cartridges"*). A conversation whose prompt
+carries cart bodies is marked on the request (`cart=1`, which the server sends when riders rode and
+never when every ask was refused), and the engine parks it in its OWN quota of `N`: ordinary traffic
+can no longer evict it, and an eleventh cart pushes the oldest cart rather than a user's
+conversation. The quota is additive - the ordinary `--conversation-cache-slots` keep their own four -
+and RAM still rules, so a cart that the carts cannot make room for may take an ordinary conversation
+instead of going un-parked. `0` (the default everywhere, upstream's shape) is one shared pool with
+the oldest-first rule over everything. What the SERVER attached is a separate ledger: the distinct
+cart SETS in play, newest-first and capped at the same `attach_max_carts`, with the last ask's riders,
+refusals and tokens. `/metrics` ships it as `conversation_cache.carts` and the Monitor's Conversation
+cache card prints it beside the engine's number - two pools, two numbers, never added.
+
 **Two modes** (`memory.cartridges.attach_mode`, lever `X-Strata-Carts-Mode: anchor|prefix`):
 - `prefix` (the code default): bodies ride the standing prefix once and the engine's
   conversation cache absorbs them. Cheapest when it caches - see the catch below.
