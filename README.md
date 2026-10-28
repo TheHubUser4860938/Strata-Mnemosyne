@@ -57,14 +57,18 @@ cd Strata
 - **Reads pictures**, on by default.
 - **Free and private.** MIT license, no account, no cloud, no telemetry ([what it downloads and when](docs/SAFETY.md)).
 
-<img width="1877" height="638" alt="image" src="https://github.com/user-attachments/assets/5cae0570-fb69-4665-a59d-92a1c0eff5f7" />
+<img width="1889" height="462" alt="image" src="https://github.com/user-attachments/assets/ca38755a-9d8e-48d8-9f87-b4fc7428560a" />
 
-<img width="1278" height="263" alt="image" src="https://github.com/user-attachments/assets/f6f63206-afdb-439a-a9d4-d58ce0ee054a" />
+<img width="1270" height="282" alt="image" src="https://github.com/user-attachments/assets/988dc836-b9ac-4f63-8f6b-6ef2cba6a5df" />
+
+<img width="1296" height="1322" alt="image" src="https://github.com/user-attachments/assets/f260f807-d532-4f99-b718-1ca1de2556df" />
+
+<img width="1265" height="542" alt="image" src="https://github.com/user-attachments/assets/238eb87c-45f2-4be4-8cb8-91d922efbda8" />
+
+
 
 Version 0.2.7.1 (app and Terminal 0.2.7, Control 0.1.53) · the x86 engine packages stay at 0.1.52,
 the new DGX Spark (linux-aarch64) engines are 0.1.53
-
-<img width="1879" height="434" alt="image" src="https://github.com/user-attachments/assets/1643c829-dc1b-43f5-9952-0d5c4f67f924" />
 
 Two things arrive switched **on**, and everything else stays byte-identical to upstream Strata:
 
