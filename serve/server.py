@@ -1356,13 +1356,18 @@ def conversation_slots(engine) -> int | None:
     return slots if isinstance(slots, int) else None
 
 
-def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
+def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict,
+                            carts: dict | None = None) -> dict:
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
-    --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back."""
+    --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the
+    cache gave back. `carts` (memory-core, the owner's ask 2026-10-28) is the cart ledger beside it:
+    what rides, of what cap, and how many DISTINCT cart sets are in play - the engine's pool counts
+    parked conversations and knows nothing of carts, so the two counts ride the same card and are
+    never added together."""
     mib = info.get("conversation_cache_mib")
     last = hist[-1] if hist else None
     return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
-            "slots": info.get("conversation_cache_slots"), **parked,
+            "slots": info.get("conversation_cache_slots"), "carts": carts, **parked,
             "requests": len(hist), "requests_reused": sum(1 for r in hist if (r.get("reused") or 0) > 0),
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
             "last_reused": last.get("reused") if last else None,
@@ -5371,7 +5376,9 @@ class Service:
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
-                "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
+                "conversation_cache": conversation_cache_view(
+                    engine, hist, totals, parked,
+                    self.carts.attach_view() if getattr(self, "carts", None) is not None else None),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
@@ -7190,6 +7197,22 @@ class CartMinter:
         # self-deadlocks. CartMinter's own lock serializes mints against each other, which is
         # all there is to serialize when no cartridge exists.
         self.lock = threading.Lock()
+        # THE CART SLOT LEDGER (the owner's ask 2026-10-28: "give the cartridges their own
+        # dedicated slot with a max of ten"). The engine parks conversations in ONE pool
+        # (--conversation-cache-slots, default 4): one budget_, one slots_, oldest-first
+        # evict_oldest(), and no class on a parked entry (include/strata/core/
+        # conversation_cache.hpp:240-513). A distinct cart set forks a distinct parked
+        # conversation, so cart traffic competes with ordinary conversations for those four -
+        # which is what the Monitor's "Parked conversations 4 / 4 · 380 evicted" is saying.
+        # What the server owns today is the LEDGER of that pool: which cart sets are in play,
+        # newest-first, capped at the same ten the rider budget uses, plus what the last ask
+        # attached. The card prints it and the venue reads it. A real FENCE needs the engine to
+        # carry a class on the parked entry: a flag alone only enlarges the shared pool.
+        self.sets = collections.OrderedDict()   # cart-set fingerprint -> {"names", "at", "asks"}
+        self.sets_max = self.attach_max         # the owner's ten, for the sets as for the riders
+        self.attach_stats = {"asks": 0, "riders": 0, "skipped": 0, "last_names": [],
+                             "last_skipped": [], "last_tokens": 0, "last_mode": None,
+                             "last_at": None}
 
     # ---- sources -> text ---------------------------------------------------------------
 
@@ -7457,7 +7480,7 @@ class CartMinter:
          truth). In ANCHOR mode the block carries its own lead (what rides, what skipped);
          the prefix-mode block keeps the ATTACH_LEAD bytes the bench measured."""
         att = {"names": [], "block": "", "pull": {"names": [], "block": ""}, "asked": [],
-               "mode": self.attach_mode}
+               "skipped": [], "tokens": 0, "mode": self.attach_mode}
         try:
             m = str(headers.get("X-Strata-Carts-Mode") or "").strip().lower() if headers is not None else ""
             if m in ("anchor", "prefix"):
@@ -7479,24 +7502,80 @@ class CartMinter:
             att["pull"]["block"] = (self.PULL_LEAD + "\n\n"
                                     + "\n\n".join(f"[{nm}]\n{b}" for nm, b, _ in kept_p)
                                     ) if kept_p else ""
+            # what the card shows and what the bytes did come from ONE computation: the tokens
+            # the block renders, and the asks that did not ride (the same filter the anchor's
+            # notice uses, so the tail and the Monitor can never disagree about a skip)
+            att["tokens"] = sum(t for _, _, t in kept) + sum(t for _, _, t in kept_p)
+            rode = set(att["names"]) | set(att["pull"]["names"])
+            att["skipped"] = [(nm, why) for nm, why in skipped + skipped_p if nm not in rode]
             lead = self.ATTACH_LEAD if att["mode"] != "anchor" else self._tail_lead(kept)
             att["block"] = (lead + "\n\n"
                             + "\n\n".join(f"[{nm}]\n{b}" for nm, b, _ in kept)) if kept else ""
             if att["mode"] == "anchor":             # the skips ride where the bytes ride (M1's
-                rode = set(att["names"]) | set(att["pull"]["names"])   # channel), even when ZERO
-                late = sorted((nm, why) for nm, why in skipped + skipped_p   # riders: the head
-                              if nm not in rode)                         # stays request-invariant,
-                if late:                                                 # so the tail must speak or
-                    notice = ("Cart asks that did not ride - "           # the ask goes silently
+                late = sorted(att["skipped"])       # channel), even when ZERO riders: the head
+                if late:                            # stays request-invariant, so the tail must
+                                                    # speak or the ask goes silently
+                    notice = ("Cart asks that did not ride - "
                               + "; ".join(f"{nm}: {why}" for nm, why in late) + ".")
                     att["block"] = f"{att['block']} ({notice})" if att["block"] else notice
         except Exception:                                        # noqa: BLE001 - never die here;
             att["asked"] = att.get("asked") or []                # asked is computed before any
             att["names"], att["block"] = [], ""                  # store call - keep the ASK even
             att["pull"] = {"names": [], "block": ""}             # when the ride failed, so the
-                                                                 # index still announces (audit
+            att["skipped"], att["tokens"] = [], 0                # index still announces (audit
                                                                  # MINOR 1, the announcement law)
+        self._note_attach(att)     # one cart ask, one line of the ledger (the pool's shape)
         return att
+
+    def _note_attach(self, att: dict) -> None:
+        """One cart ask, one line of the ledger - the pool's shape, not the answer's. The SET that
+        rode is the fingerprint a parked conversation forks on, so the count of sets in play is
+        what a dedicated cart pool has to hold. Newest-first, capped at `sets_max`; the eleventh
+        distinct set leaves the LEDGER, which is a fact about this ledger and not a claim about
+        the engine's RAM (the engine evicts on its own oldest-first rule and says so in its own
+        log - the card prints both counts, side by side, never mixed)."""
+        if not att.get("asked"):
+            return                            # a request that asked for no cart is not the pool's business
+        st = self.attach_stats
+        names = sorted(set(att.get("names") or []) | set((att.get("pull") or {}).get("names") or []))
+        st["asks"] += 1
+        st["riders"] += len(names)
+        st["skipped"] += len(att.get("skipped") or [])
+        st["last_names"], st["last_skipped"] = names, [list(x) for x in (att.get("skipped") or [])]
+        st["last_tokens"] = int(att.get("tokens") or 0)
+        st["last_mode"], st["last_at"] = att.get("mode"), time.time()
+        if not names:
+            return                            # asked and rode nothing: no set to remember
+        key = tuple(names)
+        if key in self.sets:
+            self.sets[key]["asks"] += 1
+            self.sets.move_to_end(key)
+            return
+        self.sets[key] = {"names": names, "at": st["last_at"], "asks": 1}
+        while len(self.sets) > self.sets_max:
+            self.sets.popitem(last=False)     # the least recent set leaves the ledger
+
+    def attach_view(self) -> dict:
+        """The Monitor's cartridges block (/metrics' conversation_cache.carts): the rider budget as
+        the engine-shaped thing it is - the ten the owner set, how many DISTINCT sets are in play
+        against it, what the last cart-bearing ask attached and refused, and the token guardrail it
+        spent. Nothing here is estimated: these are the numbers the attach path itself computed (the
+        same filter the tail notice speaks with), and parks/evictions stay in the engine's half of
+        the card because its log, not this ledger, counts them."""
+        st = self.attach_stats
+        car = getattr(self.svc, "cartridges", None)
+        standing = None
+        if car is not None:
+            standing = {"file": getattr(car, "applied", None), "bytes": getattr(car, "bytes", 0),
+                        "state": getattr(car, "state", None)}
+        return {"cap": self.attach_max, "token_cap": self.attach_max_tokens,
+                "pool": self.sets_max, "sets": len(self.sets),
+                "set_names": ["+".join(v["names"]) for v in reversed(list(self.sets.values()))],
+                "mode": self.attach_mode, "asks": st["asks"], "riders": st["riders"],
+                "skipped": st["skipped"], "last_names": list(st["last_names"]),
+                "last_skipped": [list(x) for x in st["last_skipped"]],
+                "last_tokens": st["last_tokens"], "last_mode": st["last_mode"],
+                "last_at": st["last_at"], "standing": standing}
 
     def apply_pull(self, messages, att):
         """C6: the pulled cart rides as ONE appended user turn - pure append, so the conversation

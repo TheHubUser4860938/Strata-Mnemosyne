@@ -393,6 +393,16 @@ function renderConvCache(c) {
     $("cc-mem-bar").style.width = pct(c.bytes, budget);
   }
   $("cc-sum").textContent = c.requests ? `${fmt(c.requests_reused)} of ${fmt(c.requests)} requests reused part of their prompt` : "";
+  // memory-core (the owner's ask 2026-10-28): the cartridges, in the card for the cache they ride.
+  // The engine's parked slots count CONVERSATIONS and carry no class for a cart, so this bar is the
+  // server's own ledger: how many DISTINCT cart sets are in play against the ten the owner set, and
+  // what the last cart-bearing ask attached. Never added to the parked count - a different pool.
+  const k = c.carts;
+  $("cc-carts").hidden = !k;
+  if (k) {
+    $("cc-carts-text").textContent = `${fmt(k.sets)} / ${fmt(k.pool)} in play · ${fmt(k.asks)} cart asks`;
+    $("cc-carts-bar").style.width = pct(k.sets, k.pool);
+  }
   const share = c.prompt_tokens ? ` (${fmt((100 * c.reused_tokens) / c.prompt_tokens)}% of all prompt tokens)` : "";
   const event = c.last_event ? `${c.last_event === "parked" ? "Parked" : "Restored"} ${fmt(c.last_tokens)} tokens, ${since(c.last_at)}` : null;
   facts($("cc-facts"), [
@@ -400,10 +410,19 @@ function renderConvCache(c) {
     ["Reused since start", c.requests ? `${fmt(c.reused_tokens)} tokens${share}` : null],
     ["Parked / restored", c.enabled ? `${fmt(c.parks)} / ${fmt(c.restores)}${c.evictions ? ` · ${fmt(c.evictions)} evicted` : ""}` : null],
     ["Last switch", c.enabled ? event : null],
+    ["Cart riders", k ? (k.last_names.length
+      ? `${fmt(k.last_names.length)} of ${fmt(k.cap)} · ${k.last_names.join(", ")} · ${fmt(k.last_tokens)} of `
+        + `${fmt(k.token_cap)} tokens · ${k.last_mode}${k.last_at ? ` · ${since(k.last_at)}` : ""}`
+      : `none on the last of ${fmt(k.asks)} cart asks`) : null],
+    ["Not riding", k && k.last_skipped.length ? k.last_skipped.map((x) => `${x[0]}: ${x[1]}`).join(" · ") : null],
+    ["Cart sets", k && k.set_names && k.set_names.length ? `kept ${fmt(k.sets)}: ${k.set_names.join("; ")}` : null],
+    ["Standing cart", k && k.standing && k.standing.file
+      ? `${k.standing.file} · ${gb(k.standing.bytes)} GB · ${k.standing.state}` : null],
   ]);
   $("cc-note").textContent = c.enabled
     ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
+  if (k) $("cc-note").textContent += " Cart sets are the distinct groups of carts the server has attached: the engine's slots count conversations, not carts, so the two bars are two pools.";
 }
 
 function renderTotals(t) {
