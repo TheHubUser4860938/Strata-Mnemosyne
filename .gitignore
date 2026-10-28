@@ -114,3 +114,9 @@ node_modules/
 # personal data and are generated per box from their .example, like strata-*.json.
 /persona/user.md
 /persona/always.md
+
+# DGX Spark build outputs and local venv (docs/DGX_SPARK_LINUX.md)
+/out-spark/
+/build-spark/
+/build-vision-spark/
+/.venv-build/
