@@ -386,8 +386,12 @@ function renderConvCache(c) {
   const pct = (a, b) => (b ? `${Math.min(100, (100 * a) / b)}%` : "0%");
   $("cc-bars").hidden = !c.enabled;
   if (c.enabled) {
-    $("cc-slots-text").textContent = `${fmt(c.parked)} / ${fmt(c.slots)}`;
-    $("cc-slots-bar").style.width = pct(c.parked, c.slots);
+    // With the fence on, the engine's `parked` counts EVERY conversation and a cart rides BESIDE the
+    // four ordinary slots (its quota is additive), so the plain ratio would read "5 / 4" - true, but
+    // it looks like an overflow. Show the ordinary pool for the bar and name the rider separately.
+    const apart = (c.carts && c.carts.engine_parked) || 0;
+    $("cc-slots-text").textContent = `${fmt(c.parked - apart)} / ${fmt(c.slots)}${apart ? ` (+${fmt(apart)} cart apart)` : ""}`;
+    $("cc-slots-bar").style.width = pct(c.parked - apart, c.slots);
     const budget = c.budget_mib * 1048576;
     $("cc-mem-text").textContent = `${gb(c.bytes)} / ${gb(budget)} GB`;
     $("cc-mem-bar").style.width = pct(c.bytes, budget);
@@ -403,8 +407,8 @@ function renderConvCache(c) {
     // The engine's own number, when it has the fence (--conversation-cache-cart-slots): how many parked
     // conversations it is holding APART from ordinary traffic, where only another cart can evict one.
     // Without the fence the ledger is all anyone can honestly say, so the phrase is left out, not zeroed.
-    const apart = k.engine_slots ? ` · engine ${fmt(k.engine_parked || 0)} / ${fmt(k.engine_slots)} apart` : "";
-    $("cc-carts-text").textContent = `${fmt(k.sets)} / ${fmt(k.pool)} in play · ${fmt(k.asks)} cart asks${apart}`;
+    const apartNote = k.engine_slots ? ` · engine ${fmt(k.engine_parked || 0)} / ${fmt(k.engine_slots)} apart` : "";
+    $("cc-carts-text").textContent = `${fmt(k.sets)} / ${fmt(k.pool)} in play · ${fmt(k.asks)} cart ask${k.asks === 1 ? "" : "s"}${apartNote}`;
     $("cc-carts-bar").style.width = pct(k.sets, k.pool);
   }
   const share = c.prompt_tokens ? ` (${fmt((100 * c.reused_tokens) / c.prompt_tokens)}% of all prompt tokens)` : "";
