@@ -145,13 +145,48 @@ that answers the owner's "pull as many as I want". Today the engine returns only
 (`generate.cpp:16434,17189`) and `serve/` has no `/v1/embeddings`, so C-5 needs one output path — but
 the *representation* is a by-product of C-1/C-3.
 
-## Decisions wanted from the owner
+## Decisions — answered by the owner on 2026-10-29
 
-1. **Boundary**: faithful **N = 4** (matches MAM's cut shape exactly; ~40 MB; recompute 44 of 48
-   layers per read) vs tuned-higher (**N = 12**, three QSA layers below; more state per cart, less
-   recompute, richer rows). My recommendation: **N = 4 first** — faithful beats clever when the
-   mechanism has never been measured here — then vary it as a single variable once T2 is green.
-2. **Rows dtype**: bf16 (20,480 B/token) is the default; fp32 doubles the bank for a fidelity margin
-   we have not asked for. Recommendation: bf16, and measure the drift in T2.
-3. **Sequencing**: the graft pure test is built and **reboot ready** and is the *control* for this
-   build (restore vs mount, same golds). Recommendation: run it at his next reboot, then start T1.
+1. **Boundary → TUNED, N = 12.** His reason, verbatim: *"we running a different model than what he was
+   testing so go with tuned."* That is the better argument: a cut copied from a dense 80-layer model is
+   faithful to their paper, not to our trunk. At 12 the cart keeps nine GDN states and the K/V of three
+   attention layers (3, 7, 11) and re-runs 36 of 48 layers per read instead of 44 of 48. The re-derived
+   size for a 1,730-token body: rows 35.4 MB + K/V 3 layers ~6 MB + 9 GDN states ~29.4 MB + PLE 0.4 MB
+   ≈ **71 MB against 262.6 MB today — about 3.7× smaller**. Still a bank win, half of what N = 4 would
+   give, paid for with a third less recompute per read. Both numbers are pinned in the test (C5, C6).
+2. **Sequencing → build first, restart once.** His words: *"just let me know when everything is ready
+   then I'll do the restart for you."* So the boot must carry the graft control **and** the first CUT3
+   number, which is why the probe is built to skip rather than fail (below).
+3. **Rows dtype**: bf16 stays the default (20,480 B/token); fp32 doubles the bank for a fidelity margin
+   nobody has asked for. Measure the drift at T2.
+
+## T1 is BUILT (2026-10-29) — `STRATA_CUT3_CAPTURE`, and why it skips instead of failing
+
+The capture is one new knob in `Prefill::run_impl` at the same seam KVA already hooks: the rows of `R`
+**entering** layer 12, per chunk, in position order, written by the existing `KvaTap` plumbing to
+`<dir>/L12.bin` (bf16). Decision half in `include/strata/prefill/cut3.hpp` (pure, no device), tested by
+`src/prefill/cut3_test.cpp` — **29 checks**, and three of them were **falsified on purpose** before the
+run was believed: boundary 12→13, `row_bytes ×2`, and dropping the in-order rule each produced the named
+`FAIL` and the tree went green again on restore.
+
+**Skip, never fail** is the design point that makes one restart enough. `STRATA_KVA_CAPTURE` treats an
+out-of-order position as an error, so it can only ever run alone on a quiet box. This probe declines the
+ordinary traffic of a cartridge box instead — a continuation (`pos0 != 0`), a chat turn carrying the
+standing text (~13.9k tokens, above the default 4,096 ceiling), a layer split, a prompt with pictures —
+and a failed write stops the capture without touching the request. So with the knob set, one boot gives:
+
+* the **graft pure test** (the control: restore, no text, prompt ~26 tokens), and
+* the **first CUT3 number**: the rows of the `mam-cut3` body at boundary 12, whose size either matches
+  `T × 20,480 B` or it does not, plus the cost of capturing them.
+
+Launch line (the box runs on code defaults — its environment carries no `STRATA_*` today, verified from
+`/proc/<server>/environ`):
+
+```sh
+STRATA_CUT3_CAPTURE=/home/eugene/Strata-data/bench/p1/cut3_rows \
+  .venv/bin/python serve/server.py --engine strata --config strata-huihui-ud-q4_k_xl.json --port 8005 --open
+```
+
+Unset, C1 guarantees nothing runs and nothing prints — the default path stays byte-identical, which is
+the fork's law. The durable shape of this knob is the box config rather than the environment; that move
+is deliberately left to T2, so T1 changes one variable and not two.
