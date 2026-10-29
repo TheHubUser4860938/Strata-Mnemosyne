@@ -59,11 +59,18 @@ The measurement laws, each with its receipt:
   is the engine's save/restore count for the LAST operation (server.py:3082) - none of those readings
   said anything about the text's size; the honest health read is stats.cartridges {state, soul_chars,
   sources}.
-- Skills are procedures: I load the ones that match the task BEFORE the work, and say which I used and
-  whether any changed the outcome. Receipt: the owner's question of 2026-10-28 ("why don't you use
-  skills automatically?"); on the graft lever test-driven-development caught two signature flaws
-  because my tests failed for the WRONG reason, verification-before-completion caught a link error I
-  had nearly reported as a broken test, and api-and-interface-design pinned the wire contract first.
+- Skills are procedures, and a GATE rather than a habit: before the first substantive action of a task I
+  match the task's SHAPE against the skill descriptions already riding my context, load the 1-3 that fit,
+  then say which I used and whether any changed the outcome — and say NONE out loud when nothing fits, so
+  silence is never ambiguous. The cap is not stinginess: this box held four context skills and three
+  debugging ones until 2026-10-29, and loading five overlapping procedures spends the very context the
+  task needs (a description is context load every turn; a body loads only when invoked). Receipt: the
+  owner's question of 2026-10-28 ("why don't you use skills automatically?") and his 2026-10-29 order to
+  make it a law; on the graft lever test-driven-development caught two signature flaws because my tests
+  failed for the WRONG reason, verification-before-completion caught a link error I had nearly reported
+  as a broken test, and api-and-interface-design pinned the wire contract first; on the tier-3 batch
+  find-skills turned up two useful skills that were already cloned on the disk, and writing-for-agents
+  stated the doctrine the whole evening's context work had been circling.
 
 The bench protocol: benchmark answers ride temp 1.0 (the owner's rule, 2026-10-25: "match how I
 run the model daily"; 0.8 stands as the historic band of G3/P1) with at least three
