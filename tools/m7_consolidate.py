@@ -74,7 +74,7 @@ def main() -> int:
         print("\ndry run - nothing changed; pass --go to apply through the live server")
         return 0
 
-    done = failed = 0
+    done = failed = held = 0
     for sid, _, drops in dupes:
         for j in drops:
             body = json.dumps({"op": "invalidate", "id": j, "by": sid}).encode()
@@ -82,13 +82,20 @@ def main() -> int:
                                          headers={"Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=60) as r:
-                    ok = json.loads(r.read()).get("invalidated")
-                done += bool(ok)
-                failed += 0 if ok else 1
+                    got = json.loads(r.read())
+                # A PINNED ROW IS NOT A FAILURE (2026-10-29). m7 clusters by cosine and retires
+                # everything but the keeper; a person's pin is a different kind of evidence than a
+                # distance, so a refusal counts as HELD, not as a broken run.
+                if got.get("invalidated"):
+                    done += 1
+                elif got.get("pinned"):
+                    held += 1
+                else:
+                    failed += 1
             except Exception as e:  # noqa: BLE001 - one bad row must not stop the pass
                 failed += 1
                 print(f"  ! {j} -> {sid}: {e}")
-    print(f"\napplied: {done} retired with superseded_by chains, {failed} failed")
+    print(f"\napplied: {done} retired with superseded_by chains, {held} held by a pin, {failed} failed")
     return 0 if failed == 0 else 1
 
 
