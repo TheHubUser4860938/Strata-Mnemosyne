@@ -284,6 +284,7 @@ RATE_MIN_SPAN_S = 0.25      # younger than this there is no rate yet: the mean s
 # server (the engine's main thread waits, untimed, for its next command): the engine is ended and the request fails;
 # the next request starts it again.  The config's "engine_silence_s" sets it (0: wait forever, as before).
 ENGINE_SILENCE_S = 300.0
+GRAFT_WAIT_FLOOR_S = 120.0     # memory-core: the floor on a GRAFT answer (see stage_graft)
 # Disk sessions: the longest allowance an engine may announce (`SWAIT <phase> <s>`) for one step that blocks in a
 # single call (a file flush, the host->device transfer); the engine's own bound is the same (session_phase_limit_s).
 SESSION_WAIT_MAX_S = 3600
@@ -878,6 +879,12 @@ class MockEngine:
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.last_prompt = list(ids)
         self.last_embeddings = embeddings
+        # The mock honours the graft the way StrataEngine does (stage first, then generate), so a test that
+        # makes stage_graft refuse proves the REQUEST wiring and the client status - not just the helper.
+        # Without this the mock answers 200 to a graft nobody staged, and the refusal path reads as tested
+        # when it was never walked (measured: my own refusal test asserted 400 and got 200).
+        if (sampling or {}).get("strata_graft"):
+            self.stage_graft(str(sampling["strata_graft"]))
         if len(self.scripts) > 1:
             if self.cycle:
                 self.script = self.scripts[self.turns % len(self.scripts)]
@@ -3112,7 +3119,13 @@ class StrataEngine:
         says so), and a stopped engine is EngineDied rather than a hang.
         An older engine skips the unknown key and answers the way it always has; the graft simply does not
         happen, and nothing here blocks forever on it."""
-        silence = float(self.silence_s or 0)
+        # A FLOOR on the wait, whatever the box configures: engine_silence_s = 0 means "wait forever"
+        # (its documented #481 semantics), and a graft is a verb an OLDER engine may simply not speak - it
+        # reads the command line and prints nothing. Waiting forever on that would stall the serving FIFO
+        # for a whole working afternoon, which is exactly what happened once (987 s, the owner's Ctrl+C).
+        # A graft reads and validates a cart-sized file (~250 MB, measured 87-181 ms here), so 120 s is
+        # generous; past it the engine is reaped by _silent() and the next request starts a fresh one.
+        silence = max(float(self.silence_s or 0), GRAFT_WAIT_FLOOR_S)
         heard = time.monotonic()
         try:
             self.proc.stdin.write(f"GRAFT {name}\n")
@@ -7708,6 +7721,32 @@ class CartMinter:
         return self.carts()
 
 
+def graft_mark(svc, headers, req):
+    """X-Strata-Carts-Graft (memory-core, 2026-10-28/29): a minted cart rides as STATE instead of text.
+    The name resolves through the ledger to the cart's file AS A PATH IN THE SLOT VAULT (the engine's
+    session commands take a path, server.py:4885) and marks the request; the engine stages that file ahead
+    of the ask, and the request begins on it only where RAM proved no start of its own.
+
+    A SEPARATE function, because two laws are in play: `X-Strata-Memory: off` declines the standing text
+    and the recall block, while a grafted cart is neither of those - it is the state an ask continues from.
+    With the resolution inside stand_on, muting the shelves to get a clean control ALSO killed the graft
+    (stand_on sits behind `if mem_live:`), which made the pure test of "state without text" - a prompt of
+    nothing but the question - unreachable. So the muted path calls this too.
+    Unknown name, no file, or no vault marks nothing: additive, never a silent substitution."""
+    if req is None:
+        return
+    graft_name = str((headers or {}).get("X-Strata-Carts-Graft") or "").strip()
+    if not graft_name or not getattr(svc, "slot_save_path", None):
+        return
+    try:
+        rows = svc.memory.carts_get(graft_name)
+    except Exception:                                    # the ledger is a pointer: it never kills a request
+        rows = []
+    gfile = str((rows[0] if rows else {}).get("file") or "")
+    if gfile:
+        req["strata_graft"] = os.path.join(svc.slot_save_path, gfile)
+
+
 def stand_on(svc: Service, messages, headers, req=None):
     """The full standing prefix for one request (S4, 2026-10-25): the cartridge's standing
     text, the attach-aware cart index line, the attached carts' bodies, and a pulled cart as
@@ -7735,20 +7774,7 @@ def stand_on(svc: Service, messages, headers, req=None):
         # it builds must park in the cart quota.  A cart that was ASKED but refused is not cart traffic -
         # nothing of it rides, so the conversation is ordinary and may be evicted by ordinary traffic.
         req["strata_cart"] = True
-    # X-Strata-Carts-Graft (memory-core, 2026-10-28): a minted cart rides as STATE instead of text. The name
-    # resolves through the ledger to the file in the slot vault, and the engine stages that file ahead of this
-    # request; the graft is honoured only where RAM proved no start of its own, so a conversation that already
-    # has its state parked keeps today's bytes and pays nothing for the ask. A name the ledger does not know,
-    # or a cart with no file, marks nothing: the graft is additive, never a silent substitution.
-    graft_name = str((headers or {}).get("X-Strata-Carts-Graft") or "").strip()
-    if req is not None and graft_name and getattr(svc, "slot_save_path", None):
-        try:
-            rows = svc.memory.carts_get(graft_name)
-        except Exception:                                    # the ledger is a pointer: it never kills a request
-            rows = []
-        gfile = str((rows[0] if rows else {}).get("file") or "")
-        if gfile:
-            req["strata_graft"] = gfile
+    graft_mark(svc, headers, req)
     if att and att.get("mode") == "anchor":
         # The HEAD takes the anchored shape because the MODE says so, not because a rider
         # happens to ride: the zero-ask turn and the full-ask turn must compose ONE head, or
@@ -9767,7 +9793,8 @@ def make_handler(svc: Service):
                     if svc.cartridges.state in ("loaded", "seeded"):
                         messages = stand_on(svc, messages, self.headers, req)   # S4: standing + index + carts
                 else:
-                    svc.cartridges.invalidate()                   # muted or no memory: the slot is not this conversation's
+                    svc.cartridges.invalidate()                   # muted or no memory: the slot is not this
+                    graft_mark(svc, self.headers, req)            # muted declines the TEXT; a graft is state conversation's
             if svc.soul and mem_live and not (svc.cartridges and
                                                          svc.cartridges.standing_rides()):
                 # soul.md slot 0: the LAST prepend, the FIRST bytes (order = prepend order). Muted
@@ -9985,6 +10012,7 @@ def make_handler(svc: Service):
                         messages = stand_on(svc, messages, self.headers, req)   # S4 parity: same prefix, Codex too
                 else:
                     svc.cartridges.invalidate()
+                    graft_mark(svc, self.headers, req)            # parity: muted declines TEXT, not STATE
             if svc.soul and mem_live and not (svc.cartridges and
                                                          svc.cartridges.standing_rides()):
                 # soul.md slot 0 (parity: every dialect stands on the same prefix, or the prefix law
@@ -10112,6 +10140,7 @@ def make_handler(svc: Service):
                         messages = stand_on(svc, messages, self.headers, req)   # S4 parity: same bytes, Claude Code too
                 else:
                     svc.cartridges.invalidate()
+                    graft_mark(svc, self.headers, req)            # parity: muted declines TEXT, not STATE
             if svc.soul and mem_live and not (svc.cartridges and
                                                          svc.cartridges.standing_rides()):
                 # soul.md slot 0 (Anthropic parity: Claude Code rides the same bytes as every other

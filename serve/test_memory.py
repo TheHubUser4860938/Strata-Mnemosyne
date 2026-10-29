@@ -3585,6 +3585,104 @@ class CartSlotLedger(Mint):
                                                  "sources": {"text": f"{name} body {name.upper()}"}})
         self.assertEqual(st, 200, body)
 
+    def test_the_graft_reaches_the_engine_as_a_path_and_a_refusal_is_loud(self):
+        # THE BUGS THIS KILLS (measured live 2026-10-29): the first live graft sent the engine a BARE NAME,
+        # and the engine resolved it against its own cwd: "session file: MEM-CART-6ebaacdf.bin: No such file
+        # or directory". Refused in 0.2 s - so the queue fix worked and the hang did not come back - but the
+        # graft never ran. Two laws, one per half of the wire.
+        import os
+        from serve.server import StrataEngine, EngineDied, SessionRefused
+
+        # (a) the mark must be a PATH inside the vault. Asserted at the seam that owns the vault (stand_on),
+        # because WHERE the join happens is a code decision; THAT the engine receives a path is the law.
+        self._mint("pathed")
+        req = {}
+        stand_on(self.svc, [{"role": "user", "content": "grafted"}], {"X-Strata-Carts-Graft": "pathed"}, req)
+        marked = req.get("strata_graft")
+        self.assertTrue(os.path.isabs(marked), f"the engine is given an absolute path, got {marked!r}")
+        self.assertEqual(os.path.dirname(marked), self.svc.slot_save_path,
+                         "the path points INSIDE the slot vault, where the ledger's file lives")
+        self.assertEqual(os.path.basename(marked), self.svc.memory.carts_get("pathed")[0]["file"],
+                         "and it is exactly the file the ledger names (the mock writes a stub, so the NAME is "
+                         "the claim under test, not the bytes)")
+
+        # (b) the engine writes what it is handed, unchanged - a bare pipe proves it without an engine.
+        class Pipe:
+            def __init__(self):
+                self.written = []
+
+            def write(self, s):
+                self.written.append(s)
+
+            def flush(self):
+                pass
+
+        class Proc:
+            def __init__(self):
+                self.stdin = Pipe()
+
+        e = StrataEngine.__new__(StrataEngine)
+        e.proc, e.silence_s, e.lines, e.ended = Proc(), 0.0, __import__("queue").Queue(), False
+        e.silent_note = None
+        e.stage_graft = StrataEngine.stage_graft.__get__(e)
+        e._silent = lambda what: __import__("serve.server", fromlist=["EngineSilent"]).EngineSilent(what)
+        e.lines.put("GRAFTED 1369 257080992 122.2")           # the answer the pump would have queued
+        got = e.stage_graft("/vault/MEM-CART-DEADBEEF.bin")
+        self.assertEqual(e.proc.stdin.written, ["GRAFT /vault/MEM-CART-DEADBEEF.bin\n"],
+                         "the path rides the wire verbatim")
+        self.assertEqual((got["tokens"], got["bytes"]), (1369, 257080992), "and the answer is parsed")
+        # THE FLOOR: an engine that never answers must be REAPED, not waited on forever. With silence_s 0
+        # (this box's config: engine_silence_s absent) the wait is the 120 s floor, so the test lowers it to
+        # prove the bound exists at all - without the floor this call would block until the harness died.
+        import serve.server as _srv
+        _old_floor, _srv.GRAFT_WAIT_FLOOR_S = _srv.GRAFT_WAIT_FLOOR_S, 0.25   # prove the FLOOR exists, don't sit in it
+        e.silence_s, before = 0.25, list(e.proc.stdin.written)
+        with self.assertRaises(Exception) as cm:
+            e.stage_graft("/vault/MEM-CART-DEADBEEF.bin")
+        self.assertIn("graft", str(cm.exception).lower(),
+                      f"a silent graft engine is reported as a graft problem, got {cm.exception!r}")
+        _srv.GRAFT_WAIT_FLOOR_S = _old_floor
+        self.assertEqual(len(e.proc.stdin.written), len(before) + 1, "asked exactly once before reaping")
+
+        # (c) a refused graft must reach the CALLER as a 400 with the engine's reason, not a bare 500.
+        self._mint("refusme")
+        real = self.engine.stage_graft
+        self.engine.stage_graft = lambda name: (_ for _ in ()).throw(
+            SessionRefused("io", "session file: nope: No such file or directory", False))
+        try:
+            st, body = self.http("POST", "/v1/chat/completions",
+                                 {"model": "m", "messages": [{"role": "user", "content": "grafted"}]},
+                                 headers=[("X-Strata-Carts-Graft", "refusme")])
+            self.assertIn(st, (400, 503), f"a refused graft is a client error, got {st}: {str(body)[:200]}")
+            self.assertIn("No such file", str(body), "the engine's reason reaches the caller")
+        finally:
+            self.engine.stage_graft = real
+
+    def test_muting_the_shelves_does_not_mute_the_graft(self):
+        # THE SPLIT (owner's ask, 2026-10-29: "run those tests to see how the state without text functions"):
+        # X-Strata-Memory: off is the only lever that keeps the SHELVES and the standing prose from answering
+        # for a cart - but it also skipped stand_on, so it killed the GRAFT with them and the pure test
+        # (prompt = the question and nothing else) was unreachable. The mute law declines TEXT; a graft is
+        # STATE. Muting must still stage the cart.
+        self._mint("muted")
+        seen = []
+        real = self.engine.stage_graft
+        self.engine.stage_graft = lambda name: (seen.append(name), real(name))[1]
+        try:
+            st, body = self.http("POST", "/v1/chat/completions",
+                                 {"model": "m", "messages": [{"role": "user", "content": "state only"}]},
+                                 headers=[("X-Strata-Memory", "off"), ("X-Strata-Carts-Graft", "muted")])
+            self.assertEqual(st, 200, body)
+            self.assertEqual(len(seen), 1, f"a muted ask still stages its cart, staged {seen}")
+            self.assertTrue(seen[0].startswith(self.svc.slot_save_path), "and stages it as a vault path")
+            self.assertNotIn("server_memory", str(body.get("choices", ""))[:400],
+                             "muted means the shelves did not ride")
+            seen.clear()
+            self.ask("muted, no graft header")
+            self.assertEqual(seen, [], "no header, no stage: muting alone changes nothing about the graft")
+        finally:
+            self.engine.stage_graft = real
+
     def test_the_graft_header_names_a_file_for_the_engine_to_stage(self):
         # memory-core (2026-10-28): the graft lever. X-Strata-Carts-Graft names a minted cart whose STATE
         # should ride instead of its text: stand_on resolves the name to a file in the slot vault and marks
@@ -3595,8 +3693,10 @@ class CartSlotLedger(Mint):
         req = {}
         stand_on(self.svc, [{"role": "user", "content": "grafted ask"}],
                  {"X-Strata-Carts-Graft": "graftme"}, req)
-        self.assertEqual(req.get("strata_graft"), self.svc.memory.carts_get("graftme")[0]["file"],
-                         "the named cart's file is what the engine is asked to stage")
+        import os as _os
+        self.assertEqual(req.get("strata_graft"),
+                         _os.path.join(self.svc.slot_save_path, self.svc.memory.carts_get("graftme")[0]["file"]),
+                         "the named cart's file, AS A PATH IN THE VAULT, is what the engine is asked to stage")
         self.assertIn(" graft=1", StrataEngine.sampling_keys(dict(req)), "and the engine key follows")
         self.assertNotIn("strata_cart", req, "state rode, text did not: this is not cart traffic")
         self.assertNotIn("graft=", StrataEngine.sampling_keys({}), "no header, no key: upstream bytes")
