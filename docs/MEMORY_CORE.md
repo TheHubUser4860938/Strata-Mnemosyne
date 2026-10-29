@@ -2794,3 +2794,64 @@ engine-side question, NOT a cart problem - an early "carts break it" reading fai
 replicate at n=2); one empty completion per ~200 anchored asks (an engine artifact class,
 recorded); the harvest re-shelves's cart content whenever the bench is discussed in a window -
 periodic store cleanups are the standing remedy (2026-10-26: 1,711 -> 1,454 active).
+
+## Four ideals from an outside memory tool, adopted into tier 3 without adopting the tool (built 2026-10-29)
+
+The owner's question was what [GabrielMartinMoran/mind](https://github.com/GabrielMartinMoran/mind) does that we
+do not (MIT, SQLite + FTS5, CLI/MCP/HTTP/web on one file, 86.67% on LongMemEval-S with RAG off — a different track
+from our 0.683/0.694 on the LongMemEval-V1 oracle, so no winner claimed either way). His ruling on the survey was
+that we do not need the machine, we need the IDEALS. Four landed in the store; the two that did not are named at
+the end, with the reason.
+
+**Relations.** The store carried exactly ONE typed edge — `superseded_by`, the scar pointer — and every other
+relation between two facts lived in nobody. New table `links(a_id, b_id, kind, note, created_at)`, keyed on the
+DIRECTED PAIR, so relabeling is one call and a pair cannot hold two kinds at once. Three kinds, each with a writer
+that exists today, because a kind nobody writes is a dead column (this fork already ships one lesson about that:
+the harvest's `lane` field, parsed and never threaded). `about` is written AUTOMATICALLY by the write-time
+near-dupe comparison, which already ran and already declined to merge — the store recording a relation instead of
+recording nothing. `contradicts` is the tension a supersession chain cannot express (rows 6585 and 6932
+disagreeing with a cart's truth is exactly that shape). `supports` is the receipt law turned into an edge: one
+fact standing because another does. `relates_to` was left out on purpose — a catch-all becomes a dumping ground.
+The read is bounded to DIRECT relations in both directions, four per row, 120 chars of the far end's text; Mind
+bounds its own read because orientation "does not recursively traverse the graph", and our version of that reason
+is P11: injected bytes are paid for on every ask.
+
+**A reason.** The extractor now asks for `WHY:` — what the fact was decided against, or why keep it — the row
+carries it in `provenance.why`, and `memory_search` prints it when it is non-empty. It is deliberately NOT
+rendered in the standing block: block bytes ride every turn, and the browse arm is where a reason earns them. The
+field is optional in the regex, so a line the model wrote without it loses the reason and not the fact. The prompt
+cost +157 chars and the extract-prompt tripwire was re-based 1900 → 2100 with the measurement named, following the
+precedent of its own two earlier re-bases.
+
+**The pin.** `memories.pinned`, set by a person with `op=pin`, honored by every AUTOMATIC retire: the budget
+eviction, the harvest's `invalidate` and `correct`, and `m7_consolidate`'s cluster retirement. It exists because
+of our own record — row 3797 survived a cleanup on the strength of the words "as of" and row 4108 died for want of
+a date, which is a fact's life hanging on a heuristic with no veto in it. A refused automation is never silent:
+`invalidate` returns false AND stamps `provenance.pin_held` on the row (logs rotate; the row is where the next
+reader looks), `op=invalidate` answers `{"invalidated": false, "pinned": true}`, and `correct()` reports
+`pin_held` while the new fact still lands. `force` is the human override. One second-order defect died in test
+before commit: the embedding was deleted UNCONDITIONALLY after an invalidate, so a refused pin would have stripped
+the cosine arm of a row still standing in front of the model.
+
+**The honest zero.** `found: 0` from "the and of" and `found: 0` from "glorbish" are different events —
+nothing-to-match versus nothing-matched — and the tool now says which, with a `notice` when the query carried no
+informative words. The word list is ours, not Postgres' english_stem, so the notice annotates and never gates;
+Mind raises a typed error where we answer, because this tool is a mid-thought reach and a refusal teaches the model
+to stop looking. A wordless query that the cosine arm answers anyway gets a notice saying the rows came from the
+meaning arm alone and deserve half weight.
+
+**The field's units, found by accident.** The owner then asked whether we stamp exact time as well, and answering
+it measured what we stamp at all. `memories.created_at` is when the HARVEST WROTE a row; `turns.created_at` is
+when it was SAID. Across the 1,249 active rows carrying a `turn_id` the gap is a median **6.92 h** and a maximum
+**186.7 h** (7.8 days), never negative — while the tool description promised "'when' (the date said)" and the
+query delivered the writing time. The same query showed how little a DATE carries here: 1,598 active rows spread
+over **16 distinct days**, 1,597 of them sharing their day with another row. So `when` is now the turn's own
+timestamp, to the MINUTE, with `filed` printed only when it sits more than an hour from `when`, and a `CASE`
+guard keeps a non-numeric `turn_id` from breaking the recall path.
+
+**Held out, with the reason.** Mind's T1/T2/T3 tiers were not copied: promotion-on-read assumes a read is a
+deliberate act, and our block surfaces rows nobody asked for, so ambient reads would either flatten the store to
+T1 or need a new definition of "use". Typo/substring recall is present in the bundled Postgres (`pg_trgm` 1.6,
+available, NOT created) and was held back on purpose — it is a ranking change and the instrument does not move
+mid-experiment without a measurement beside it. The design, if wanted, is a strict **typo rescue**: the trigram
+arm fires only when the lexical arm returns nothing, so no query that already works has its order touched.

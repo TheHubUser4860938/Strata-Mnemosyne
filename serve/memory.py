@@ -65,6 +65,17 @@ CAT_CLASS = "MEM/CAT"                   # the index cartridges (2026-10-24): the
                                         # shelf - rows of "SHELF - words", maintained by
                                         # tools/m4_catalog.py, merged by MemoryService.browse()
 DEFAULT_PROJECT = "default"             # requests that name no scope land in this project bucket
+# RELATIONS (2026-10-29, the Mind survey's "knowing is relating"). A CLOSED set on purpose: every
+# kind must have a writer that exists today, or it is a dead column - this fork already ships one
+# lesson about that, the harvest's `lane` field, parsed by the extractor and never threaded into the
+# candidate dict, so the taboo-lane clause it feeds has been dead since it shipped. `about` is the
+# automatic one (two facts compared at write time, similar enough to matter, distinct enough to
+# keep); `contradicts` is the tension a supersession cannot express, which is exactly the shape of
+# rows 6585/6932 disagreeing with a cart's truth; `supports` is the receipt law turned into an edge -
+# a fact that stands because another fact does. No `relates_to`: a catch-all becomes a dumping ground.
+LINK_KINDS = ("about", "contradicts", "supports")
+LINKS_PER_ROW = 4                       # the tool result rides the model's context; a traversal has
+LINK_TEXT_CHARS = 120                   # no floor, so the read is bounded like Mind's own read is
 WORD_RE = re.compile(r"\w{2,}", re.UNICODE)
 MAX_QUERY_WORDS = 12                    # a MATCH over more words than these stops being a query and becomes noise
 AGE_SCALE_DAYS = 90.0                   # recency half-life-ish: exp(-age_days / this) feeds the ranking blend
@@ -316,6 +327,23 @@ def attach(store_dir: str, **kw):
     return psycopg.connect(srv.get_uri(), dbname=store_dbname(store_dir), **kw)
 
 
+def informative(q: str) -> bool:
+    """True when a query names at least one word that could carry a fact. THE HONEST ZERO
+    (2026-10-29, the Mind survey's EmptySearchQueryError ideal): "found: 0" from "the and of" and
+    "found: 0" from "zczzqq" are DIFFERENT events - nothing-to-match versus nothing-matched - and
+    the model should act differently on each (reword the first, believe the second, and never report
+    either as a fact about the store). Mind raises a typed error; ours answers with a notice,
+    because this tool is a mid-thought reach and a refusal would teach the model to stop looking.
+    The word list is OURS, not Postgres' - the store's english_stem mapping drops a slightly
+    different set - which is why this can only ever annotate a result and never gate one."""
+    return any(w not in STOP for w in WORD_RE.findall((q or "").lower()))
+
+
+def _stamp(dt) -> str | None:
+    """One timestamp, minute precision, in the store's own zone: '2026-10-29 17:47'."""
+    return dt.strftime("%Y-%m-%d %H:%M") if dt is not None else None
+
+
 # The tool in the CHAT TEMPLATE's flat form ({name, description, parameters}) - what MCP's
 # template_tools produce and what the renderer's `tool | tojson` line expects. The OpenAI route
 # flattens the client's nested tools before this is appended, so flat is the only correct shape.
@@ -330,11 +358,15 @@ MEMORY_TOOL = {
                     "TECH, USR, or MEM/CRG) and/or since/until dates (YYYY-MM-DD) for when-said "
                     "questions. Use it whenever the memory block in context is not enough, or you are "
                     "unsure a fact is really there - and call it again with other words or another shelf "
-                    "before you give up: one look is not a search. Returned facts carry 'when' (the date "
-                    "said), 'confidence' and 'hits' (times served); q-rows carry 'rel' - the search's "
-                    "own belief that a row answers you (~1 top pick, ~0.1 a polite maybe; judge what "
-                    "you fetched by it). 'found: 0' is an honest zero - if it finds nothing after two "
-                    "tries, say so plainly. Call with no arguments to get the menu back."),
+                    "before you give up: one look is not a search. Returned facts carry 'when' (when it "
+                    "was SAID, to the minute; 'filed' rides along when the store wrote it down more than "
+                    "an hour later), 'confidence' and 'hits' (times served); q-rows carry 'rel' - the "
+                    "search's own belief that a row answers you (~1 top pick, ~0.1 a polite maybe; judge "
+                    "what you fetched by it). A person's protection says 'pinned', a recorded reason "
+                    "says 'why', and 'links' names rows it relates to (about / contradicts / supports, "
+                    "direct only - it never traverses). 'found: 0' is an honest zero, and a 'notice' says "
+                    "when that zero was the query's fault, not the store's - if it finds nothing after "
+                    "two tries, say so plainly. Call with no arguments to get the menu back."),
     "parameters": {
         "type": "object",
         "properties": {
@@ -412,32 +444,82 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
         mem.note_tool("walks", not out["rows"])
         return _tool_done(t0, True, json.dumps(out, ensure_ascii=False))
     hits = mem.search(q, scope=scope, limit=limit, classes=cls, since=since, until=until)
-    when: dict[int, str] = {}
+    said: dict[int, object] = {}
+    filed: dict[int, object] = {}
+    pinned: dict[int, bool] = {}
+    why: dict[int, str] = {}
+    links: dict[int, list] = {}
     if hits:      # the date a fact was said - temporal browsing reads dated cards (2026-10-24);
         # one indexed PK pass, kept out of search() so every block byte stays exactly what it was.
         # _rollback_on_error because this is raw SQL on the SHARED connection outside MemoryService:
         # a read that raises here without a rollback leaves the transaction aborted, and the NEXT
         # caller eats the failure too (the 2026-10-23 lesson, found in this block by review).
+        #
+        # THE FIELD'S UNITS (2026-10-29 - the owner asked "do we stamp exact time as well?" and the
+        # answer was worse than yes-or-no). The description promised "'when' (the date SAID)" and
+        # this pass delivered the row's own created_at, which is the moment the HARVEST WROTE it.
+        # Measured on this box's prod store over the 1,249 active rows that carry a turn_id: the gap
+        # between said and written is a MEDIAN 6.92 h and a MAXIMUM 186.7 h (7.8 days), and never
+        # negative. So the field was a saying-time wearing a writing-time's face - at date
+        # precision, in a store where 1,597 of 1,598 active rows SHARE their day, which is to say
+        # the dropped clock cost nothing and the wrong units cost the truth. turns.created_at is the
+        # exchange (that is what "said" means); memories.created_at is the notation. Both ship now,
+        # to the minute, and the second is printed only when it sits more than an hour from the
+        # first - so an ordinary row pays no extra bytes for a fact it already knew.
+        ids = [h["id"] for h in hits]
         with mem.lock, _rollback_on_error(mem.conn):
-            got = mem.conn.execute("select id, created_at from memories where id = any(%s)",
-                                   ([h["id"] for h in hits],)).fetchall()
+            got = mem.conn.execute(
+                "select r.id, coalesce(t.created_at, r.created_at), r.created_at,"
+                " r.pinned, r.provenance ->> 'why'"
+                " from (select id, created_at, pinned, provenance,"
+                "              case when provenance ->> 'turn_id' ~ '^[0-9]+$'"
+                "                   then (provenance ->> 'turn_id')::bigint end as tid"
+                "       from memories where id = any(%s)) r"
+                " left join turns t on t.id = r.tid", (ids,)).fetchall()
             mem.conn.commit()
-        when = {r[0]: r[1].date().isoformat() for r in got}
-    facts = [{"id": h["id"], "class": h.get("class") or "", "text": h["text"],
-              "confidence": h.get("confidence"), "hits": h.get("hits"),
-              "when": when.get(h["id"]),
-              # THE RELEVANCE LINE (2026-10-24, the research-drop's trigger fired: browse-arm
-              # abstention 0.700 < the 0.75 bar the relevance line was named at). P2's mechanism
-              # is the MODEL JUDGING what it fetched - and judgment was blind: search() blends
-              # rank-share + freshness + confidence into a score and then THROWS IT AWAY at the
-              # render. Now the first row says why it is first: rel is that blend (0-1, top of
-              # the list ~0.8-1.1, marginal tails ~0.1-0.3), so "found: 8" becomes eight graded
-              # claims instead of a flat crowd. Walks and the map carry no rel on purpose: a
-              # drawer lists what is newest, not what matches - position there is order, not
-              # evidence, and inventing a score for it would be decoration.
-              "rel": h.get("score")} for h in hits]
+        said = {r[0]: r[1] for r in got}
+        filed = {r[0]: r[2] for r in got}
+        pinned = {r[0]: bool(r[3]) for r in got}
+        why = {r[0]: r[4] for r in got}
+        links = mem.links_of(ids)      # bounded direct relations, both directions (see links_of)
+    facts = []
+    for h in hits:
+        f = {"id": h["id"], "class": h.get("class") or "", "text": h["text"],
+             "confidence": h.get("confidence"), "hits": h.get("hits"),
+             "when": _stamp(said.get(h["id"])),
+             # THE RELEVANCE LINE (2026-10-24, the research-drop's trigger fired: browse-arm
+             # abstention 0.700 < the 0.75 bar the relevance line was named at). P2's mechanism
+             # is the MODEL JUDGING what it fetched - and judgment was blind: search() blends
+             # rank-share + freshness + confidence into a score and then THROWS IT AWAY at the
+             # render. Now the first row says why it is first: rel is that blend (0-1, top of
+             # the list ~0.8-1.1, marginal tails ~0.1-0.3), so "found: 8" becomes eight graded
+             # claims instead of a flat crowd. Walks and the map carry no rel on purpose: a
+             # drawer lists what is newest, not what matches - position there is order, not
+             # evidence, and inventing a score for it would be decoration.
+             "rel": h.get("score")}
+        # THE OPTIONAL KEYS (2026-10-29): ABSENT when they have nothing to say, so an ordinary row's
+        # payload is byte-for-byte what it was before this batch. That is not stinginess for its own
+        # sake - the browse result rides the model's context, and P11 measured what injected bytes
+        # cost per ask. pinned / why / links / filed appear exactly when they teach something.
+        if pinned.get(h["id"]):
+            f["pinned"] = True
+        if why.get(h["id"]):
+            f["why"] = why[h["id"]]
+        if links.get(h["id"]):
+            f["links"] = links[h["id"]]
+        s, w = said.get(h["id"]), filed.get(h["id"])
+        if s is not None and w is not None and abs((w - s).total_seconds()) > 3600:
+            f["filed"] = _stamp(w)
+        facts.append(f)
+    out = {"found": len(facts), "facts": facts}
+    if not informative(q):
+        out["notice"] = ("this query carried no informative words - "
+                         + ("there was nothing to match, so nothing was found: try other words, or "
+                            "read the map with catalog:true" if not facts else
+                            f"these {len(facts)} rows came from the meaning arm alone, not from your "
+                            "words; judge them at half weight"))
     mem.note_tool("searches", not facts)
-    return _tool_done(t0, True, json.dumps({"found": len(facts), "facts": facts}, ensure_ascii=False))
+    return _tool_done(t0, True, json.dumps(out, ensure_ascii=False))
 
 
 def prepend_head(messages: list[dict], text: str) -> list[dict]:
@@ -613,8 +695,25 @@ _PG_DDL: tuple[str, ...] = (
          invalid_at timestamptz,
          superseded_by bigint,
          class text not null default '',
+         pinned boolean not null default false,
          ts tsvector generated always as
              (to_tsvector('strata_fts', translate(lower(text), '''', ' '))) stored)""",
+    # RELATIONS (2026-10-29, the Mind survey's "knowing is relating"): the store has carried exactly
+    # ONE typed edge since PHASE 4 - superseded_by, the scar pointer - and every other relation
+    # between two facts lived in nobody. This table is the rest of that sentence: two rows that share
+    # a subject, two rows in tension, one row that is WHY another stands. ONE relation per directed
+    # pair (the pair IS the key), so relabeling is one call and a pair can never accumulate a pile of
+    # kinds that contradict each other. ON DELETE CASCADE follows the purge law: a hard delete is the
+    # only act that erases a row, and it takes the pair's edges with it - an edge to a row that no
+    # longer exists is not history, it is a broken pointer.
+    """create table if not exists links(
+         a_id bigint not null references memories(id) on delete cascade,
+         b_id bigint not null references memories(id) on delete cascade,
+         kind text not null default 'about',
+         note text not null default '',
+         created_at timestamptz not null,
+         primary key (a_id, b_id))""",
+    "create index if not exists links_b on links(b_id)",
     "create index if not exists mem_ts_gin on memories using gin(ts)",
     "create index if not exists mem_updated on memories(updated_at)",
     "create index if not exists mem_scope_active on memories(scope) where invalid_at is null",
@@ -1036,6 +1135,15 @@ class MemoryService:
             # request that ASKS for a class prefix narrows to shelved rows; the default path never does.
             if "class" not in cols:
                 self.conn.execute("alter table memories add column class text not null default ''")
+            # THE PIN (2026-10-29, from the Mind survey's "pinning protects against automation"): a
+            # row the human chose to keep. Every auto-retire path honors it and says so when it
+            # declines; only an explicit act (op=pin off, op=forget, op=purge) moves a pinned row.
+            # The links TABLE needs no branch here - _PG_DDL re-runs in full on every open, so a new
+            # "create table if not exists" applies itself to an old store, which is exactly what the
+            # law above means by "the DDL already carries what the migrations once patched in."
+            if "pinned" not in cols:
+                self.conn.execute("alter table memories add column"
+                                  " pinned boolean not null default false")
             # The journal's own provenance: WHICH rows the server showed on that turn. request_state has
             # carried the list in ctx since the block existed and the turns table never kept it, which
             # is why "is this curated fact memory feeding on itself?" could not be answered at all -
@@ -1264,6 +1372,8 @@ class MemoryService:
             # the merge tool's v3 law, unchanged (see _semantic_dupe). guard=False: the write must
             # land as written (benchmark ingest) - the vector is still stored, only the verdict stands aside.
             supersede: int | None = None
+            about: int | None = None      # a relation, not a verdict about the text
+            supersede_held = False        # set when a PIN blocked the automatic retirement
             if vec is not None and guard:
                 verdict = self._semantic_dupe(text, same, vec, scope)
                 if verdict and verdict[0] == "suppress":
@@ -1282,6 +1392,8 @@ class MemoryService:
                     return {"id": verdict[1], "deduped": "semantic"}
                 if verdict and verdict[0] == "supersede":
                     supersede = verdict[1]
+                if verdict and verdict[0] == "about":
+                    about = verdict[1]
             prov = dict(provenance) if provenance else {}
             if supersede:      # audit 09 finding 3 (Grok): the core supersede path kept only the
                 prior = next((r[1] for r in same if r[0] == supersede), "")   # chain pointer, while
@@ -1305,8 +1417,24 @@ class MemoryService:
                 if supersede:      # the richer phrasing wins: the older row retires pointing at it,
                     self.conn.execute(       # the Zep chain stays intact - nothing is deleted (invalidate
                         "update memories set invalid_at=%s, superseded_by=%s, updated_at=%s"
-                        " where id=%s and invalid_at is null",   # is the same op)
-                        (self._dt(now), new_id, self._dt(now), supersede))
+                        " where id=%s and invalid_at is null and not pinned",   # is the same op), and
+                        (self._dt(now), new_id, self._dt(now), supersede))   # a PINNED row refuses,
+                    held = self.conn.execute(          # like every other automatic retire path, and
+                        "select pinned and invalid_at is null from memories where id = %s",  # says so
+                        (supersede,)).fetchone()       # below instead of burying the fact quietly
+                    supersede_held = bool(held and held[0])
+            if about:
+                # THE RELATION, recorded while the comparison is still in memory (2026-10-29, the
+                # Mind lifecycle: "do this while the context is fresh. A link added later is still
+                # useful, but the reasoning is easier to recover when it is recorded at write time").
+                # ON CONFLICT DO NOTHING: the automatic writer may PROPOSE an edge, it may never
+                # relabel one a human signed - a sweep must not be able to turn "contradicts" into
+                # "about" by arriving second. Stated honestly, the clause is DEFENSIVE rather than
+                # load-bearing: new_id was born this instant, so the pair is always fresh and the
+                # conflict only arrives if a caller links a row it did not just create.
+                self.conn.execute(
+                    "insert into links(a_id,b_id,kind,created_at) values(%s,%s,'about',%s)"
+                    " on conflict (a_id,b_id) do nothing", (new_id, about, self._dt(now)))
             evicted: list[int] = []
             if self.max_memories:
                 # the budget line: over cap, the worst NEVER-RECALLED rows go first (lowest confidence,
@@ -1331,6 +1459,7 @@ class MemoryService:
                 if over > 0:
                     gone = self.conn.execute(
                         "select id from memories where hits=0 and invalid_at is null and id != %s"
+                        " and not pinned"
                         " order by (coalesce(provenance->>'lane','') = 'taboo') asc,"
                         " confidence asc, created_at asc limit %s", (new_id, over)).fetchall()
                     if gone:
@@ -1350,6 +1479,13 @@ class MemoryService:
             self._dedupe_amend(added=[(new_id, set(norm_text(text).split()))],
                                retired=([supersede] if supersede else []) + evicted)
             out = {"id": new_id, "deduped": False}
+            if about:
+                out["about"] = about          # the relation the store recorded on its own
+            if supersede_held:
+                # announced, never silent: the sweep's richer fact LANDED and the pinned row stayed
+                # live beside it. Two live rows that disagree is a state a human should see, not one
+                # the store resolves by arrival order.
+                out["pin_held"] = supersede
             if supersede:
                 out["superseded"] = supersede
             if evicted:
@@ -1367,14 +1503,19 @@ class MemoryService:
         side names and the other never mentions vetoes the merge, and the carrier's rare-token
         PAYLOAD must contain the other side's.
 
-        Three verdicts. 'suppress' when an active row already says everything this text says
+        Four verdicts, and the fourth is new (2026-10-29, the Mind survey's "knowing is relating").
+        'suppress' when an active row already says everything this text says
         (rare-token containment), OR when the two are one fact with drifted wording - decided by the
         READ path's own near-dupe bar, token Jaccard >= 0.75 (measured on this store 2026-10-12),
         because a row the block would collapse into its neighbour anyway costs nothing to skip, and
         skipping is what stopped one policy becoming 57 rows; 'supersede' when this text says
         everything an active row says plus its own detail (the richer row lands, the older retires
-        into the version chain - never deleted); otherwise two different facts, both keeping their
-        slot. The subject rule is checked FIRST, above every bar: it is what keeps "KCMI is licensed
+        into the version chain - never deleted); 'about' when a candidate was compared and survived -
+        similar enough to be worth relating, distinct enough that both rows keep their slot - which
+        is the store recording a RELATION instead of recording nothing, and the one edge this fork can
+        write automatically because the comparison already happened. The caller treats 'about' as a
+        plain insert plus a link, never as a verdict about the text.
+        The subject rule is checked FIRST, above every bar: it is what keeps "KCMI is licensed
         to Terrytown" from folding into "KZKX is licensed to Seward" (Jaccard 7/11 = 0.64, and the
         distinct-facts control both laws are measured against). Candidates are limited to the
         WRITING SCOPE, exactly as the exact-text dedup does; the floor is 0.85 (the family's measured
@@ -1406,6 +1547,7 @@ class MemoryService:
         # STOP-excluded on both sides, which the merge tool does NOT do and this guard does: the
         # first live run vetoed a true duplicate over the word "with" (df 1 in a 209-row test store),
         # and a connective is not a subject. Content words only - the veto exists to protect NAMES.
+        about: int | None = None      # the first candidate that turned out to be a DIFFERENT fact
         for _c, rid, rtext in cand[:8]:
             t_ex = {t for t in norm_text(rtext).split() if t not in STOP}
             p_ex = frozenset(t for t in t_ex if df.get(t, 0) <= bar)
@@ -1417,6 +1559,8 @@ class MemoryService:
             if u_new - t_ex:
                 if not (u_ex - t_new) and p_ex <= p_new:
                     return ("supersede", rid)
+                if about is None:
+                    about = rid       # compared, similar, distinct: a relation worth recording
                 continue
             # 2. the carrier already says everything this text says (rare-token containment): the
             #    insert would be a second copy of one fact, so the row is refreshed instead.
@@ -1436,7 +1580,9 @@ class MemoryService:
             #    row wins, the older one retires into the version chain.
             if p_ex <= p_new:
                 return ("supersede", rid)
-        return None
+            if about is None:
+                about = rid           # compared, similar, and neither one contains the other
+        return ("about", about) if about is not None else None
 
     @_heals
     def forget(self, memory_id: int, reason: str = "") -> bool:
@@ -1493,31 +1639,58 @@ class MemoryService:
             return True
 
     @_heals
-    def invalidate(self, memory_id: int, by_id: int | None = None) -> bool:
+    def invalidate(self, memory_id: int, by_id: int | None = None,
+                   force: bool = False) -> bool:
         """Take a fact out of recall WITHOUT deleting it: invalid_at marks when the store stopped
         trusting it, superseded_by points at the fact that replaced it (the version chain). Search,
         recall and the budget see only active rows; the review list and any as-of query can still
-        walk the history - the honest-ledger rule the merge deletes quietly broke."""
+        walk the history - the honest-ledger rule the merge deletes quietly broke.
+
+        THE PIN (2026-10-29): a row the human pinned refuses to be retired by automation, and the
+        harvest's correction, the cosine law arm and m7's cluster retirement are all automation.
+        The refusal is recorded on the row (provenance.pin_held) rather than only returned, because
+        the caller that asked is a sweep log line and logs rotate; the row is where the next reader
+        looks. force=True is the human override - the verb the person types, not the rule that runs."""
+        mid = int(memory_id)
         with self.lock:
             r = self.conn.execute(
                 "update memories set invalid_at=%s, superseded_by=%s, updated_at=%s"
-                " where id=%s and invalid_at is null",
+                " where id=%s and invalid_at is null" + ("" if force else " and not pinned"),
                 (self._dt(time.time()), int(by_id) if by_id else None,
-                 self._dt(time.time()), int(memory_id)))
+                 self._dt(time.time()), mid))
+            retired = r.rowcount > 0
+            if not retired:
+                # Nothing moved. Two different reasons look identical from the rowcount - the row was
+                # ALREADY retired, or it is PINNED and would not move - and they need different
+                # handling, because a pinned row is still LIVE and a retired row is not.
+                row = self.conn.execute("select pinned, invalid_at is null from memories where id = %s",
+                                        (mid,)).fetchone()
+                if row and row[0] and row[1]:
+                    self.conn.execute(
+                        "update memories set provenance=coalesce(provenance,'{}'::jsonb)||%s::jsonb"
+                        " where id = %s",
+                        (Jsonb({"pin_held": {"ts": time.time(),
+                                             "by_id": int(by_id) if by_id else None}}), mid))
+                    self._bump()
+                    self.conn.commit()
+                    # The vector STAYS. v2.1's dead-weight ruling retires the vector with the recall,
+                    # and a refused pin means the recall did not move: deleting here would strip the
+                    # cosine arm of a fact that is still standing in front of the model.
+                    return False
             # the vector goes with the recall (v2.1, the owner's dead-weight ruling 2026-10-17):
             # search, recall, budget and the similarity matrix all filter on active rows, and no
             # path un-invalidates - a vector on a retired row is never read again, and 943 of
             # them proved it (half the table, accumulating silently since the first merge). The
             # row and its text stay: the honest ledger is the TEXT, and a re-minted near-duplicate
             # gets a fresh vector anyway.
-            self.conn.execute("delete from embeddings where id = %s", (int(memory_id),))
+            self.conn.execute("delete from embeddings where id = %s", (mid,))
             self._bump()
             self.conn.commit()
-            self._touched((int(memory_id),), "invalidate")
+            self._touched((mid,), "invalidate")
             self._vdirty = True       # same law as classify: the matrix holds ONLY active rows, so
             # an invalidate that does not dirty it leaves the cosine arm offering a superseded fact
             # (its fetch by id does not re-check invalid_at). correct() inherits this fix.
-            return r.rowcount > 0
+            return retired
 
     def correct(self, text: str, old_id: int, scope: str = USER_SCOPE, source: str = "manual",
                 confidence: float | None = None, provenance: dict | None = None,
@@ -1543,7 +1716,20 @@ class MemoryService:
             # (measured 2026-10-17: "user's name is Eugene" vs the richer username row, scar 461).
             new["invalidated"] = None
             return new
-        self.invalidate(old_id, by_id=new["id"])
+        if not self.invalidate(old_id, by_id=new["id"]):
+            # THE PIN, announced (2026-10-29): the new fact still lands - it is true on its own -
+            # but the row the human chose to keep stays in recall beside it. Reporting
+            # "invalidated: <old>" here would have been a lie, and reporting nothing at all would
+            # have been the silent skip this fork already got audited for twice.
+            with self.lock:
+                held = self.conn.execute(
+                    "select pinned and invalid_at is null from memories where id = %s",
+                    (int(old_id),)).fetchone()
+                self.conn.commit()
+            if held and held[0]:
+                new["invalidated"] = None
+                new["pin_held"] = int(old_id)
+                return new
         new["invalidated"] = int(old_id)
         return new
 
@@ -1564,6 +1750,97 @@ class MemoryService:
             # OLD shelf until some unrelated write rebuilds - the backfill's 122 op=classify calls
             # (2026-10-16) were invisible to the cosine arm while the lexical arm was always right.
             return r.rowcount > 0
+
+    def pin_state(self, memory_id: int) -> bool:
+        """Is this row pinned? One PK read, for the callers that must ANNOUNCE a refused
+        automation rather than guess at it: op=invalidate answers {"invalidated": false,
+        "pinned": true} so a sweep log says which of the two happened."""
+        with self.lock, _rollback_on_error(self.conn):
+            row = self.conn.execute("select pinned from memories where id = %s",
+                                    (int(memory_id),)).fetchone()
+            self.conn.commit()
+        return bool(row and row[0])
+
+    @_heals
+    def pin(self, memory_id: int, on: bool = True, reason: str = "",
+            actor: str = "api") -> dict:
+        """The human veto over automation (op=pin, 2026-10-29, from the Mind lifecycle's "pinning
+        protects against automation"). The answer to a hole in our OWN record: row 3797 survived a
+        cleanup because it happened to contain the words "as of", and row 4108 died for lack of a
+        date - which is to say a fact's life here hung on a scoring heuristic with no veto in it.
+        A pin is that veto, and it is an ACT, not a score: it says "losing this is expensive", which
+        is a thing a person knows and a heuristic does not. Like op=classify it leaves updated_at
+        ALONE - a maintenance touch must not make a fact look newly said, or the freshness term in
+        the ranking rewards bookkeeping instead of evidence."""
+        mid = int(memory_id)
+        with self.lock:
+            r = self.conn.execute(
+                "update memories set pinned=%s, updated_at=updated_at,"
+                " provenance=coalesce(provenance,'{}'::jsonb)||%s::jsonb where id=%s",
+                (bool(on),
+                 Jsonb({"pin": {"on": bool(on), "reason": str(reason or "")[:200],
+                                "actor": str(actor or "api")[:40], "ts": round(time.time(), 3)}}),
+                 mid))
+            self._bump()
+            self.conn.commit()
+            self._touched((mid,), "pin")
+        return {"pinned": bool(on), "found": r.rowcount > 0}
+
+    @_heals
+    def link(self, a_id: int, b_id: int, kind: str = "about", note: str = "") -> dict:
+        """Record a relation between two facts (op=link). ONE relation per DIRECTED pair - the pair
+        is the key - so relabeling is one call rather than a delete plus a create, and a pair can
+        never carry "about" and "contradicts" at the same time: the stronger claim replaces the
+        weaker, note and all. A self-link is refused as noise, and an unknown side is reported, not
+        swallowed: a pointer to nothing is the exact defect the venue-day id collision taught us."""
+        a, b = int(a_id), int(b_id)
+        kind = str(kind or "about").strip().lower()
+        if a == b:
+            return {"linked": False, "error": "a fact linked to itself says nothing"}
+        if kind not in LINK_KINDS:
+            return {"linked": False, "error": f"kind: one of {' '.join(LINK_KINDS)}",
+                    "kinds": list(LINK_KINDS)}
+        with self.lock:
+            have = {r[0] for r in self.conn.execute(
+                "select id from memories where id = any(%s)", ([a, b],)).fetchall()}
+            missing = [x for x in (a, b) if x not in have]
+            if missing:
+                self.conn.commit()
+                return {"linked": False, "missing": missing}
+            self.conn.execute(
+                "insert into links(a_id,b_id,kind,note,created_at) values(%s,%s,%s,%s,%s)"
+                " on conflict (a_id,b_id) do update set kind = excluded.kind,"
+                " note = excluded.note, created_at = excluded.created_at",
+                (a, b, kind, str(note or "")[:300], self._dt(time.time())))
+            self._bump()
+            self.conn.commit()
+        return {"linked": True, "from": a, "to": b, "kind": kind}
+
+    def links_of(self, ids) -> dict[int, list[dict]]:
+        """Direct relations of these rows, BOTH directions, BOUNDED. Mind's lifecycle states the law
+        this copies and the reason for it: "bounded to direct relations and metadata, so it is safe
+        to use for orientation. It does not recursively traverse the graph." The bound is not
+        caution for its own sake - the tool result rides the model's context, and P11 measured what
+        injected bytes cost per ask."""
+        want = [int(i) for i in ids]
+        if not want:
+            return {}
+        out: dict[int, list[dict]] = {i: [] for i in want}
+        with self.lock, _rollback_on_error(self.conn):
+            rows = self.conn.execute(
+                "select l.a_id, l.b_id, l.kind, coalesce(ma.text, ''), coalesce(mb.text, '')"
+                " from links l left join memories ma on ma.id = l.a_id"
+                " left join memories mb on mb.id = l.b_id"
+                " where l.a_id = any(%s) or l.b_id = any(%s)"
+                " order by l.a_id, l.b_id", (want, want)).fetchall()
+            self.conn.commit()
+        for a, b, kind, ta, tb in rows:
+            for me, other, direction, text in ((a, b, "outgoing", tb), (b, a, "incoming", ta)):
+                seen = out.get(int(me))
+                if seen is not None and text and len(seen) < LINKS_PER_ROW:
+                    seen.append({"id": int(other), "kind": kind, "direction": direction,
+                                 "text": text[:LINK_TEXT_CHARS]})
+        return out
 
     @_heals
     def list_memories(self, scope: str | None = None, limit: int = 100,

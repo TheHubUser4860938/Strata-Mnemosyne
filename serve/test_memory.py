@@ -15,7 +15,8 @@ import unittest
 from pathlib import Path
 
 from serve.frontend import ChatTemplate
-from serve.memory import MemoryService as _BaseMemoryService, request_state, time_bound, tool_result
+from serve.memory import (MemoryService as _BaseMemoryService, request_state, time_bound,
+                          tool_result, LINKS_PER_ROW)
 from serve.server import ByteTokenizer, Cartridges, CartMinter, MockEngine, Service, serve, stand_on
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -3799,6 +3800,236 @@ class CartSlotLedger(Mint):
         st, m = self.http("GET", "/metrics")
         self.assertEqual(m["conversation_cache"]["carts"]["engine_slots"], 10,
                          "the INFO line is the cap's other source, read live")
+
+
+class TierThreeIdeals(unittest.TestCase):
+    """THE MIND SURVEY, IN OUR CLOTHES (2026-10-29). Four ideals, adopted into tier 3 rather than
+    bolted beside it: a RELATION between facts (we had exactly one edge, superseded_by, and the rest
+    lived in nobody), a recorded REASON (our own agent.md says a law without a receipt is a vibe,
+    and the harvest wrote rows that were precisely that), a human PIN against automation (row 3797
+    survived a cleanup on the words "as of" and row 4108 died for want of a date - a fact's life
+    hung on a heuristic with no veto in it), and the HONEST ZERO that says WHICH kind of nothing it
+    found. Held out of the batch on purpose: their T1/T2/T3 LRU tiers, because our reads are ambient
+    (the block surfaces rows nobody asked for), and promotion-on-read would either flatten the store
+    to T1 or need a new definition of "use" - their tiers model deliberate working-set distance."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mem = MemoryService(self.tmp.name)
+
+    def tearDown(self):
+        self.mem.close()
+        self.tmp.cleanup()
+
+    def facts(self, q, **kw):
+        return json.loads(tool_result(self.mem, {"q": q, **kw}, scope="default")["text"])
+
+    # ---- the pin: a veto, not a score ------------------------------------------------------
+
+    def test_a_pinned_row_refuses_an_invalidate_and_stays_in_recall(self):
+        r = self.mem.remember("the venue harness restores four slot rows on every run", scope="default")
+        self.mem.pin(r["id"], True, "the owner keeps this for the venue nights", "cli")
+        self.assertFalse(self.mem.invalidate(r["id"]), "a pinned row does not move for automation")
+        self.assertTrue(self.mem.pin_state(r["id"]))
+        self.assertTrue(self.mem.search("venue harness restores slots", scope="default"),
+                        "the refusal kept the fact ALIVE, not merely present and retired")
+
+    def test_an_unpin_lets_the_same_invalidate_through(self):
+        r = self.mem.remember("flibbish quay calibration drifts by nine microns", scope="default")
+        self.mem.pin(r["id"], True)
+        self.assertFalse(self.mem.invalidate(r["id"]))
+        self.mem.pin(r["id"], False, "the sensor was replaced, the fact is safe to retire")
+        self.assertTrue(self.mem.invalidate(r["id"]))
+
+    def test_force_is_the_human_override_and_needs_no_unpin(self):
+        r = self.mem.remember("the shurectl microphone sleeps after four idle minutes", scope="default")
+        self.mem.pin(r["id"], True)
+        self.assertTrue(self.mem.invalidate(r["id"], force=True),
+                        "force is the verb a person types; a sweep never brings it")
+
+    def test_a_refused_pin_keeps_the_vector_a_live_fact_needs(self):
+        """The trap worth a test: invalidate() used to delete the embedding UNCONDITIONALLY, so a
+        refused pin would have stripped the cosine arm of a row still standing in the block - the
+        text in front of the model, the vector gone from the arm that ranks it."""
+        stub = StubEmbedder({"the 4090 holds twenty four gigabytes of vram": [1.0, 0.0, 0.0, 0.0]})
+        m = MemoryService(self.tmp.name + "-vec", embedder=stub)
+        try:
+            r = m.remember("the 4090 holds twenty four gigabytes of vram", scope="default")
+            m.pin(r["id"], True, "the capacity argument rests on this row")
+            self.assertFalse(m.invalidate(r["id"]))
+            with m.lock:
+                vec = m.conn.execute("select count(*) from embeddings where id = %s", (r["id"],)).fetchone()[0]
+                m.conn.commit()
+            self.assertEqual(vec, 1, "a live row without its vector is a fact the cosine arm denies")
+        finally:
+            m.close()
+
+    def test_the_refusal_is_written_on_the_row_not_only_in_the_caller_s_log(self):
+        r = self.mem.remember("the 4090 has 24 GB and this box has 125 GB of RAM", scope="default")
+        self.mem.pin(r["id"], True, "capacity is the whole argument", "cli")
+        self.mem.invalidate(r["id"], by_id=424242)
+        with self.mem.lock:
+            prov = self.mem.conn.execute("select provenance from memories where id = %s",
+                                         (r["id"],)).fetchone()[0]
+            self.mem.conn.commit()
+        self.assertIn("pin_held", prov, "logs rotate; the row is where the next reader looks")
+        self.assertEqual(prov["pin_held"]["by_id"], 424242, "and it names what tried to bury it")
+
+    # ---- relations: knowing is relating ----------------------------------------------------
+
+    def test_a_link_reads_back_in_both_directions_because_tension_is_not_directed(self):
+        a = self.mem.remember("the graft lever was fixed by 4a2c8fef", scope="default")
+        b = self.mem.remember("the graft had never once fired through a day of green tests", scope="default")
+        self.mem.link(a["id"], b["id"], "supports", "the fix is evidence the claim stands")
+        got = self.mem.links_of([a["id"], b["id"]])
+        self.assertEqual(got[a["id"]][0]["direction"], "outgoing")
+        self.assertEqual(got[b["id"]][0]["direction"], "incoming",
+                         "the other half of the pair must see it too, or the graph is a monologue")
+        self.assertEqual(got[b["id"]][0]["kind"], "supports")
+        # Each side sees the OTHER row's words, not its own - which is the whole use of the read:
+        # orientation without a second query. Asserting both directions catches a join that quietly
+        # returns the near end, which would look right in one direction and lie in the other.
+        self.assertIn("4a2c8fef", got[b["id"]][0]["text"], "a link names its far end, or it is a number")
+        self.assertIn("never once fired", got[a["id"]][0]["text"], "and so does the other side's view of it")
+
+    def test_relabeling_a_pair_replaces_the_kind_instead_of_stacking_a_second_one(self):
+        a = self.mem.remember("row 6585 restates the cart truth one way", scope="default")
+        b = self.mem.remember("row 6932 restates the same cart the other way", scope="default")
+        self.mem.link(a["id"], b["id"], "about")
+        self.mem.link(a["id"], b["id"], "contradicts", "the disagreement a chain cannot express")
+        got = self.mem.links_of([a["id"]])[a["id"]]
+        self.assertEqual(len(got), 1, "ONE relation per directed pair, so a pair cannot hold two truths")
+        self.assertEqual(got[0]["kind"], "contradicts")
+
+    def test_an_unknown_kind_is_refused_naming_the_ones_that_exist(self):
+        a = self.mem.remember("mam-cut3 stands fresh at 1730 tokens", scope="default")
+        b = self.mem.remember("mam-test745 is retired but still readable", scope="default")
+        r = self.mem.link(a["id"], b["id"], "precedes")
+        self.assertFalse(r["linked"])
+        self.assertEqual(sorted(r["kinds"]), ["about", "contradicts", "supports"],
+                         "a closed set, and the error teaches it")
+
+    def test_a_fact_linked_to_itself_says_nothing(self):
+        a = self.mem.remember("the standing cart rotates only when a persona file is edited", scope="default")
+        self.assertFalse(self.mem.link(a["id"], a["id"], "about")["linked"])
+
+    def test_a_link_to_a_row_that_is_not_there_reports_missing_rather_than_lying(self):
+        a = self.mem.remember("probe-nine carries the novel gold 7412", scope="default")
+        self.assertEqual(self.mem.link(a["id"], 987654)["missing"], [987654],
+                         "the venue-day id collision, remembered: a pointer to nothing looks fine")
+
+    def test_the_link_read_is_bounded_because_the_result_rides_the_context(self):
+        hub = self.mem.remember("the merge notes shelf carries every upstream round", scope="default")
+        for i in range(6):
+            other = self.mem.remember(f"upstream round {i} kept both sides of the law in v02{i}", scope="default")
+            self.mem.link(hub["id"], other["id"], "about")
+        got = self.mem.links_of([hub["id"]])[hub["id"]]
+        self.assertEqual(len(got), LINKS_PER_ROW,
+                         "P11 measured what injected bytes cost per ask; a traversal has no floor")
+
+    def test_the_search_tool_prints_links_and_the_recorded_reason(self):
+        a = self.mem.remember("the sweep runs every thirty minutes as chosen forgetting", scope="default",
+                              provenance={"why": "chosen forgetting is the higher gift (Cicero)"})
+        b = self.mem.remember("a thirty minute sweep is a deliberate act, not a lapse", scope="default")
+        self.mem.link(a["id"], b["id"], "supports", "the gift is the reason the sweep stands")
+        out = self.facts("thirty minutes sweep")
+        self.assertTrue(out["facts"], "the fact should recall")
+        hit = next(f for f in out["facts"] if f["id"] == a["id"])
+        self.assertEqual(hit["why"][:6], "chosen", "the reason rides to the model that asked")
+        self.assertEqual(hit["links"][0]["kind"], "supports")
+        quiet = next(f for f in out["facts"] if f["id"] == b["id"])
+        self.assertNotIn("why", quiet, "a row with no reason states none - absence, never an empty string")
+
+    # ---- the honest zero: which kind of nothing --------------------------------------------
+
+    def test_a_wordless_query_says_there_was_nothing_to_match(self):
+        self.mem.remember("the RTX 4090 has 24 GB of VRAM", scope="default")
+        junk = self.facts("the and of")
+        self.assertEqual(junk["found"], 0)
+        self.assertIn("notice", junk, "nothing-to-match and nothing-matched are different events")
+
+    def test_an_informative_word_that_matches_nothing_stays_a_plain_honest_zero(self):
+        self.mem.remember("the RTX 4090 has 24 GB of VRAM", scope="default")
+        real = self.facts("glorbish zzzquartz")
+        self.assertEqual(real["found"], 0)
+        self.assertNotIn("notice", real, "the store is allowed to be empty; only the query can be blank")
+
+    # ---- the field's units: when it was said, not when it was written ----------------------
+
+    def test_when_reads_the_turn_that_said_it_not_the_row_that_wrote_it(self):
+        """The owner's question of 2026-10-29 - "do we stamp exact time as well?" - found the defect
+        on the way to answering itself: the description promised 'when' was the date SAID, the query
+        delivered the row's created_at, and on the live store those differ by a MEDIAN 6.92 h and a
+        MAXIMUM 186.7 h across the 1,249 active rows that carry a turn_id. Date precision on a store
+        where 1,597 of 1,598 rows share their day was a field that looked like a clock."""
+        t = self.mem.journal_turn("default", "the flange is twelve millimetres, I measured it",
+                                  "noted, twelve millimetres")
+        r = self.mem.remember("the flange is twelve millimetres exactly", scope="default",
+                              provenance={"turn_id": t})
+        with self.mem.lock:      # backdate the EXCHANGE: this is what a harvest days later looks like
+            self.mem.conn.execute("update turns set created_at = created_at - interval '9 hours' where id = %s",
+                                  (t,))
+            self.mem.conn.commit()
+        f = self.facts("flange millimetres")["facts"][0]
+        self.assertEqual(f["id"], r["id"])
+        self.assertRegex(f["when"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", "to the minute, not the day")
+        self.assertIn("filed", f, "nine hours apart is exactly when the second stamp teaches something")
+
+    def test_a_row_written_at_its_own_turn_prints_no_filed_key(self):
+        self.mem.remember("the flange is eleven millimetres on the prototype", scope="default")
+        f = self.facts("flange prototype")["facts"][0]
+        self.assertNotIn("filed", f, "bytes ride the context; print the second stamp only when it pays")
+
+    def test_a_turn_id_that_is_not_a_number_cannot_break_the_recall_path(self):
+        """The cast is guarded by a CASE, not trusted: provenance is jsonb a hundred writers touch,
+        and one row carrying "turn_id": "last tuesday" must not 500 the tool for everyone."""
+        self.mem.remember("the flange is ten millimetres on the mock", scope="default",
+                          provenance={"turn_id": "not-a-number"})
+        out = self.facts("flange mock")
+        self.assertEqual(out["found"], 1)
+        self.assertRegex(out["facts"][0]["when"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$",
+                         "no turn to read, so the notation time stands in - honestly, still to the minute")
+
+
+    def test_the_store_records_a_relation_on_its_own_when_facts_are_similar_but_distinct(self):
+        """The writer that keeps this table from becoming decoration. Mind's lifecycle says to record
+        relations "while the context is fresh", and here the comparison has ALREADY happened at write
+        time - cosine cleared 0.85 and the rare-subject rule declined the merge - so the relation
+        costs one insert. The fixture is the house's own distinct-facts control: two call signs, two
+        towns, all the boilerplate in common."""
+        stub = StubEmbedder({"KCMI is licensed to serve Terrytown": [1.0, 0.0, 0.0, 0.0],
+                             "KZKX is licensed to serve Seward": [1.0, 0.0, 0.0, 0.0]})
+        m = MemoryService(self.tmp.name + "-about", embedder=stub)
+        try:
+            a = m.remember("KCMI is licensed to serve Terrytown", scope="default")
+            b = m.remember("KZKX is licensed to serve Seward", scope="default")
+            self.assertFalse(b["deduped"], "distinct facts keep their own slot, as the subject rule demands")
+            self.assertEqual(b.get("about"), a["id"], "and the store says out loud which fact it related")
+            self.assertEqual(m.links_of([b["id"]])[b["id"]][0]["kind"], "about")
+        finally:
+            m.close()
+
+    def test_the_relation_a_sweep_records_cannot_be_downgraded_by_a_sweep(self):
+        """Reachability stated honestly: the automatic writer's pair is ALWAYS fresh (the id was born
+        this second), so ON CONFLICT DO NOTHING is defensive rather than load-bearing - which is
+        exactly why the relabel path is the one worth pinning. A human sets "contradicts" on a pair
+        the sweep first called "about"; a later sweep must not be able to sand that back down."""
+        stub = StubEmbedder({"KCMI is licensed to serve Terrytown": [1.0, 0.0, 0.0, 0.0],
+                             "KZKX is licensed to serve Seward": [1.0, 0.0, 0.0, 0.0]})
+        m = MemoryService(self.tmp.name + "-conflict", embedder=stub)
+        try:
+            a = m.remember("KCMI is licensed to serve Terrytown", scope="default")
+            b = m.remember("KZKX is licensed to serve Seward", scope="default")
+            self.assertEqual(m.links_of([b["id"]])[b["id"]][0]["kind"], "about", "the sweep wrote it first")
+            m.link(b["id"], a["id"], "contradicts", "the pairing a chain cannot carry")
+            self.assertEqual(m.links_of([b["id"]])[b["id"]][0]["kind"], "contradicts")
+            m.conn.execute("insert into links(a_id,b_id,kind,created_at) values(%s,%s,'about',now())"
+                           " on conflict (a_id,b_id) do nothing", (b["id"], a["id"]))
+            m.conn.commit()
+            self.assertEqual(m.links_of([b["id"]])[b["id"]][0]["kind"], "contradicts",
+                             "and the automatic clause cannot sand a human label back down")
+        finally:
+            m.close()
 
 
 if __name__ == "__main__":

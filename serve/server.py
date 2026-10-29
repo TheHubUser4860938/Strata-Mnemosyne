@@ -9378,7 +9378,10 @@ def make_handler(svc: Service):
             "source"?, "confidence"?, "class"?} add a fact (class = the call number, PHASE 4.5); "forget"
             {"id"}; "invalidate" {"id", "by"?} retire a fact from recall keeping the version history;
             "correct" {"id", "text", ...} store a replacement and supersede the fact it replaces (inherits
-            the old row's shelf unless told otherwise); "classify" {"id", "class"} shelve one fact;
+            the old row's shelf unless told otherwise); "classify" {"id", "class"} shelve one fact; "pin" {"id", "pin"?, "reason"?, "actor"?} keep a fact out
+            of automation's reach - a pinned row refuses an automatic retire and says so, and
+            op=invalidate carries force; "link" {"from", "to", "kind"?, "note"?} records one relation
+            between two facts (about, contradicts, supports), one per directed pair;
             "search" {"q", "scope"?, "limit"?, "class"? comma-separated shelf prefixes, "since"?/
             "until"? date bounds: epoch, ISO date or datetime - the date index};
             "turn" {"user", "assistant", "scope"?, "model"?} journal one exchange by hand (what the eval
@@ -9418,9 +9421,22 @@ def make_handler(svc: Service):
                                                 str(req.get("actor") or "api"))}
             elif op == "invalidate":
                 # M2 job 7 (Zep pattern): retire a fact from recall, keep the history; "by" points
-                # the version chain at the fact that replaced it
-                r = {"invalidated": svc.memory.invalidate(int(req.get("id") or 0),
-                                                          req.get("by") and int(req["by"]))}
+                # the version chain at the fact that replaced it. A PINNED row refuses unless the
+                # caller brings force (2026-10-29): the harvest's correction is automation, and a
+                # person's veto outranks a sweep. The refusal says so - invalidated: false is never
+                # left ambiguous with "already retired", because the row itself records pin_held.
+                force = req.get("force", False)
+                if isinstance(force, str):      # tolerant on the wire, same style as the mute header
+                    force = force.strip().lower() not in ("0", "false", "off", "no")
+                mid = int(req.get("id") or 0)
+                moved = svc.memory.invalidate(mid, req.get("by") and int(req["by"]),
+                                              force=bool(force))
+                r = {"invalidated": moved}
+                if not moved:
+                    # NEVER SILENT: false alone cannot tell "someone pinned it" from "it was already
+                    # retired", and the difference decides whether the caller retries. The row is
+                    # asked, not guessed, because guessing here is how a sweep hides a fact.
+                    r["pinned"] = svc.memory.pin_state(mid)
             elif op == "correct":
                 # one step: store the new fact and supersede the old one it replaces
                 r = svc.memory.correct(str(req.get("text") or ""), int(req.get("id") or 0),
@@ -9432,6 +9448,27 @@ def make_handler(svc: Service):
             elif op == "classify":
                 # PHASE 4.5: shelve one fact (the backfill tool and the hand-review path)
                 r = {"classified": svc.memory.classify(int(req.get("id") or 0), str(req.get("class") or ""))}
+            elif op == "pin":
+                # THE VETO (2026-10-29, the Mind lifecycle's "pinning protects against automation"):
+                # a person decides a fact is expensive to lose, which is a thing a score cannot know.
+                # Who and why ride the row's own provenance, because a protection nobody signed for is
+                # just a bug with extra steps. {"id", "pin"?: true|false, "reason"?, "actor"?}
+                on = req.get("pin", True)
+                if isinstance(on, str):      # tolerant on the wire, same style as the mute header
+                    on = on.strip().lower() not in ("0", "false", "off", "no")
+                r = svc.memory.pin(int(req.get("id") or 0), bool(on),
+                                   str(req.get("reason") or ""), str(req.get("actor") or "api"))
+            elif op == "link":
+                # RELATIONS (2026-10-29): one relation per DIRECTED pair, so relabeling is one call
+                # and a pair never carries two kinds at once. {"from", "to", "kind"?, "note"?}. An
+                # unknown side or an unknown kind is a 400, never a quiet success: a pointer to
+                # nothing is exactly how the venue-day id collision happened.
+                r = svc.memory.link(int(req.get("from") or 0), int(req.get("to") or 0),
+                                    str(req.get("kind") or "about"), str(req.get("note") or ""))
+                if r.get("missing"):
+                    raise ValueError("no such row: " + ", ".join(str(x) for x in r["missing"]))
+                if r.get("error"):
+                    raise ValueError(str(r["error"]))
             elif op == "search":
                 lim = int(req.get("limit") or 0) or None
                 named = [x.strip() for x in str(req.get("class") or "").split(",") if x.strip()]
@@ -9471,7 +9508,7 @@ def make_handler(svc: Service):
                 # wrong got a menu that taught them the wrong verb set) - S3 added four more verbs
                 # and the menu moves with them, or the menu lies
                 raise ValueError('op: one of "remember", "forget", "purge", "invalidate", "correct", '
-                                 '"classify", "search", "turn", "turns", "cartridge", '
+                                 '"classify", "pin", "link", "search", "turn", "turns", "cartridge", '
                                  '"mint", "remint", "retire", "carts"')
             self._json(200, {"ok": True, **r})
         def _images(self, req):
