@@ -96,10 +96,23 @@ _LANE_RULE = (
     "(state:engine, state:port, state:ram); write the FACT as 'key = value (YYYY-MM-DD)'. "
     "State is true only until the next look, so an undated state fact is a stale claim waiting "
     "to happen. Everything else is fact.\n")
+# WHY (2026-10-29, the Mind survey's Name/What/Why/Where template). The ideal worth taking is not
+# the template, it is the STANDARD: our own agent.md says a law without a receipt is a vibe, and
+# until now the harvest wrote rows that were exactly that - one prose sentence, no stated cause. The
+# receipts for the field live HERE rather than in the prompt, because extract-prompt bytes are paid
+# as prefill on every harvest ask (the tripwire in tools/test_curate_grounding.py exists for that
+# reason): a row that can say WHAT but not WHY is the one the harvest re-shelves the moment the topic
+# surfaces again - measured, 42 re-harvests in one cleanup pass.
+_WHY_RULE = (
+    "APPEND AFTER QUOTE: WHY: <what it was decided against, or why keep it>\n"
+    "One clause: the cause, the measurement, or the refused alternative. Never invent one.\n")
 # audit 09 finding 4 (Grok Q3, 2026-10-18): ATTR/QUOTE join the SHIPPED prompt only.
 # EXTRACT_PROMPT_UNDATED stays byte-identical to the prompt every stored fact was written
 # with (sha256 pinned by tools/test_curate_grounding.py) - the control arm must not move.
-EXTRACT_PROMPT = _EXTRACT_HEAD + _ATTR_RULE + _LANE_RULE + _DATES_RULE + _EXTRACT_TAIL   # the shipped shape
+# WHY (2026-10-29) joins the same way, as its OWN constant ahead of _DATES_RULE: the control
+# arm is HEAD + TAIL, so adding a rule between the others cannot move its hash by one byte.
+EXTRACT_PROMPT = (_EXTRACT_HEAD + _ATTR_RULE + _LANE_RULE + _WHY_RULE + _DATES_RULE
+                  + _EXTRACT_TAIL)                    # the shipped shape
 EXTRACT_PROMPT_UNDATED = _EXTRACT_HEAD + _EXTRACT_TAIL             # control arm: byte-identical to
 # the prompt every fact now in the store was written with (sha256 e7c8fa6b64114ee0, pinned by
 # tools/test_curate_grounding.py so the control cannot drift into a second variable)
@@ -400,7 +413,11 @@ _EXTRACT_RE = re.compile(
     # tools/test_curate_extract.py test_garbled_attr on the first token-strict regex).
     # LANE (the 2026-10-23 item-4 lanes) follows the same law: OPTIONAL in the regex, so every
     # pre-LANE line still parses as fact, and a garbled lane demotes to fact, never drops.
-    r"\s*(?:\|\|\s*ATTR:\s*([^\|]*?))?\s*(?:\|\|\s*LANE:\s*([^\|]*?))?\s*(?:\|\|\s*QUOTE:\s*(.+?))?\s*$", re.I)
+    # WHY (2026-10-29, the Mind survey's What/Why/Where template) joins as a THIRD optional tail
+    # field for the same reason: a line written before the field existed must still parse, and a
+    # model that forgets it loses the reason, not the fact.
+    r"\s*(?:\|\|\s*ATTR:\s*([^\|]*?))?\s*(?:\|\|\s*LANE:\s*([^\|]*?))?\s*(?:\|\|\s*QUOTE:\s*(.+?))?"
+    r"\s*(?:\|\|\s*WHY:\s*([^\|]*?))?\s*$", re.I)
 ATTRS = ("user", "attributed", "observed")
 
 
@@ -424,7 +441,7 @@ def parse_extract_line(ln: str, turn_user: str = "", turn_assistant: str = "") -
     m = _EXTRACT_RE.match(ln)
     if not m:
         return None
-    fact, probe, gold, scope, attr, lane_raw, quote = (
+    fact, probe, gold, scope, attr, lane_raw, quote, why = (
         (scrub(g).strip() if g else "") for g in m.groups())
     if not fact or not probe or not gold:
         return None
@@ -462,7 +479,12 @@ def parse_extract_line(ln: str, turn_user: str = "", turn_assistant: str = "") -
     return {"fact": fact, "probe": probe, "gold": gold,
             "scope": "user" if scope.lower() == "user" else "project",
             "attr": attr, "quote": quote[:300], "quote_ok": quote_ok,
-            "quote_side": quote_side, "lane": lane, "state_key": state_key}
+            # THE REASON (2026-10-29): Mind's template is Name/What/Why/Where, and the ideal worth
+            # taking is not the template, it is the STANDARD - our own agent.md says "a law without
+            # a receipt is a vibe", and until now the harvest wrote rows that were exactly that:
+            # one prose sentence with no stated cause. Absent WHY is legal (the field is optional
+            # in the regex), so no candidate is lost to a model that did not learn it yet.
+            "quote_side": quote_side, "lane": lane, "state_key": state_key, "why": why[:200]}
 
 
 def amend_with_history(ask, new_fact, old_text):
@@ -856,7 +878,12 @@ def main():
                                          # the lane rides the provenance jsonb: no schema change, and
                                          # the state_key is what the same-key supersede matches on later
                                          "lane": c.get("lane", "fact"),
-                                         "state_key": c.get("state_key", "")}}
+                                         # THE REASON rides here (2026-10-29): jsonb again, no schema change, and the tool prints
+                                          # it only when it is non-empty - the row that can say WHY it
+                                          # stands is the row a later reader can weigh against a changed
+                                          # world instead of re-deriving from scratch.
+                                          "why": c.get("why", ""),
+                                          "state_key": c.get("state_key", "")}}
                 body = {"op": "remember", **fields}
                 stored_now = False
                 if cls == "CORRECT":
@@ -1013,7 +1040,16 @@ def main():
                                    "attr": c["attr"], "quote": c["quote"],
                                    "quote_ok": c["quote_ok"],
                                    "quote_side": c["quote_side"],  # slice returns the WHOLE list (-0 == 0)
-                                   "extract_ptok": ptok})
+                                   # THE LANES WERE PARSED AND THEN DROPPED (found 2026-10-29 while adding WHY beside them):
+                                    # parse_extract_line returns lane and state_key, this dict never
+                                    # carried them, so every c.get("lane", "fact") downstream read the
+                                    # DEFAULT - and the taboo-lane durability law ("a rule you have not
+                                    # needed yet is a rule you have not outgrown") has been dead since
+                                    # it shipped. The prod store shows the corpse: provenance->>'lane'
+                                    # is fact|890 and <none>|708, with ZERO taboo and ZERO state rows.
+                                    "lane": c["lane"], "state_key": c["state_key"],
+                                    "why": c.get("why", ""),
+                                    "extract_ptok": ptok})
             processed_ids.append(t["id"])
             handled.add(t["id"])
             drained += 1

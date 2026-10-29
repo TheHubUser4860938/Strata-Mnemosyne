@@ -13,7 +13,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from curate_loop import parse_extract_line, fact_class, _state_pick
+from curate_loop import (parse_extract_line, fact_class, _state_pick,
+                         EXTRACT_PROMPT, EXTRACT_PROMPT_UNDATED)
 
 TURN_U = ("we replayed the debate clip in class - Maria argued that women should not "
           "have the right to vote, and the room pushed back hard")
@@ -143,6 +144,38 @@ class Lanes(unittest.TestCase):
         self.assertEqual(_state_pick("engine", rows, min_created=250.0), 7,
                          "oldest pre-batch canonical row first - the chain heals one hop per look")
         self.assertIsNone(_state_pick("ram", rows, min_created=0.0), "no canonical row, no supersede")
+
+
+class TheReasonField(unittest.TestCase):
+    """WHY, added 2026-10-29 from the Mind survey's Name/What/Why/Where standard. The law it has to
+    obey is the one ATTR and LANE already obey: a field the model has not learned yet must cost a
+    REASON, never a fact - optional in the regex, absent in the dict, and the control arm of the
+    extract prompt stays byte-identical so the date experiment keeps exactly one variable."""
+
+    WITH = ("FACT: the graft ships only where RAM proved no start of its own || "
+            "PROBE: when does a graft win over the cached prefix? || GOLD: when RAM is empty || "
+            "SCOPE: project || ATTR: observed || QUOTE: RAM proved no start of its own || "
+            "WHY: cache hits must keep their bytes, measured on the standing root")
+
+    def test_a_why_lands_on_the_candidate(self):
+        c = parse_extract_line(self.WITH, "the graft needs RAM to be empty", "noted")
+        self.assertEqual(c["why"][:11], "cache hits "), "the reason rides to the row's provenance"
+
+    def test_a_line_without_a_why_still_parses_and_states_nothing(self):
+        old = self.WITH.rsplit(" || WHY:", 1)[0]
+        c = parse_extract_line(old, "the graft needs RAM to be empty", "noted")
+        self.assertIsNotNone(c, "a pre-WHY line never vanishes from the queue")
+        self.assertEqual(c["why"], "", "absence, not a fabricated reason")
+
+    def test_a_garbled_why_demotes_and_never_drops_the_fact(self):
+        c = parse_extract_line(self.WITH + " || ", "x", "y")
+        self.assertIsNotNone(c)
+        self.assertTrue(c["fact"].startswith("the graft ships"), "the fact survives its bad appendix")
+
+    def test_the_control_arm_still_does_not_ask_for_it(self):
+        self.assertIn("WHY:", EXTRACT_PROMPT, "the shipped shape asks for the reason")
+        self.assertNotIn("WHY:", EXTRACT_PROMPT_UNDATED,
+                         "and the control arm is untouched: one variable, byte for byte")
 
 
 if __name__ == "__main__":
