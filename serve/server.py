@@ -858,6 +858,71 @@ def reason_tool_result(svc: "Service", messages, arguments) -> dict:
     return done(True, "; ".join(parts))
 
 
+# ---- the manual curation trigger (2026-10-29) -----------------------------------------------
+# The owner's ruling on the freshness question: "we'll leave the curation cycle as is. just give me
+# the ability to manually trigger it so whenever I want to start the memory curation it just does all
+# of them at once as soon as I trigger the cycle." The loop ALREADY drains everything pending in its
+# DEFAULT mode - --sweep is the idle-gated hot-loop shape, and the 240-second sustained-quiet window
+# belongs to that mode alone - so this is a door on a room that exists, not a second mechanism
+# beside it. Two choices are baked into the command and both are load-bearing:
+#   * NO --sweep. The idle window exists so a HUMAN keeps their KV reuse: measured 2026-10-16, the
+#     instant-quiet version "fired into every conversational gap and cost the real turns their KV
+#     reuse". A person who just ASKED for the curation is not the case that trade was made for -
+#     they are the one paying for it - so a trigger runs now and spends the reuse on purpose.
+#   * flock -n -E 9 on tools/state/sweep.lock, the SAME lock tools/sweep_cron.sh takes. One store,
+#     one writer at a time: the write-to-an-identity law says name who else moves the store before
+#     you measure it, and a trigger that starts beside a scheduled tick is two writers.
+
+def curate_lock(path: str | None = None) -> str:
+    """The lock path, resolved from THIS file's repo rather than the cwd: the server is started from
+    anywhere (app, TUI, systemd unit), and a relative path would quietly make two different locks in
+    two different directories - which is not protection, it is theatre."""
+    return str(path or (Path(__file__).resolve().parent.parent / "tools" / "state" / "sweep.lock"))
+
+
+def curate_script(path: str | None = None) -> str:
+    """tools/curate_loop.py, same reasoning as the lock."""
+    return str(path or (Path(__file__).resolve().parent.parent / "tools" / "curate_loop.py"))
+
+
+def curate_argv(python: str, script: str, url: str, tag: str = "manual", limit: int = 0,
+                passes: int | None = None, dry_run: bool = False, lock: str | None = None,
+                batches: int | None = None) -> list[str]:
+    """The command a manual trigger runs. Pure and argument-only so the two laws above are testable
+    without ever starting a child."""
+    argv = ["flock", "-n", "-E", "9", curate_lock(lock) if lock is None else lock,
+            python, script, "--url", url, "--tag", tag]
+    if limit:
+        argv += ["--limit", str(int(limit))]
+    if passes:
+        argv += ["--passes", str(int(passes))]
+    if batches:
+        argv += ["--batches", str(int(batches))]
+    if dry_run:
+        argv.append("--dry-run")       # render + count, no engine asks: the COST before the bill
+    return argv
+
+
+def curate_running(lock_path: str) -> bool:
+    """Is a drain already holding the lock? A non-blocking probe on our own fd, and the answer is a
+    STATE the caller prints rather than an exception to catch: "busy" and "broken" are different
+    sentences, and a trigger that lies about starting is worse than one that says wait."""
+    import fcntl
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return False                    # no directory, no permission: let flock itself report it
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True                 # held: a cron tick, or a trigger a second ago
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
 class MockEngine:
     """Replays a scripted completion (text) as token ids, one per step, then the end-of-turn token.  Given a list of
     scripts, each request gets the next one and the last one repeats (a tool call, then the answer after it)."""
@@ -9381,7 +9446,9 @@ def make_handler(svc: Service):
             the old row's shelf unless told otherwise); "classify" {"id", "class"} shelve one fact; "pin" {"id", "pin"?, "reason"?, "actor"?} keep a fact out
             of automation's reach - a pinned row refuses an automatic retire and says so, and
             op=invalidate carries force; "link" {"from", "to", "kind"?, "note"?} records one relation
-            between two facts (about, contradicts, supports), one per directed pair;
+            between two facts (about, contradicts, supports), one per directed pair; "curate"
+            {"dry_run"?, "limit"?, "passes"?} starts a drain of every pending turn NOW, in the
+            background, and answers at once - {"started", "running", "pending", "pid", "log"};
             "search" {"q", "scope"?, "limit"?, "class"? comma-separated shelf prefixes, "since"?/
             "until"? date bounds: epoch, ISO date or datetime - the date index};
             "turn" {"user", "assistant", "scope"?, "model"?} journal one exchange by hand (what the eval
@@ -9469,6 +9536,32 @@ def make_handler(svc: Service):
                     raise ValueError("no such row: " + ", ".join(str(x) for x in r["missing"]))
                 if r.get("error"):
                     raise ValueError(str(r["error"]))
+            elif op == "curate":
+                # THE MANUAL TRIGGER (2026-10-29): drain everything pending, starting NOW, in the
+                # background. The reply must not wait on the curation any more than the curation
+                # waits on an idle window a person has just waived. {"dry_run"?, "limit"?, "passes"?,
+                # "tag"?, "url"?} - dry_run answers "what would this cost" without spending a token.
+                lock = str(req.get("lock") or curate_lock())   # the repo lock in production; a test or a
+                try:                                          # multi-store box names its own, or it is
+                    pend = int((svc.memory.stats() or {}).get("turns_pending") or 0)
+                except Exception:      # a missing stat must not cost the owner their trigger
+                    pend = -1                                  # not the lock guarding THIS store
+                if curate_running(lock):
+                    r = {"curate": {"started": False, "running": True, "pending": pend, "lock": lock}}
+                else:
+                    host = str(req.get("url") or
+                               f"http://{self.headers.get('Host') or '127.0.0.1:8005'}")
+                    tag = str(req.get("tag") or "manual")
+                    argv = curate_argv(sys.executable, curate_script(), host, tag=tag,
+                                       limit=int(req.get("limit") or 0),
+                                       passes=req.get("passes") and int(req["passes"]),
+                                       dry_run=bool(req.get("dry_run")), lock=lock)
+                    log = str(Path(lock).parent / f"curate_{tag}.log")
+                    with open(log, "ab") as sink:      # detached on purpose: the drain outlives the ask
+                        proc = subprocess.Popen(argv, stdout=sink, stderr=subprocess.STDOUT,
+                                                start_new_session=True)
+                    r = {"curate": {"started": True, "running": True, "pid": proc.pid, "pending": pend,
+                                    "dry_run": bool(req.get("dry_run")), "log": log, "cmd": argv[4:]}}
             elif op == "search":
                 lim = int(req.get("limit") or 0) or None
                 named = [x.strip() for x in str(req.get("class") or "").split(",") if x.strip()]
@@ -9508,7 +9601,7 @@ def make_handler(svc: Service):
                 # wrong got a menu that taught them the wrong verb set) - S3 added four more verbs
                 # and the menu moves with them, or the menu lies
                 raise ValueError('op: one of "remember", "forget", "purge", "invalidate", "correct", '
-                                 '"classify", "pin", "link", "search", "turn", "turns", "cartridge", '
+                                 '"classify", "pin", "link", "curate", "search", "turn", "turns", "cartridge", '
                                  '"mint", "remint", "retire", "carts"')
             self._json(200, {"ok": True, **r})
         def _images(self, req):
