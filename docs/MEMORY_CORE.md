@@ -2855,3 +2855,35 @@ T1 or need a new definition of "use". Typo/substring recall is present in the bu
 available, NOT created) and was held back on purpose — it is a ranking change and the instrument does not move
 mid-experiment without a measurement beside it. The design, if wanted, is a strict **typo rescue**: the trigram
 arm fires only when the lexical arm returns nothing, so no query that already works has its order touched.
+
+## "Leave the cycle alone, give me a trigger": `op=curate` (built 2026-10-29)
+
+The owner's ruling on freshness was to keep the schedule and take back the wheel: "just give me the ability to
+manually trigger it so whenever I want to start the memory curation it just does all of them at once as soon as I
+trigger the cycle." No second model was ever involved - the harvest asks the SAME server (`/v1/chat/completions`,
+`X-Strata-Memory: off`, temp 0.8, reasoning off) - and the loop's DEFAULT mode already IS a one-shot drain of
+everything pending, because the idle gate belongs to `--sweep` alone. So this is a door on a room that exists.
+
+**Why a fact waits, measured on this box rather than remembered.** Four gates stack: a systemd user timer
+(`strata-sweep.timer`, `OnUnitActiveSec=30min` - NOT a crontab); the tick runs the loop only when `pressure=1` or
+`pending>5`; it runs `--batches 2`; and `--sweep` waits for the engine to be silent for `--idle-window 240` seconds
+STRAIGHT, re-checked every 60 s. That last gate is the one that bites: while a human is working, the engine is asked
+every minute, so the harvest is forbidden to run - which is why the measured said→written gap is a median **6.92 h**
+and not 30 minutes. The 240 s is a deliberate purchase dated 2026-10-16: the instant-quiet version "fired into every
+conversational gap and cost the real turns their KV reuse".
+
+**The two choices baked into the command, both load-bearing.** (1) NO `--sweep`: a person who just asked for the
+curation is not the case that courtesy was bought for - they are the one paying - so a trigger runs now and spends
+the KV reuse on purpose. (2) `flock -n -E 9` on `tools/state/sweep.lock`, the SAME lock `sweep_cron.sh` takes, so a
+trigger and a scheduled tick can never be two writers on one store; a busy store answers
+`{"started": false, "running": true}`, which is a state and not an error.
+
+The route returns at once with `{started, running, pending, pid, log, cmd}` - the drain outlives the request - and
+`dry_run` renders and counts the asks without spending a token, which is the answer to "what would this cost" before
+the bill. Priced cost, from the loop's own note and two measurements taken the same evening: ~1 extract ask per turn
+plus ~3 cold-score asks per candidate; the extract prompt is a median 726 PROMPT tokens (`ptok` is
+`usage.prompt_tokens`, read before quoting it) across 2,322 logged asks; median facts per turn is 0.0, so most turns
+pay and return nothing; decode on this box measured ~146 tok/s, putting one extract ask at ~0.3-2 s of GPU. Tested:
+6 in `serve.test_memory.ManualCurationTrigger`; full serve suite 1,548 OK / 17 skipped / 454.5 s against the
+1,506-passed pre-batch baseline. NOT tested live, because the running process predates the commit - until the next
+boot, `tools/curate_loop.py --tag manual` (add `--dry-run`) does the same thing by hand.

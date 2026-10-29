@@ -17,7 +17,8 @@ from pathlib import Path
 from serve.frontend import ChatTemplate
 from serve.memory import (MemoryService as _BaseMemoryService, request_state, time_bound,
                           tool_result, LINKS_PER_ROW)
-from serve.server import ByteTokenizer, Cartridges, CartMinter, MockEngine, Service, serve, stand_on
+from serve.server import (ByteTokenizer, Cartridges, CartMinter, MockEngine, Service, serve, stand_on,
+                          curate_argv, curate_lock)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -4030,6 +4031,96 @@ class TierThreeIdeals(unittest.TestCase):
                              "and the automatic clause cannot sand a human label back down")
         finally:
             m.close()
+
+
+class ManualCurationTrigger(unittest.TestCase):
+    """The owner's ask of 2026-10-29: leave the 30-minute cycle alone, give me a way to start it NOW
+    and have it drain everything at once. The loop already has that shape - its DEFAULT mode is a
+    one-shot drain of all pending turns, and the 240-second sustained-quiet gate belongs to --sweep
+    only - so this is a trigger around a thing that exists, not a second mechanism beside it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        # THE LOCK IS THE STORE'S, NOT THE PROCESS'S. The first version of this test took the repo's
+        # production lock path, so a systemd tick 24 minutes in could fail the suite - and, worse, a
+        # suite run could hold the lock and make the real tick report "busy". A test names its own
+        # instrument: same code path, private file.
+        self.lock = os.path.join(self.tmp.name, "sweep.lock")
+        tok = ByteTokenizer()
+        self.engine = MockEngine(tok, ["the mock answer"], max_context=131072)
+        self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.svc.memory = MemoryService(self.tmp.name)
+        self.httpd = serve(self.svc, port=0)
+        self.port = self.httpd.server_address[1]
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.svc.memory.close()
+        self.tmp.cleanup()
+
+    def http(self, body):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        conn.request("POST", "/memory", json.dumps(body), {"Content-Type": "application/json"})
+        r = conn.getresponse()
+        return r.status, json.loads(r.read().decode() or "{}")
+
+    # ---- the command the trigger builds (a pure seam, so the LAW is testable without a child) ----
+
+    def test_the_argv_is_the_default_drain_not_an_idle_gated_sweep(self):
+        argv = curate_argv("/py", "/loop.py", "http://h:1/p", lock="/tmp/x.lock")
+        self.assertNotIn("--sweep", argv,
+                         "a person who just asked for the curation must not wait 240 s for quiet - "
+                         "that window is a courtesy the TIMER pays so a human keeps their KV reuse")
+        self.assertIn("--tag", argv)
+        self.assertEqual(argv[argv.index("--tag") + 1], "manual")
+        self.assertEqual(argv[:5], ["flock", "-n", "-E", "9", "/tmp/x.lock"],
+                         "and it wears the SAME lock the cron tick takes, so the two can never both "
+                         "write the store - the venue-day lesson: name who else moves the instrument")
+
+    def test_a_dry_run_ask_for_the_cost_instead_of_the_bill(self):
+        argv = curate_argv("/py", "/loop.py", "http://h:1/p", lock="/tmp/x.lock", dry_run=True)
+        self.assertIn("--dry-run", argv, "render and count, no engine asks: what WOULD this drain?")
+        self.assertNotIn("--limit", argv, "limit 0 means ALL pending, which is the whole point")
+
+    def test_an_explicit_limit_caps_the_drain_without_changing_its_shape(self):
+        argv = curate_argv("/py", "/loop.py", "http://h:1/p", lock="/tmp/x.lock", limit=3, passes=1)
+        self.assertEqual(argv[argv.index("--limit") + 1], "3")
+        self.assertEqual(argv[argv.index("--passes") + 1], "1")
+
+    # ---- the route ----
+
+    def test_op_curate_starts_now_and_returns_without_waiting_for_the_drain(self):
+        self.svc.memory.remember("the owner asked for a manual curation trigger", scope="default")
+        self.svc.memory.journal_turn("default", "the flange is nine millimetres", "noted")
+        t0 = time.perf_counter()
+        st, r = self.http({"op": "curate", "dry_run": True, "lock": self.lock})
+        self.assertEqual(st, 200, r.get("error"))
+        took = time.perf_counter() - t0
+        c = r["curate"]
+        self.assertTrue(c["started"], c)
+        self.assertIsInstance(c["pending"], int)
+        self.assertLess(took, 5.0, f"the trigger answered in {took:.1f}s - a drain that blocks the "
+                                   "reply is the thing we chose NOT to do to a human's turn")
+
+    def test_a_trigger_while_a_drain_holds_the_lock_reports_running_not_lying(self):
+        import fcntl
+        lock = self.lock            # the private one: see setUp - this is the whole lesson of the test
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            st, r = self.http({"op": "curate", "dry_run": True, "lock": lock})
+            self.assertEqual(st, 200)
+            self.assertFalse(r["curate"]["started"])
+            self.assertTrue(r["curate"]["running"], "busy is a state, not an error - and never a "
+                                                    "second writer pretending it started")
+        finally:
+            os.close(fd)
+
+    def test_the_menu_names_curate_because_a_menu_that_lies_is_worse_than_no_menu(self):
+        st, r = self.http({"op": "nonsense"})
+        self.assertEqual(st, 400)
+        self.assertIn("curate", json.dumps(r), "every verb the route answers must be in the menu")
 
 
 if __name__ == "__main__":
