@@ -13489,8 +13489,23 @@ int main(int argc, char** argv) {
                     strata::core::SavedConversation img;
                     size_t gbytes = 0;
                     if (ok) {
+                        // Bounds FIRST, exactly as RESTORE does: a default SessionReadLimits is UINT64_MAX
+                        // everywhere, which reads whatever a file CLAIMS before anything says the file belongs
+                        // to this model at all. conversation_session_read_limits derives the real numbers from
+                        // this session's geometry, layer range and token counts, so a foreign or corrupt file is
+                        // refused while it is still cheap - and the RAM the parse may allocate is bounded, not
+                        // aspirational. (The RAM-admission callback RESTORE installs is left out on purpose:
+                        // a graft reads a cart-sized file, ~250 MB, and refuses loudly if the read itself fails.)
                         strata::core::SessionReadLimits limits;
                         limits.progress = [](uint64_t, uint64_t) {};
+                        if (!strata::core::conversation_session_read_limits(
+                                limits, ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                                (uint64_t) std::max(o.prompt_cache, 1), gerr)) {
+                            std::fprintf(stderr, "strata serve: graft %s: %s\n", path.c_str(), gerr.c_str());
+                            std::printf("SERR io 0 %s\n", gerr.c_str());
+                            ok = false;
+                            gerr.clear();
+                        }
                         strata::core::SessionStatus gst;
                         ok = strata::core::session_file_read(path, gid, img, gbytes, gerr, limits, &gst);
                         if (!ok) {
