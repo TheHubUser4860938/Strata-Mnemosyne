@@ -3100,29 +3100,50 @@ class StrataEngine:
             raise out_of_step(line)
 
     def stage_graft(self, name: str) -> dict:
-        """memory-core's graft (2026-10-28): `GRAFT <name>` stages a saved conversation in the slot vault for
-        the NEXT request to begin on, host-side only - the engine reads and validates the file and writes no
-        device byte, so staging cannot corrupt the conversation in flight. -> {"tokens", "bytes", "ms"}.
-        The answer is exactly one line (`GRAFTED` / `SERR` / `ERR`): the graft reads no progress blocks and
-        announces no blocking step, so there is nothing else to interleave on stdout. An older engine skips
-        the unknown key and answers the way it always has; the graft then simply does not happen."""
+        """memory-core's graft (2026-10-28): `GRAFT <name>` stages a saved conversation in the slot vault
+        for the NEXT request to begin on, host-side only - the engine reads and validates the file and
+        writes no device byte, so staging cannot corrupt the conversation in flight. -> {"tokens","bytes","ms"}.
+
+        THE LINE COMES FROM self.lines, THE QUEUE - never from proc.stdout. A background pump thread
+        (_pump, started at spawn) owns that pipe and feeds the queue; a direct readline() here raced it for
+        the same file descriptor, and on this box that race was not theoretical: it blocked the FIFO and the
+        owner's serving window went 987 s without an answer (2026-10-29, his Ctrl+C ended it). Same bounded
+        wait as session_file: silence_s is the allowance, a quiet engine is _silent() (which ends it and
+        says so), and a stopped engine is EngineDied rather than a hang.
+        An older engine skips the unknown key and answers the way it always has; the graft simply does not
+        happen, and nothing here blocks forever on it."""
+        silence = float(self.silence_s or 0)
+        heard = time.monotonic()
         try:
             self.proc.stdin.write(f"GRAFT {name}\n")
             self.proc.stdin.flush()
         except OSError:
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
-        line = (self.proc.stdout.readline() or "").strip()
-        if line.startswith("GRAFTED "):
-            f = line.split()
-            if len(f) != 4 or not f[1].isdigit() or not f[2].isdigit():
+        while True:
+            left = max(silence, 1.0) - (time.monotonic() - heard) if silence > 0 else None
+            try:
+                line = self.lines.get(timeout=left if left is not None and left > 0 else None)
+            except queue.Empty:
+                raise self._silent(f"the engine said nothing for {max(silence, 1.0):.0f} s during a graft "
+                                   f"of {name}") from None
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            line = line.strip()
+            if line.startswith("GRAFTED "):
+                f = line.split()
+                if len(f) != 4 or not f[1].isdigit() or not f[2].isdigit():
+                    raise EngineDied(f"the engine answered GRAFT with {line[:200]!r}")
+                return {"tokens": int(f[1]), "bytes": int(f[2]), "ms": float(f[3])}
+            if line.startswith("SERR "):
+                parts = line.split(" ", 3)
+                if len(parts) == 4 and parts[1] in SessionRefused.STATUS and parts[2] in ("0", "1"):
+                    raise SessionRefused(parts[1], parts[3].strip(), parts[2] == "1")
                 raise EngineDied(f"the engine answered GRAFT with {line[:200]!r}")
-            return {"tokens": int(f[1]), "bytes": int(f[2]), "ms": float(f[3])}
-        if line.startswith("SERR "):
-            p = line.split(" ", 3)
-            if len(p) == 4 and p[1] in SessionRefused.STATUS and p[2] in ("0", "1"):
-                raise SessionRefused(p[1], p[3].strip(), p[2] == "1")
-            raise EngineDied(f"the engine answered GRAFT with {line[:200]!r}")
-        raise EngineDied(f"the engine answered GRAFT with {line[:200]!r}")
+            if line.startswith("ERR"):
+                raise SessionRefused("invalid", line[4:].strip() or "the engine refused the graft", False)
+            # INFO/WARN/other engine chatter may interleave on its way to the log: keep waiting, bounded.
+            heard = time.monotonic()
+
 
     def close(self):
         """End the engine process: STOP + QUIT first (the engine frees its memory itself - unpinning tens of GB can take
