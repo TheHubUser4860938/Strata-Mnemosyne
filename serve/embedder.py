@@ -20,6 +20,12 @@ the embeddinggemma-2 pin file was written at download 2026-10-24 against the rep
 LFS oids): bge model.onnx 828e1496..., tokenizer.json d241a60d...; eg2
 onnx/model_quantized.onnx_data 278a7ff1..., tokenizer.json 4d777ef5.... A mismatch raises,
 it does not warn - a silently swapped embedder silently changes every ranking in the store.
+And it raises BEFORE onnxruntime/tokenizers are imported: the verification is a hashlib read
+over the files, the two imports are the opt-in extras (requirements-embedder.txt, deliberately
+NOT in requirements.txt), so a swapped model reports itself as a swapped model even on a
+minimal install that never asked for the semantic arm. Verified the other way round first:
+the minimal-server CI job of 2026-10-29 died with "No module named 'onnxruntime'" on a pin
+test whose whole promise was that it needs no model.
 
 bge retrieval recipe (from the model card, verified against its config): queries carry the
 prefix "Represent this sentence for searching relevant passages: ", documents are embedded
@@ -87,15 +93,18 @@ class Embedder:
 
     def __init__(self, model_dir: str | Path, threads: int = 4, max_seq: int | None = None,
                  file: str | None = None):
-        import onnxruntime as ort                  # lazy: opt-in feature, not a base import
-        from tokenizers import Tokenizer           # ditto
         d = Path(model_dir)
         fname = file or self.FILE
         if not d.is_absolute() and not (d / fname).exists():
             # repo-root relative, the same convention memory.dir follows - a config written with a
             # relative path then works whatever the server's cwd happens to be.
             d = Path(__file__).resolve().parent.parent / d
+        # The pin check runs BEFORE the extras are imported on purpose: a pin mismatch is the
+        # store's own bad news and must not be out-shouted by a missing optional package, which is
+        # exactly what the minimal-server job of 2026-10-29 reported. See the module docstring.
         _verify_pinned(d)
+        import onnxruntime as ort                  # lazy: opt-in feature, not a base import
+        from tokenizers import Tokenizer           # ditto
         so = ort.SessionOptions()
         so.intra_op_num_threads = max(1, int(threads))
         so.inter_op_num_threads = 1

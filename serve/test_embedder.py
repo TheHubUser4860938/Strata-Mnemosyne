@@ -1,12 +1,17 @@
 """serve/test_embedder.py - the bge-small pins and a semantic smoke, offline-capable.
 
-The pin test needs no model (a fake dir with wrong SHA256SUMS must raise before anything
-loads - a silently swapped embedder silently changes every ranking in the store). The real-
-model smoke SKIPS cleanly when the files are absent, so CI without the 133 MB download still
-passes; on the dev box (downloaded 2026-10-14, pinned in SHA256SUMS) it asserts the exact
-behavior the temporal diagnostic demanded: a paraphrased query ranks its decision note over
-unrelated facts with ZERO lexical overlap.
+The pin tests need no model AND no optional package: a fake dir with wrong SHA256SUMS must raise
+before anything loads - a silently swapped embedder silently changes every ranking in the store.
+They are the CI-verified arm, and they run on the minimal-server job, which installs
+requirements.txt only (onnxruntime/tokenizers are opt-in, requirements-embedder.txt). The real-
+model smoke SKIPS cleanly when the model files or the extras are absent, so CI without the
+133 MB download still passes; on the dev box (downloaded 2026-10-14, pinned in SHA256SUMS) it
+asserts the exact behavior the temporal diagnostic demanded: a paraphrased query ranks its
+decision note over unrelated facts with ZERO lexical overlap.
 """
+import contextlib
+import importlib.util
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +22,33 @@ from strata_control.datafolder import data_dir      # the one data folder (2026-
 
 MODEL_DIR = data_dir(Path(__file__).resolve().parent.parent) / "embeddings/bge-small-en-v1.5"
 EG2_DIR = data_dir(Path(__file__).resolve().parent.parent) / "embeddings/embeddinggemma-2"
+
+EXTRAS = ("onnxruntime", "tokenizers")             # opt-in: requirements-embedder.txt, NOT requirements.txt
+
+
+def _has_extras() -> bool:
+    """Are the embedder's opt-in extras importable here? Asked with find_spec, never by import:
+    loading a native runtime to answer 'is it installed' is the wrong way round."""
+    try:
+        return all(importlib.util.find_spec(n) is not None for n in EXTRAS)
+    except (ImportError, ValueError):               # a None in sys.modules answers ImportError
+        return False
+
+
+@contextlib.contextmanager
+def _no_extras():
+    """A box that never installed the extras, simulated in a box that did: `import x` of a None
+    entry in sys.modules raises ImportError without touching the real package."""
+    saved = {n: sys.modules.get(n) for n in EXTRAS}
+    sys.modules.update({n: None for n in EXTRAS})
+    try:
+        yield
+    finally:
+        for n, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = mod
 
 
 class Pins(unittest.TestCase):
@@ -30,11 +62,47 @@ class Pins(unittest.TestCase):
                 Embedder(p)
             self.assertIn("pin mismatch", str(cm.exception))
 
+    def test_wrong_sha256_raises_on_a_box_without_the_extras(self):
+        """The same promise, tested where it can actually break. The minimal-server CI job installs
+        requirements.txt only, so the extras are absent there and present on this box: before
+        2026-10-29 the verification sat BEHIND both imports, so that job reported "No module named
+        'onnxruntime'" instead of the pin fault - and the local suite, which has both packages,
+        was green the whole time and said nothing about it."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            (p / "model.onnx").write_bytes(b"still not a model")
+            (p / "tokenizer.json").write_text("{}")
+            (p / "SHA256SUMS").write_text("0" * 64 + "  model.onnx\n" + "1" * 64 + "  tokenizer.json\n")
+            with _no_extras():
+                self.assertFalse(_has_extras())        # the simulation is live, not decorative
+                with self.assertRaises(ValueError) as cm:
+                    Embedder(p)
+            self.assertIn("pin mismatch", str(cm.exception))
+
+    def test_a_good_pin_still_needs_the_extras(self):
+        """The other arm, so the test above cannot pass by verifying nothing: extras hidden and
+        pins RIGHT, the load must fail on the missing package rather than pretend a model loaded.
+        ImportError answers in both worlds - 'halted; None in sys.modules' here, ModuleNotFoundError
+        (its subclass) on a bare install."""
+        import hashlib
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            (p / "model.onnx").write_bytes(b"pretend weights")
+            (p / "tokenizer.json").write_text("{}")
+            (p / "SHA256SUMS").write_text(
+                "".join(f"{hashlib.sha256((p / n).read_bytes()).hexdigest()}  {n}\n"
+                        for n in ("model.onnx", "tokenizer.json")))
+            with _no_extras():
+                with self.assertRaises(ImportError):
+                    Embedder(p)
+
     def test_no_pin_file_is_allowed(self):
         with tempfile.TemporaryDirectory() as d:      # verify passes; the ONNX load is what fails next
             _verify_pinned(Path(d))                   # (no exception about pins from a pinless dir)
 
 
+@unittest.skipUnless(_has_extras(), "onnxruntime/tokenizers not installed (they are opt-in: "
+                                    "requirements-embedder.txt)")
 @unittest.skipUnless((MODEL_DIR / "model.onnx").exists() and (MODEL_DIR / "SHA256SUMS").exists(),
                      "bge-small files not downloaded on this box")
 class RealModel(unittest.TestCase):
@@ -65,6 +133,7 @@ class RealModel(unittest.TestCase):
                            "bge asymmetry (query prefix) must be live or ranking degrades quietly")
 
 
+@unittest.skipUnless(_has_extras(), "onnxruntime/tokenizers not installed (opt-in)")
 @unittest.skipUnless((EG2_DIR / "onnx/model_quantized.onnx").exists()
                      and (EG2_DIR / "SHA256SUMS").exists(),
                      "embeddinggemma-2 files not downloaded on this box")
@@ -111,6 +180,7 @@ class RealModelGemma(unittest.TestCase):
                            "the query asymmetry must be live or search quality degrades quietly")
 
 
+@unittest.skipUnless(_has_extras(), "onnxruntime/tokenizers not installed (opt-in)")
 @unittest.skipUnless((MODEL_DIR / "model.onnx").exists() and (MODEL_DIR / "SHA256SUMS").exists(),
                      "bge-small files not downloaded on this box")
 class HitProvenance(unittest.TestCase):
