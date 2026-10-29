@@ -72,6 +72,33 @@ int main() {
         check(d.applies() && d.resume == 4, "a resume shallower than the graft does not beat it");
     }
 
+    // C7 - the LIFECYCLE of a stage (2026-10-29), which is where the lever actually died.  The server writes
+    // GRAFT and its GEN in one FIFO turn, so a stage is always young when the guard runs; dropping it there
+    // unconditionally is what made "state without text" unmeasurable, and these checks are the reason the bug
+    // cannot come back quietly.
+    {
+        // The exchange that must work: staged this turn, asked this turn, RAM proved nothing of its own.
+        const auto live = graft_lifecycle(true, true, false, 0);
+        check(live.keep_staged && !live.clear_wanted && !live.report_not_used,
+              "a stage that is seconds old survives the guard so its request can consume it (the bug)");
+        // RAM already has a start: the graft is moot, and it must SAY so - the silence here hid the bug a day.
+        const auto moot = graft_lifecycle(true, true, false, 13610);
+        check(!moot.keep_staged && moot.clear_wanted && moot.report_not_used,
+              "a deeper RAM start drops the stage and reports it");
+        // Never held over: staged, and the request that followed did not ask.
+        const auto orphan = graft_lifecycle(false, true, false, 0);
+        check(!orphan.keep_staged && orphan.clear_wanted,
+              "a stage nobody asked for is dropped, so no later conversation inherits it");
+        // The no-stage case stays loud: asked, nothing staged, a cold request.
+        const auto missing = graft_lifecycle(true, false, false, 0);
+        check(!missing.keep_staged && !missing.clear_wanted,
+              "an ask with nothing staged is left to the branch below, which reports it - never silenced");
+        // A leftover ask from an earlier exchange is still a leftover after this fix.
+        const auto leftover = graft_lifecycle(false, false, true, 7);
+        check(leftover.clear_wanted && leftover.report_not_used,
+              "an unconsumed ask from an earlier request is cleared, not carried");
+    }
+
     std::printf("conversation_graft_test: ALL PASS (%d checks)\n", checks);
     return 0;
 }

@@ -14559,15 +14559,19 @@ int main(int argc, char** argv) {
             // One exchange, one graft (2026-10-28): if this request resumed from RAM and never consumed the staged
             // file, the file goes now. Holding it over would let a later conversation start on a graft it did not
             // ask for, which is the quiet failure mode a lever like this must not have.
-            if (graft_staged || graft_wanted) {
-                if (graft_wanted && resume != 0)
+            // The lifecycle is `conversation_graft.hpp`'s now, because the four lines it replaces were wrong in
+            // this loop and invisible to every test: `GRAFT` and its `GEN ... graft=1` arrive in the same FIFO turn,
+            // so an unconditional drop here deleted a stage that was milliseconds old.  The ask is decided FIRST.
+            graft_wanted = graft_wanted || req_graft != 0;
+            {
+                const auto gl = strata::core::graft_lifecycle(req_graft != 0, graft_staged, graft_wanted, resume);
+                if (gl.report_not_used)
                     std::fprintf(stderr, "strata serve: graft requested and not used: RAM proved %lld tokens already\n",
                                  (long long) resume);
-                graft_staged = false;
-                graft_wanted = false;
+                if (!gl.keep_staged) graft_staged = false;
+                if (gl.clear_wanted) graft_wanted = false;
             }
             int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
-            if (req_graft != 0 && !graft_wanted) graft_wanted = true;   // decided once, before the branches below
             if (resume == 0) {
                 // memory-core's graft (2026-10-28): the request asked to begin on a staged file and RAM proved no
                 // start of its own, so the file's state goes under it instead of a cold zero. conversation_graft.hpp

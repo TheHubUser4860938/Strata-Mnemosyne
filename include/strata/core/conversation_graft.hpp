@@ -114,4 +114,44 @@ graft_decision graft_decide(const PromptIds& prompt, bool name_given, std::strin
     return d;
 }
 
+/// The LIFECYCLE half of the lever, decided per request (2026-10-29, from a measured failure).
+///
+/// `graft_decide` answers "may this request start on the file"; this answers the question the serve loop has to
+/// answer one step earlier: "is the staged file still mine to use?"  The rule is `one exchange, one graft` - a
+/// stage is dropped, never held over, so a later conversation can never start on a graft it did not ask for.
+///
+/// WHY this is a function and not four lines in the loop: those four lines were wrong where they were written,
+/// and no test could see it.  The server writes `GRAFT <path>` and `GEN ... graft=1` in the SAME FIFO turn, so
+/// the stage lands a moment BEFORE the block that guarded it ran; clearing unconditionally there wiped a stage
+/// that was seconds old and the request answered "asked for a graft and none is staged".  Measured on this box
+/// 2026-10-29: `graft staged ... MEM-CART-e8228bae.bin: 149 tokens ... device untouched (81.3 ms)` and then that
+/// refusal - the lever had never once fired, in any path, because the older declines (`resume != 0`) were silent
+/// and hid it.
+struct GraftLifecycle {
+    bool keep_staged = false;      ///< the stage survives to the branch below, which consumes or reports it
+    bool clear_wanted = true;      ///< this request's ask is finished with
+    bool report_not_used = false;  ///< say so: RAM already proved a start, so the graft is moot
+};
+
+/// `staged`: a file is waiting from a `GRAFT` command.  `wanted`: an earlier request asked and did not consume
+/// it (the leftover the drop exists for).  `req_graft`: THIS request's `graft=` key.  `resume`: what RAM gave it.
+inline GraftLifecycle graft_lifecycle(bool req_graft, bool staged, bool wanted, int64_t resume) {
+    GraftLifecycle d;
+    const bool asks = req_graft || wanted;
+    if (!asks) {
+        d.keep_staged = false;                       // nobody asked: a stage of an older exchange goes now
+        d.clear_wanted = true;
+        return d;
+    }
+    if (resume != 0) {                               // RAM already gave this request a deeper-or-equal start
+        d.keep_staged = false;
+        d.clear_wanted = true;
+        d.report_not_used = true;
+        return d;
+    }
+    d.keep_staged = staged;                          // consumed below, or reported as missing - never dropped here
+    d.clear_wanted = false;                          // the branch below finishes with the ask, and says why
+    return d;
+}
+
 }  // namespace strata::core
