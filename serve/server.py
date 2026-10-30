@@ -5837,7 +5837,7 @@ class Service:
     def pin_sticky_effort(self, messages, level: str | None):
         self.pin_sticky_effort_key(reason_conv_key(messages), level)
 
-    def render_prompt(self, messages, tools, kwargs) -> str:
+    def render_prompt(self, messages, tools, kwargs, open_turn: bool = True) -> str:
         """The template rendered.  #458: with `effort_end`, a request with a non-default effort (low, medium or no
         thinking) is rendered as a default one up to the answer - the same prompt start, so the conversation cache
         keeps it - and its effort follows in a short system turn right before the answer (thinking off: the template's
@@ -5847,6 +5847,7 @@ class Service:
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
             return self.splice_reason_pair(self.template.render(messages, tools=tools,
+                                                                add_generation_prompt=open_turn,
                                                                 **apply_reason_mode(kwargs, mode)), mode)
         base = {k: v for k, v in kwargs.items() if k not in ("reasoning_effort", "enable_thinking")}
         if mode:                                # the cached head renders with the mode text too - the mode
@@ -5862,14 +5863,15 @@ class Service:
         tail = "" if off else EFFORT_TURN.format(EFFORT_TEXT.get(effort, EFFORT_TEXT["medium"]))
         return history + tail + full[len(mine):]
 
-    def encode_prompt(self, messages, tools, kwargs, store: bool = True) -> list[int]:
+    def encode_prompt(self, messages, tools, kwargs, store: bool = True,
+                      open_turn: bool = True) -> list[int]:
         """The request's prompt: the template rendered and tokenized.  #537: a <think> / </think> written inside a
         message's text is encoded as the text it is, not as the model's reasoning markers (the template's own are).
         A control token's text (<|im_start|>, <|im_end|>, <|endoftext|>, ...) inside a message is text as well: only
         the control tokens the template writes are control tokens.  `store=False` (a token count) reuses the kept
         prompts without adding or replacing one."""
         marked, marked_tools, changed = mark_think_literals(messages, tools, self.literals)
-        prompt = self.render_prompt(marked, marked_tools, kwargs)
+        prompt = self.render_prompt(marked, marked_tools, kwargs, open_turn)
         plain = ()
         if changed:
             prompt, plain = unmark_think_literals(prompt, self.literals)
@@ -5932,7 +5934,8 @@ class Service:
             self.prompts.forget(ids)
 
 
-    def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
+    def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None,
+                open_turn: bool = True):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
@@ -5957,7 +5960,7 @@ class Service:
                     else:
                         part["source"] = str(image)
         fetched = self._note_unreadable_tool_images(messages, cancel)
-        ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
+        ids = encoded_ids = self.encode_prompt(messages, tools, kwargs, open_turn=open_turn)
         if force and kwargs.get("enable_thinking", True) is False:
             ids = ids + self.tok.encode(force, parse_special=True)
         self.embeddings.path = None
@@ -7374,7 +7377,7 @@ class CartConflict(ValueError):
 # So an episode cart now stores the document and nothing else, and the reader supplies the instruction.
 # The standing cart keeps its acknowledgement (seed, below): its 1.000 recall was measured WITH it, and one
 # variable per boot.
-MINT_FORGE_VERSION = 2      # 1 = the instruction-shaped forge; 2 = label + document, no ack turn
+MINT_FORGE_VERSION = 3      # 1 = instruction-shaped; 2 = label + document; 3 = and the turn stays CLOSED
 MINT_LABEL = "Document"
 
 
@@ -7556,7 +7559,7 @@ class CartMinter:
                 try:
                     ids, thinking, max_new = svc.prepare(
                         [{"role": "system", "content": mint_forge(text, str(sources.get("title") or ""))}],
-                        None, {}, 0)
+                        None, {}, 0, open_turn=False)
                     # PREFILL ONLY, the way serve/split.py reads a prompt without making a token: the old forge
                     # generated an acknowledgement and saved AFTER it, so the mounted state carried a stray
                     # assistant token and its end-of-turn. Measured: a grafted cart answered a question with one
