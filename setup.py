@@ -110,6 +110,7 @@ HF_REVISIONS = {
     "mduca771/Qwen3.8-Flash-Next-PLE-tables-GGUF": "0fbc3613dfc05f818592a030036995c3a725b6dd",              # 2026-10-23
     "unsloth/DeepSeek-V4.1-Flash-1017-GGUF": "f924b94f19c1fea02c06a65c8475b0a45e2b88b1",             # 2026-10-20 (the port's reference)
     "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF": "cb02422c900df489cea5833e8a92171224059b3c",    # 2026-10-24 (ISTA-DASLab's final 1.75 / 2.00 / 2.25 bpw sets and Engram)
+    "trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer": "85b9099926081907d7ef33f567e410ec056d16b8",  # 2026-10-30
 }
 
 
@@ -524,6 +525,23 @@ MODELS = {
                    # #967 / MODEL-UPDATE: images run end to end with this file (CUDA: RTX A4000, GPU encoder; HIP:
                    # R9700, CPU encoder; the test picture's text and shapes as the IQ3_XXS pack answers them)
                    "vision": True},
+    # The heretic family's two sizes (HERETIC_SHARDS above; the download and arena figures are MEASURED from the
+    # GGUF headers, not read off the card).  Both are the same n-gram table and the same attention mass, so the
+    # 14.2 GB between them is experts and nothing else: IQ4_NL holds 74.61 GB of them, IQ4_XS-plus 60.54.
+    # "ram_gb" is the all-in-RAM need as the other budget sizes state it, and 48 is the same floor the family's
+    # UD-Q4_K_XL asks for - 2.4 GB less model, the same regime.  Neither has been packed or run here yet.
+    "IQ4_NL": {"about": "4-bit i-quant (trubisky's energy-stepped recipe): IQ3_S/IQ4_XS experts through the "
+                        "middle, Q5_K with Q8_0 downs over the last twelve layers; the better of the two heretic "
+                        "sizes and 2.4 GB less model than huihui's UD-Q4_K_XL",
+               "download_gb": 108.9, "ram_gb": 48, "arena_gb": 74.6, "families": ("heretic",), "budget": True,
+               "shards": 8, "file": "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-{q}-0000{i}-of-00008.gguf",
+               "vision": True},
+    "IQ4_XS-plus": {"about": "about 4-bit (Unsloth's UD-IQ4_XS recipe plus KL-guided step-ups on the six hottest "
+                             "expert groups): 94.7 GB and 60.5 GB of experts - the heretic size that fits a 64 GB "
+                             "PC's RAM budget; its LM head is Q6_K where every other size here uses Q8_0",
+                    "download_gb": 94.7, "ram_gb": 48, "arena_gb": 60.5, "families": ("heretic",), "budget": True,
+                    "shards": 6, "file": "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-{q}-0000{i}-of-00006.gguf",
+                    "vision": True},
     # MODEL-UPDATE: Unsloth's larger files (docs/QUANTS.md).  The same GGUF-in-place mode: every expert in RAM where it
     # fits with UNSLOTH_RESIDENT_BESIDE_GB more (unsloth_budget), else a RAM budget of them and the rest read from the
     # SSD while it answers - so "ram_gb" is the all-in-RAM need, and below it setup asks first (default no).  Their
@@ -720,6 +738,48 @@ UNSLOTH_MIN_RAM_GB = 48         # the RAM-budget mode below which setup says an 
 # 204800 (200K) sits between 128K and 256K: it is inside the trained 262144, so it needs no rope scaling and
 # costs ~2.8 GB of 8-bit KV with IQ3_S (vs ~3.6 GB at 256K) - a middle step for PCs that cannot hold 256K.
 CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
+# trubisky's quants of jeffpeng3's heretic v2 of ukisai's Swift 1.5 (the "heretic" family): two sizes in one
+# repository, the IQ4_NL set at the root and the IQ4_XS-plus set under IQ4_XS/.  Sizes and SHA-256 are the Hub's
+# LFS pointers at the pinned revision, read 2026-10-30.  Note the two shard-2 files: the SAME
+# 28,800,138,432 B n-gram table in both sets (IQ4_NL either way) with DIFFERENT sums, because the two recipes
+# scaled it against different imatrices - which is exactly why every file here is pinned by sum, not by name
+# or size.
+# MEASURED from the GGUF headers the same day (per-tensor sizes read off the tensor-info offsets; the method
+# reproduces this file's own 77.0 GB experts figure for huihui's UD-Q4_K_XL as 77.02): the IQ4_NL set is
+# 108.89 GB with 74.61 GB of experts, the IQ4_XS-plus set is 94.70 GB with 60.54 GB.  Both carry the same
+# 28.80 GB table, the same ~2.9 GB of attention (all Q8_0) and ~1.2 GB of dense side, so the entire quality
+# difference between the two sizes sits in the experts, as their bpw says it should.
+HERETIC_SHARDS = {
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00001-of-00008.gguf":
+        (3208309664, "9344341eab2c2d9d59c8a4a9533c8cfc515547675d7a139d17957968a3019c5b"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00002-of-00008.gguf":
+        (28800138432, "56a185873792b560485ee971ba5c4f9c5558def5e3e70dbf0f8925e9849eb513"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00003-of-00008.gguf":
+        (13700060352, "e6c22d9c0a22e39fb25decc81d8862667d8184907c623b182d9e2771ebfb9e03"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00004-of-00008.gguf":
+        (13766580576, "a8e29ba699751bf05250824b7075aee2383048b39290ab55fb50c677925a1a37"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00005-of-00008.gguf":
+        (13643236928, "afa6f9afdeccef869b8f9ed1b3800246a626a9ff4e34859926800ed17e0cbdec"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00006-of-00008.gguf":
+        (13670914048, "da51b3a9d3f485a54e69f16338f7f1dc21f0032b470116c75c508f1422446848"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00007-of-00008.gguf":
+        (13751645536, "a232c44cfc9fe5555ab5dde1c629120eada854f598a8c26247aac552b68697c2"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00008-of-00008.gguf":
+        (8352778560, "2148d4cf9c7d03c953ec3c95fc28f23cbad13547be4ebfd4ecf4d590d1498cd3"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00001-of-00006.gguf":
+        (539422592, "b963118b880fe3b7413e53b474c1d8d3faefc1ae0d2d6bae7a7c3e9f68217b46"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00002-of-00006.gguf":
+        (28800138432, "0e9027aa7de4817c91b5954039b563484466392e29a6b051b096f9c47a71a1c6"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00003-of-00006.gguf":
+        (16681220224, "95c25e4ada4fa9ce4380683e55fb9f55aa8e411dcca13bec789f3cc106ffd403"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00004-of-00006.gguf":
+        (16984320096, "5458253ef234558243c522c8d5289b923fe28601ec6aca26239de14f03ed1951"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00005-of-00006.gguf":
+        (16662985152, "ae9f3f684493f0107f0aa01dd603844266ee8b9a53bad53475761f2acc31202a"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00006-of-00006.gguf":
+        (15036859296, "bcebb4fecfaaf887c2a763c252ecca17749efe175e6c9c1c45d555c0e68906c0"),
+}
+
 # The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
 FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "by": "Qwen; GSQ-RCO quants by ISTA-DASLab",
@@ -812,6 +872,43 @@ FAMILIES = {
                "sha256": HUIHUI_SHARDS,
                "license": "Qwen Community License 1.0 (Qwen3.8-Flash-Next's; huihui-ai's quantization of their "
                           "abliterated release): https://huggingface.co/huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF"},
+    # Swift 1.5 with jeffpeng3's heretic v2 ablation, requantized by trubisky against a fused imatrix (HERETIC_SHARDS
+    # above carries what was measured).  The chain: ukisai's Swift 1.5 post-train (its own card: GPQA 89.80 to 89.60
+    # at xhigh for 55.8% fewer mean thinking tokens, LiveCodeBench +1.99, Terminal-Bench +2.02, IFBench -3.07), then
+    # heretic v2 (his card: 7 tensors changed - eight rank-1 edits on the attention writers of layers 30-37; GPQA
+    # 83.84 against upstream 84.75 at low effort, mean KL 0.0269, 0 refusals in 136 held-out prompts where his v1
+    # lost 9.1 points of GPQA and blew up the thinking length).  Those are HIS numbers on HIS harness, not this
+    # box's; what this box measured is in HERETIC_SHARDS' note: 108.89 GB, 74.61 GB of experts.
+    # NOT YET PACKED OR RUN here.  Two things say it should work: the expert mix (IQ3_S/IQ4_XS gate-up with IQ4_NL
+    # downs through the middle, Q5_K gate-up with Q8_0 downs over the last twelve layers) is inside the formats the
+    # fused i-quant prompt path and the K-quant MMQ library already cover (moe_fused_iq.hpp, iq_kernels.hpp), and the
+    # tensors the release notes warn other engines about are exactly what --compat-bf16 converts at pack time:
+    # blk.0.attn_gate is BF16 and the 24 indexer projections are F16 where the Unsloth files use BF16.  The first
+    # pack is the test.
+    # Two gaps, both honest: the repository ships no mmproj, so the vision reader comes from the swift family's
+    # pinned Swift mmproj (heretic v2's card says the vision tower is unchanged, and the local file is the same
+    # bytes the swift family verified); and no Q8_0 n-gram table exists for this tree, so it runs the in-file
+    # IQ4_NL table - the one thing the owner's 2026-10-23 PLE law cannot be satisfied with, for now.  Its GGUF
+    # metadata's chat template does carry the reasoning_effort branches that huihui's stock template lacks, so the
+    # {REASON:} modes are expected to ride it; the server's content-based flavor check decides that at boot and
+    # says so in its banner.
+    "heretic": {"title": "Swift 1.5 Heretic v2",
+                "by": "trubisky's quants of jeffpeng3's heretic v2 of UkisAI's Swift 1.5",
+                "about": "IQ4_NL or IQ4_XS-plus: the reasoning-efficient Swift 1.5 base with the refusals ablated "
+                         "(it answers plainly and thinks far shorter than the original), its bits allocated by "
+                         "measured activation energy toward coding, tool use and long system prompts",
+                "hf": hf("trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer"),
+                "folder_q": {"IQ4_XS-plus": hf("trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer")
+                             + "IQ4_XS/"},
+                "file": "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-{q}-0000{i}-of-00008.gguf",
+                "shards": 8, "tag": "heretic-",
+                "mmproj_hf": hf("ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
+                "mmproj": "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
+                "name": "swift-1.5-flash-next-heretic",
+                "vision": True, "pack_args": ["--compat-bf16"], "sha256": HERETIC_SHARDS,
+                "license": "Swift Open License 1.0 (UkisAI's contribution, free under US$1M gross annual revenue) "
+                           "and Qwen Community License 1.0: "
+                           "https://huggingface.co/trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer"},
     # MODEL-UPDATE Phase 4: the original model with NVFP4 experts, as ready-made packs (NVFP4_REPOS): the files come
     # as the engine reads them (no GGUF to pack), each size has its own repository ("repo" in MODELS)
     # agentionai's Gyro quantizations (see GYRO_FILES): after the regular families, never the default
@@ -1029,6 +1126,7 @@ REPO_PINS = {
         DAU_FILES,
     "DavidAU/Qwen3.8-Flash-Next-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF": DAUREG_FILES,
     "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF": HUIHUI_SHARDS,
+    "trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer": HERETIC_SHARDS,
     "unsloth/DeepSeek-V4.1-Flash-1017-GGUF": DSV41_FILES,
     "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF": DSV41_ISTA_FILES,
 }
