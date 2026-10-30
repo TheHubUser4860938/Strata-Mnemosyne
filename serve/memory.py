@@ -312,6 +312,87 @@ def store_dbname(store_dir: str) -> str:
     return "m" + hashlib.sha1(memory_dir(store_dir).encode("utf-8")).hexdigest()[:16]
 
 
+def clear_stale_postmaster(pgdata: str) -> str | None:
+    """Remove a postmaster.pid that cannot belong to a live server of THIS cluster.
+
+    WHY THIS EXISTS (measured 2026-10-30, on this box). embedded_postgres decides "a server is
+    already running" from the PID ALONE: PostmasterInfo.is_running() asks psutil whether the PID
+    exists, and the start-time comparison that would catch PID reuse is commented out in the
+    installed wheel. A crash or a power reset leaves postmaster.pid behind, Linux reuses the
+    recorded PID for an unrelated program on the next boot, and every start then becomes a no-op.
+    The first connection dies with "connection ... failed: Connection refused", while the Postgres
+    log contains NO start attempt at all - which is exactly what this box did after the reset:
+    postmaster.pid named PID 8417 from the 21:45 server, the log's last line was a 10:05
+    checkpoint, and startup failed at 10:16 with ECONNREFUSED.
+
+    ONLY a live PID whose program is not postgres is removed. A dead PID is left to pg_ctl (it
+    removes the file itself), and a live postmaster is NEVER touched. If psutil cannot read the
+    process, nothing is removed: a wrong unlink here could take down a healthy server."""
+    path = os.path.join(pgdata, "postmaster.pid")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            pid = int(fh.readline().strip())
+    except (OSError, ValueError):
+        return None                                   # absent or malformed: not ours to guess
+    try:
+        import psutil
+        proc = psutil.Process(pid)
+        name = (proc.name() or "").lower()
+        running = proc.is_running()
+    except Exception:
+        return None                                   # gone, or unreadable: leave it alone
+    if not running or "postgres" in name:
+        return None
+    try:
+        os.unlink(path)
+    except OSError:
+        return None
+    return (f"cleared a stale postmaster.pid: PID {pid} is {name!r} this boot, not a postgres "
+            f"(a reboot reused the PID of the server recorded before it); the recorded server did "
+            f"not survive the last shutdown")
+
+
+def prune_dead_handles(pgdata: str) -> str | None:
+    """.handle_pids.json holds one PID per process attached to the cluster; the library stops the
+    server when the LAST handle leaves. A crash (or the reset above) leaves dead PIDs behind, so
+    the next clean exit sees a non-empty list and leaves Postgres running - an orphan that holds
+    70+ GiB of the model's memory budget. Drop only PIDs that are not running; a live handle is
+    never removed, even if its program looks unfamiliar (it may be a reused PID, and the cost of
+    being wrong is a server stopped under another process)."""
+    path = os.path.join(pgdata, ".handle_pids.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            pids = json.load(fh)
+        if not isinstance(pids, list):
+            return None
+        pids = [int(p) for p in pids]
+    except (OSError, ValueError, TypeError):
+        return None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    live = []
+    for pid in pids:
+        try:
+            if psutil.Process(pid).is_running():
+                live.append(pid)
+        except Exception:
+            pass                                      # dead (or unreadable): not a handle any more
+    if live == pids:
+        return None
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(live, fh)
+        os.replace(tmp, path)
+    except OSError:
+        return None
+    return (f"dropped {len(pids) - len(live)} dead handle PID(s) from .handle_pids.json: the "
+            f"server that wrote them did not stop cleanly, and a stale handle would keep Postgres "
+            f"running after the next clean exit")
+
+
 def attach(store_dir: str, **kw):
     """A psycopg connection to a store dir's database, ATTACHING to the cluster that lives inside
     it - the tools' native twin of the old sqlite3.connect(memory.db): one call, same habit. The
@@ -1088,6 +1169,12 @@ class MemoryService:
                     "the memory store needs a Postgres server: pip install embedded-postgres "
                     "(Linux/macOS) or pixeltable-pgserver (Windows), or pass pg_uri= for an "
                     "existing cluster")
+            # A reboot can make the library's "is the PID alive?" check lie (see the two helpers):
+            # clear the traps BEFORE get_server, or the store never starts and the failure reads as
+            # ECONNREFUSED rather than as a stale file.
+            for note in (clear_stale_postmaster(self.pgdata), prune_dead_handles(self.pgdata)):
+                if note:
+                    print(f"[strata] memory: {note}", flush=True)
             self._srv = _ep.get_server(self.pgdata)
             self._uri = self._srv.get_uri()
         self.db_path = self.pgdata if self._srv is not None else f"{self._dbname}@cluster"

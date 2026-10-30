@@ -12,6 +12,7 @@ import os
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from serve.frontend import ChatTemplate
@@ -4166,6 +4167,93 @@ class TestMintHasNoCapByDefault(unittest.TestCase):
         self.assertIn("None", parts, f"max_chars must be annotated int | None, got {parts}")
         self.assertEqual(sig.parameters["max_chars"].default, 4000, "and the store keeps its own default")
 
+
+
+class TestStaleBootState(unittest.TestCase):
+    """The reset of 2026-10-30 left a postmaster.pid naming a PID that the next boot gave to another
+    program, and embedded_postgres treats ANY live PID as "Postgres is already running" (its
+    start-time check is commented out in the installed wheel). The store then refuses to start with
+    ECONNREFUSED and no Postgres start attempt at all. These checks pin the two guards that make the
+    next boot work, and - just as important - pin what they must NOT touch: a live postmaster, a
+    dead PID (pg_ctl handles that itself), and a handle list belonging to live processes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        self.pidfile = os.path.join(self.dir, "postmaster.pid")
+        self.handles = os.path.join(self.dir, ".handle_pids.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _postmaster(self, pid):
+        Path(self.pidfile).write_text(
+            f"{pid}\n{self.dir}\n{int(time.time())}\n5432\n{self.dir}\nlocalhost\n1 2\nready\n",
+            encoding="utf-8")
+
+    def _dead_pid(self):
+        import subprocess, sys
+        p = subprocess.Popen([sys.executable, "-c", "pass"])
+        p.wait()
+        return p.pid
+
+    def test_stale_pid_naming_another_program_is_cleared(self):
+        """The observed failure, in one test: the PID in the file is alive (this test process) and is
+        not postgres. Leaving this file is a boot that never starts."""
+        self._postmaster(os.getpid())
+        note = _memory_mod.clear_stale_postmaster(self.dir)
+        self.assertIn(str(os.getpid()), note or "")
+        self.assertFalse(os.path.exists(self.pidfile), "the stale file must be gone")
+
+    def test_a_live_postmaster_is_never_touched(self):
+        self._postmaster(12345)
+        fake = unittest.mock.Mock()
+        fake.name.return_value = "postgres"
+        fake.is_running.return_value = True
+        with unittest.mock.patch("psutil.Process", return_value=fake):
+            self.assertIsNone(_memory_mod.clear_stale_postmaster(self.dir))
+        self.assertTrue(os.path.exists(self.pidfile), "a healthy server's PID file is untouchable")
+
+    def test_a_dead_pid_is_left_to_pg_ctl(self):
+        pid = self._dead_pid()
+        if __import__("psutil").pid_exists(pid):
+            self.skipTest("the dead child's PID was reused before the check")
+        self._postmaster(pid)
+        self.assertIsNone(_memory_mod.clear_stale_postmaster(self.dir))
+        self.assertTrue(os.path.exists(self.pidfile), "pg_ctl removes a dead PID itself")
+
+    def test_a_malformed_pid_file_does_not_crash_or_get_removed(self):
+        Path(self.pidfile).write_text("not a pid\n", encoding="utf-8")
+        self.assertIsNone(_memory_mod.clear_stale_postmaster(self.dir))
+        self.assertTrue(os.path.exists(self.pidfile))
+
+    def test_dead_handles_are_dropped_and_live_ones_kept(self):
+        dead = self._dead_pid()
+        if __import__("psutil").pid_exists(dead):
+            self.skipTest("the dead child's PID was reused before the check")
+        Path(self.handles).write_text(json.dumps([dead, os.getpid()]), encoding="utf-8")
+        note = _memory_mod.prune_dead_handles(self.dir)
+        self.assertIn("1 dead handle", note or "")
+        self.assertEqual(json.loads(Path(self.handles).read_text(encoding="utf-8")), [os.getpid()])
+
+    def test_all_dead_handles_leave_an_empty_list_not_a_missing_file(self):
+        dead = self._dead_pid()
+        if __import__("psutil").pid_exists(dead):
+            self.skipTest("the dead child's PID was reused before the check")
+        Path(self.handles).write_text(json.dumps([dead]), encoding="utf-8")
+        self.assertIsNotNone(_memory_mod.prune_dead_handles(self.dir))
+        self.assertEqual(json.loads(Path(self.handles).read_text(encoding="utf-8")), [],
+                         "the library stops the server when the last handle removes itself")
+
+    def test_a_live_handle_list_is_untouched(self):
+        Path(self.handles).write_text(json.dumps([os.getpid()]), encoding="utf-8")
+        self.assertIsNone(_memory_mod.prune_dead_handles(self.dir))
+        self.assertEqual(json.loads(Path(self.handles).read_text(encoding="utf-8")), [os.getpid()])
+
+    def test_a_malformed_handle_file_is_left_alone(self):
+        Path(self.handles).write_text("not json", encoding="utf-8")
+        self.assertIsNone(_memory_mod.prune_dead_handles(self.dir))
+        self.assertEqual(Path(self.handles).read_text(encoding="utf-8"), "not json")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
