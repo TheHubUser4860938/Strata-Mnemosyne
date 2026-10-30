@@ -2692,17 +2692,44 @@ struct ColdTrace {
     }
 };
 ColdTrace g_cold;
+// Defined below, beside the other prompt-path projection entry.  `native_proj` needs it to serve a row that
+// arrives unquantized, so the two share one dispatch rule (`core::WeightRef::proj_form`).  The defaults live on
+// THIS declaration and not on the definition: a call site before the definition would otherwise have to spell
+// all twelve arguments (the compiler says "too few arguments" for the omission of the last two).
+bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
+               std::string& err, int64_t ldy = 0, const uint16_t* X_lo = nullptr, int64_t ldx = 0,
+               void* stream = nullptr, bool x_f16 = false);
+/// ONE dense projection, in whichever of its two resident forms the pack left it: the GGUF's block bytes
+/// (`native_mmvq`), or an unquantized 16-bit matrix that has no blocks to bind and must be read by the BF16
+/// GEMVs.  `X` is the activation image the block read wants; `X_bf16` (and its bf16x2 low plane `X_bf16_lo`) is
+/// the image the BF16 read wants, and a call site that has only the first cannot take a BF16 row - it says so
+/// rather than inventing a bit pattern for the weight.
 bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
-                 std::string& err, int64_t ldy = 0, int64_t ldx = 0) {
-    if (!w->native_data) { err = "prefill: " + name + " has no native GGUF blocks (run with --native)"; return false; }
+                 std::string& err, int64_t ldy = 0, int64_t ldx = 0, const uint16_t* X_bf16 = nullptr,
+                 const uint16_t* X_bf16_lo = nullptr) {
+    if (!w->native_data) {
+        // `proj_form` is the whole decision: no binding means either nothing served this row, or it is a 16-bit
+        // pack row that never had blocks.  The old single test could not tell those apart, so it reported
+        // "has no native GGUF blocks (run with --native)" for a model whose --native was on all along.
+        if (w->proj_form() != core::WeightRef::ProjForm::Bf16) {
+            err = "prefill: " + name + " has no native GGUF blocks (run with --native)";
+            return false;
+        }
+        if (X_bf16 == nullptr) {
+            err = "prefill: " + name +
+                  " is an unquantized BF16 pack row and this projection has no BF16 activation plane to read it with";
+            return false;
+        }
+        return bf16_proj(gm, w, X_bf16, Y, T, name, err, ldy, X_bf16_lo, ldx);
+    }
     const bool ct = g_cold.begin();
     gm.native(X, w->native_type, w->native_data, Y, T, w->ne1, w->ne0, ldy, 0.0f, ldx);
     if (ct) g_cold.end("native", name, T, w->ne1, w->ne0);
     return true;
 }
 bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
-               std::string& err, int64_t ldy = 0, const uint16_t* X_lo = nullptr, int64_t ldx = 0,
-               void* stream = nullptr, bool x_f16 = false) {
+               std::string& err, int64_t ldy, const uint16_t* X_lo, int64_t ldx,
+               void* stream, bool x_f16) {
     if (w->kind != core::WeightKind::Bf16InF32 || !w->data) { err = "prefill: " + name + " is not a resident BF16 tensor"; return false; }
     const uint16_t* wb = (const uint16_t*) w->data;
     if (w->q8_scale != nullptr) {
@@ -3841,7 +3868,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     pt.mark(kPfGdn, cs);
                     float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
                     float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
-                    if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
+                    if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
                     // KVA: the gate projection feeds only the output normalization, which a state-only layer skips
                     // (STRATA_KVA_GDN_NORM=1 keeps the full recurrence as the A/B control for the state-only one)
                     static const bool kva_gdn_norm = [] {
@@ -3849,7 +3876,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         return v != nullptr && std::atoi(v) != 0;
                     }();
                     if ((!kva_state_only || kva_gdn_norm) &&
-                        !native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err)) return false;
+                        !native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
                     if (!bf16_proj(m.gemm, wa, m.mixed_bf, m.ab, T, v.name("ssm_alpha.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
                     if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
                     pt.mark(kPfGdnConv, cs);   // "gdn" is the projections in; the rest on their own lines
@@ -3885,10 +3912,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                           *wikn = need(v, "indexer.k_norm.weight", err);
                     if (!wq || !wk || !wv || !wo || !wik || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
                     pt.mark(kPfQsa, cs);
-                    if (!native_proj(m.gemm, wk, m.mixed_h, m.Kc, T, v.name("attn_k.weight"), err)) return false;
-                    if (!native_proj(m.gemm, wv, m.mixed_h, m.Vc, T, v.name("attn_v.weight"), err)) return false;
+                    if (!native_proj(m.gemm, wk, m.mixed_h, m.Kc, T, v.name("attn_k.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
+                    if (!native_proj(m.gemm, wv, m.mixed_h, m.Vc, T, v.name("attn_v.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
                     // KVA: the query projections have no consumer when only the KV/indexer state advances
-                    if (!kva_state_only && !native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err)) return false;
+                    if (!kva_state_only && !native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
                     if (!bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
                     if (!kva_state_only && !bf16_proj(m.gemm, wiq, m.mixed_bf, m.q_idx, T, v.name("indexer.q_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
                     rms_rows(m.Kc, (const float*) wkn->data, T * 2, 256, 256, EPS, m.cs);
@@ -4207,8 +4234,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     }
                     // the shared expert and its scalar gate
                     auto shared_expert = [&]() -> bool {
-                        if (!native_proj(m.gemm, wsg, m.mixed_h, m.sgate, T, v.name("ffn_gate_shexp.weight"), err)) return false;
-                        if (!native_proj(m.gemm, wsu, m.mixed_h, m.sup, T, v.name("ffn_up_shexp.weight"), err)) return false;
+                        if (!native_proj(m.gemm, wsg, m.mixed_h, m.sgate, T, v.name("ffn_gate_shexp.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
+                        if (!native_proj(m.gemm, wsu, m.mixed_h, m.sup, T, v.name("ffn_up_shexp.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
                         swiglu_pair(m.sgate, m.sup, m.sh_h, T, m.cs);
                         if (!native_proj(m.gemm, wsd, m.sh_h, m.shared, T, v.name("ffn_down_shexp.weight"), err)) return false;
                         if (wgi->kind != core::WeightKind::Bf16InF32) { err = "prefill: shared gate is not BF16"; return false; }
@@ -6857,8 +6884,8 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                         pt.mark(kPfGdn, cs);
                         float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
                         float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
-                        if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
-                        if (!native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err)) return false;
+                        if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
+                        if (!native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
                         if (!bf16_proj(m.gemm, wa, m.mixed_bf, m.ab, T, v.name("ssm_alpha.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
                         if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
                         pt.mark(kPfGdnConv, cs);
@@ -6881,9 +6908,9 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                                               *wikn = need(v, "indexer.k_norm.weight", err);
                         if (!wq || !wk || !wv || !wo || !wik || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
                         pt.mark(kPfQsa, cs);
-                        if (!native_proj(m.gemm, wk, m.mixed_h, m.Kc, T, v.name("attn_k.weight"), err)) return false;
-                        if (!native_proj(m.gemm, wv, m.mixed_h, m.Vc, T, v.name("attn_v.weight"), err)) return false;
-                        if (!native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err)) return false;
+                        if (!native_proj(m.gemm, wk, m.mixed_h, m.Kc, T, v.name("attn_k.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
+                        if (!native_proj(m.gemm, wv, m.mixed_h, m.Vc, T, v.name("attn_v.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
+                        if (!native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
                         if (!bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
                         if (!bf16_proj(m.gemm, wiq, m.mixed_bf, m.q_idx, T, v.name("indexer.q_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
                         rms_rows(m.Kc, (const float*) wkn->data, T * 2, 256, 256, EPS, cs);
@@ -6998,8 +7025,8 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                         pt.mark(kPfRouter, cs);
                         if (!bf16_proj(m.gemm, wr, m.mixed_bf, m.logits, T, v.name("ffn_gate_inp.weight"), err, 0, m.mixed_bf_lo)) return false;
                         route(m.logits, lb.ids + t0 * K, lb.w + t0 * K, T, m.g->n_expert, cs);
-                        if (!native_proj(m.gemm, wsg, m.mixed_h, m.sgate, T, v.name("ffn_gate_shexp.weight"), err)) return false;
-                        if (!native_proj(m.gemm, wsu, m.mixed_h, m.sup, T, v.name("ffn_up_shexp.weight"), err)) return false;
+                        if (!native_proj(m.gemm, wsg, m.mixed_h, m.sgate, T, v.name("ffn_gate_shexp.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
+                        if (!native_proj(m.gemm, wsu, m.mixed_h, m.sup, T, v.name("ffn_up_shexp.weight"), err, 0, 0, m.mixed_bf, m.mixed_bf_lo)) return false;
                         swiglu_pair(m.sgate, m.sup, m.sh_h, T, cs);
                         if (!native_proj(m.gemm, wsd, m.sh_h, m.shared, T, v.name("ffn_down_shexp.weight"), err)) return false;
                         if (wgi->kind != core::WeightKind::Bf16InF32) { err = "prefill: shared gate is not BF16"; return false; }

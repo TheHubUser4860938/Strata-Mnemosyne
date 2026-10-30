@@ -177,6 +177,12 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(conversation_graft_test src/core/conversation_graft_test.cpp)
   target_include_directories(conversation_graft_test PRIVATE include)
   add_test(NAME conversation_graft_test COMMAND conversation_graft_test)
+  # memory-core (2026-10-30): which kernel reads a dense projection row.  Pure policy: no device, no file IO.
+  # It exists because three dispatchers tested `native_data` and so called an unquantized 16-bit pack row
+  # "missing", which is the Heretic v2 IQ4_NL boot failure (see src/core/proj_form_test.cpp for both rows).
+  add_executable(proj_form_test src/core/proj_form_test.cpp)
+  target_include_directories(proj_form_test PRIVATE include)
+  add_test(NAME proj_form_test COMMAND proj_form_test)
   # memory-core (2026-10-29): the capture half of the MAM cartridge line - which read donates its boundary
   # rows, and which positions inside it.  Pure policy: no device, no file IO, so no GPU and no model.
   add_executable(boundary_cart_test src/prefill/boundary_cart_test.cpp)
