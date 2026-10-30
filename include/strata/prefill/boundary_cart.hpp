@@ -102,7 +102,14 @@ struct BoundaryCapture {
     /// Accept this chunk?  Anything out of order, empty, or past the end of the prompt is SKIPPED and
     /// the run continues: a probe must never be the reason a request fails.
     bool take(int64_t p0, int64_t T, int64_t n) {
-        if (!on || p0 != next_pos || T <= 0 || p0 + T > n) return false;
+        if (!on || T <= 0 || p0 + T > n) return false;
+        // A chunk at position 0 IS a new read: arm itself, so the caller cannot forget to. This is not
+        // defensive padding - it is the bug this probe shipped with (prefill.cpp reset the tap per read and
+        // not the rule, so every read after the first found p0 != next_pos, wrote nothing, and the log went
+        // on reporting the FIRST body's row count for bodies ten times larger). A probe that quietly stops
+        // measuring is worse than one that is missing, so the instrument now cannot be left un-armed.
+        if (p0 == 0 && next_pos != 0) { next_pos = 0; taken = 0; }
+        if (p0 != next_pos) return false;
         next_pos += T;
         taken += T;
         return true;
