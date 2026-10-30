@@ -4124,5 +4124,48 @@ class ManualCurationTrigger(unittest.TestCase):
         self.assertIn("curate", json.dumps(r), "every verb the route answers must be in the menu")
 
 
+
+class TestMintHasNoCapByDefault(unittest.TestCase):
+    """"No cap shouldn't be opt in but default" - the owner's ruling, 2026-10-30.
+
+    A cart's cost is dominated by the engine's fixed floor (117.7 MB measured), which is paid whether the cart
+    holds one token or a hundred thousand, so documents belong TOGETHER: adding a document to a cart that
+    already stands measured ~6 MB, while starting a new one measured 136-162 MB. A character ceiling taxes the
+    cheap thing. These checks pin the three shapes the config value can take, because unset, zero and an
+    explicit number must not mean three different things by accident - and they pin that "unlimited" is None
+    rather than a large int, which is the distinction the owner rejected the first time."""
+
+    LONG = "The merchants and traders in the town of Boston resolved as follows. " * 2600   # ~156,000 chars
+
+    def test_unset_means_no_limit(self):
+        self.assertIsNone(CartMinter(None, {}).max_chars,
+                          "unset must be None, not a big number pretending to be unlimited")
+
+    def test_zero_and_empty_string_also_mean_no_limit(self):
+        for v in (0, "", None):
+            self.assertIsNone(CartMinter(None, {"mint_max_chars": v}).max_chars, f"mint_max_chars={v!r}")
+
+    def test_a_long_document_renders_with_no_config_at_all(self):
+        text, n_rows, gone = CartMinter(None, {}).render({"text": self.LONG})
+        self.assertEqual(len(text), len(self.LONG.strip()), "no cap means no truncation either")
+        self.assertEqual((n_rows, gone), (0, []))
+
+    def test_an_explicit_cap_still_refuses_and_names_itself(self):
+        with self.assertRaises(ValueError) as cm:
+            CartMinter(None, {"mint_max_chars": 1000}).render({"text": self.LONG})
+        self.assertIn("mint_max_chars", str(cm.exception))
+
+    def test_the_store_layer_admits_none_as_a_budget(self):
+        """cart_text is the OTHER consumer of this number (there are two identical budget loops in that file,
+        and only one of them belongs to a cart) - so its signature has to say None is allowed, or the next
+        reader treats a TypeError at line 2226 as a mystery rather than as a type error with a name."""
+        import inspect
+        from serve.memory import MemoryService
+        sig = inspect.signature(MemoryService.cart_text)
+        parts = [t.strip() for t in str(sig.parameters["max_chars"].annotation).split("|")]
+        self.assertIn("None", parts, f"max_chars must be annotated int | None, got {parts}")
+        self.assertEqual(sig.parameters["max_chars"].default, 4000, "and the store keeps its own default")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
