@@ -522,6 +522,21 @@ bool native_of(const WeightRef* w, const std::string& name, std::string& err) {
     return true;
 }
 
+/// A row this window can project: bound from the GGUF's blocks, OR held by the pack as an unquantized 16-bit
+/// matrix that the BF16 GEMVs read (`WeightRef::proj_form`).  `native_of` accepts only the first, so a quant
+/// that keeps one dense tensor uncompressed dies with "is not served natively (run with --native)" on a run
+/// that had `--native` on - the same misleading message the prompt path gave.  A caller that reaches for
+/// `native_data` by hand must branch on `proj_form`; `mm` and `gate_proj` in the window below are that branch.
+bool projectable_of(const WeightRef* w, const std::string& name, std::string& err) {
+    if (w == nullptr) return false;
+    switch (w->proj_form()) {
+    case WeightRef::ProjForm::Native: case WeightRef::ProjForm::Bf16: return true;
+    case WeightRef::ProjForm::None: break;
+    }
+    err = "verify: " + name + " is neither served natively nor held as a BF16 pack row";
+    return false;
+}
+
 }  // namespace
 
 namespace {
@@ -1503,7 +1518,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             native_quantize_q8_1(x, xq_, n_in, n, cs);
             il_ready = false;
         };
-        auto mm = [&](const WeightRef* w, float* out, int n_in, int n_out) {
+        auto mm = [&](const WeightRef* w, float* out, int n_in, int n_out, const float* x_f32 = nullptr) {
+            if (w->proj_form() == WeightRef::ProjForm::Bf16) {
+                // An unquantized 16-bit row has no blocks, so it has no share of the Q8_1 image the block reads
+                // all use: it takes its own row's bytes against the FP32 activation, which is exactly what the
+                // verify-window entry below is built for (1..STRATA_VERIFY_MAX_T rows, each output bit-identical
+                // to its own single-row call).  A caller that has no FP32 image cannot take the row, and this
+                // window's own catch reports it instead of reading the 16-bit matrix as blocks.
+                if (x_f32 == nullptr)
+                    throw std::invalid_argument("verify: a BF16 pack row was projected with no FP32 activation");
+                bf16_gemv_fp32_mmvf_multi(x_f32, n_in, (const uint16_t*) w->data, out, n_out, n_in, n_out, n, cs);
+                return;
+            }
             if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(w->native_type, n, n_out)) {
                 if (!il_ready && n >= 2) {   // one column reads the plain q8_1 blocks
                     strata::kernels::native_q8_1_interleave(xq_, xil_, n_in, n, cs);
@@ -1523,9 +1549,21 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                 *wnm = need(v, "ssm_norm.weight", err), *wdt = need(v, "ssm_dt.bias", err),
                                 *wsa = need(v, "ssm_a", err);
                 if (!wqkv || !wg || !wout || !wa || !wb || !wc || !wnm || !wdt || !wsa) return false;
-                if (!native_of(wqkv, v.name("attn_qkv.weight"), err) || !native_of(wg, v.name("attn_gate.weight"), err) ||
+                if (!native_of(wqkv, v.name("attn_qkv.weight"), err) ||
+                    !projectable_of(wg, v.name("attn_gate.weight"), err) ||
                     !native_of(wout, v.name("ssm_out.weight"), err))
                     return false;
+                // The attention gate is the dense projection a shipped quant keeps UNQUANTIZED on purpose
+                // (trubisky's Swift 1.5 Heretic v2 holds layer 0's as BF16 where its siblings are Q8_0: "a giant
+                // outlier, the most sensitive tensor family in the model - kept uncompressed").  Such a row has
+                // no blocks, so NativeDense never bound it and it has no share of the window's Q8_1 image either:
+                // it reads its own 16-bit bytes against the FP32 window.  Each site below keeps its own stream, so
+                // the side branches stay exactly the launches they were.
+                const bool g_bf16 = wg->proj_form() == WeightRef::ProjForm::Bf16;
+                auto gate_proj = [&](void* stream) {
+                    bf16_gemv_fp32_mmvf_multi(xm, (int) N, (const uint16_t*) wg->data, z_ + (size_t) tb * ZV,
+                                              (int) ZV, (int) N, (int) ZV, n, stream);
+                };
                 const int64_t gi = gdn_idx[(size_t) l];
                 float* state = ss.gdn_state + (size_t) (gi - ss.gdn_ord0) * gdn_floats;
                 float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
@@ -1546,15 +1584,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     // the branch reads F4's interleaved copy too (written on cs before the fork; bitwise native_mmvq's
                     // output), and qkv is recorded before the branch's launch, so its grid is dispatched first and the
                     // conv / recurrence that wait for it start sooner (z is read only after the recurrence)
-                    const bool g_il = g_mmvq_il() && strata::kernels::native_mmvq_il_supported(wg->native_type, n, (int) ZV);
+                    const bool g_il = !g_bf16 && g_mmvq_il() && strata::kernels::native_mmvq_il_supported(wg->native_type, n, (int) ZV);
                     if (g_il && !il_ready && n >= 2) {
                         strata::kernels::native_q8_1_interleave(xq_, xil_, (int) N, n, cs);
                         il_ready = true;
                     }
                     if (!branch(pfork_, cs, side2_, "fork")) return false;
-                    mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C);
+                    mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C, xm);
                     if (g_il) strata::kernels::native_mmvq_il(wg->native_type, wg->native_data, xq_, xil_, z_ + (size_t) tb * ZV,
                                                               (int) N, (int) ZV, n, side2_);
+                    else if (g_bf16) gate_proj(side2_);
                     else native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n, side2_);
                     if (cudaEventRecord(pjoin_, side2_) != cudaSuccess) { err = "verify: the gate projection's branch could not join"; return false; }
                 }
@@ -1564,11 +1603,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                  (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N,
                                  (int) HV, n, df_side_[0]);
                     fork(1);
+                    if (g_bf16) gate_proj(df_side_[1]); else
                     native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n,
                                 df_side_[1]);
                 }
                 const bool fuse_ab = fuse_convab_on() && !br && !batch_rec_ && !prof_on_ && !sidem;   // the side mixer computes the gates on its branch
-                if (!side_proj) mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C);   // with side_proj: above, first
+                if (!side_proj) mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C, xm);   // with side_proj: above, first
                 stamp(l, 2, grp);
                 if (batch_rec_) {   // contiguous rows may be proposals for the same slot
                     for (int t = tb; t < te;) {
@@ -1601,7 +1641,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                              (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N, (int) HV,
                              n, cs);
                 stamp(l, 4, grp);
-                if (!side_proj) mm(wg, z_ + (size_t) tb * ZV, (int) N, (int) ZV);
+                if (!side_proj) mm(wg, z_ + (size_t) tb * ZV, (int) N, (int) ZV, xm);
                 stamp(l, 5, grp);
                 if (side_proj && cudaStreamWaitEvent(cs, pjoin_, 0) != cudaSuccess) {
                     err = "verify: the gate projection's branch could not join";
@@ -1788,7 +1828,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 const bool q_il = side_proj && g_mmvq_il() &&
                                   strata::kernels::native_mmvq_il_supported(wq->native_type, n, (int) (NH * 2 * HD));
                 auto q_chain = [&](cudaStream_t ns) -> bool {
-                    if (ns == cs) mm(wq, qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD));
+                    if (ns == cs) mm(wq, qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD), xm);
                     else if (q_il) strata::kernels::native_mmvq_il(wq->native_type, wq->native_data, xq_, xil_,
                                                                    qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD), n, ns);
                     else native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N,
@@ -1842,8 +1882,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
                 if (!sidem) idx_key(cs);
                 stamp(l, 7, grp);
-                mm(wk, kcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
-                mm(wv, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
+                mm(wk, kcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD), xm);
+                mm(wv, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD), xm);
                 if (qb) norm_rope(kcur_ + tb * NKV * HD, wkn, (int) (n * NKV), (int) HD, pos_k + tb * NKV);
                 else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH);
                 if (st.kv_rot) {   // K and V rotated before they are stored (kv_q4.hpp)

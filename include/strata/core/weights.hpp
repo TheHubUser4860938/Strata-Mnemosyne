@@ -99,6 +99,38 @@ struct WeightRef {
     /// STRATA_HC_Q8 (experiment): non-null when `data` holds int8 codes [ne1][ne0] of a BF16 hyper-connection
     /// projection quantized Q8_0-style (one fp32 scale per 32 contiguous values, `q8_scale[ne1][ne0 / 32]`).
     const float* q8_scale = nullptr;
+
+    /// WHICH kernel reads this projection row, decided from the row's own metadata.  A dense projection arrives
+    /// in one of three forms and they are not interchangeable:
+    ///
+    ///   * `Native` - NativeDense bound the GGUF's own block bytes, so `native_mmvq` reads them (the types it can
+    ///     read are `native_mmvq_supported`'s list).  Every block-quantized dense projection of every quant
+    ///     lands here.
+    ///   * `Bf16` - the pack kept the tensor UNQUANTIZED as 16-bit values: index kind 4, `tools/iq_pack.py`'s
+    ///     plan v0.3 P6 form, which `src/core/weights.cpp` turns into `Bf16InF32` with `raw16` set.  A 16-bit
+    ///     matrix has no blocks, so `native_data` stays null while `data` holds `ne0 * ne1 * 2` bytes, and the
+    ///     BF16 GEMVs are what read it (`include/strata/kernels/bf16_gemv.hpp`; the decode path already does,
+    ///     through `layer.cpp`'s `project_bf16`).
+    ///   * `None` - neither: a quantized pack row (the S-form planes), or a row nothing serves.
+    ///
+    /// WHY ONE FUNCTION RATHER THAN A `native_data` TEST AT EACH CALL SITE: a dispatcher that asks only "is this
+    /// bound natively?" reads an unquantized row as MISSING and blames the flag.  That is how a load died with
+    /// "prefill: blk.0.attn_gate.weight has no native GGUF blocks (run with --native)" on a launch that had
+    /// `--native` on from the start: the quant ships layer 0's attention gate as BF16 where its 35 siblings are
+    /// Q8_0 - deliberately, "layer 0's attention gate is a giant outlier (the most sensitive tensor family in
+    /// the model) - kept uncompressed" (trubisky's model card for Swift 1.5 Flash Next Heretic v2).  Every
+    /// dispatcher of a dense projection asks this question, so none of them can repeat that mistake.
+    enum class ProjForm : int { None, Native, Bf16 };
+    ProjForm proj_form() const {
+        if (native_data != nullptr) return ProjForm::Native;
+        // `q8_scale` is checked because it is a trap rather than a variant: under STRATA_HC_Q8 a hyper-connection
+        // row keeps kind Bf16InF32 while `data` holds INT8 codes with one fp32 scale per 32 values, so a reader
+        // that took it for 16-bit values would decode garbage without complaining.  The entry that serves those
+        // expands them first (prefill's `bf16_proj`), so they are not this form.
+        if (data != nullptr && kind == WeightKind::Bf16InF32 && !quantized() && q8_scale == nullptr)
+            return ProjForm::Bf16;
+        return ProjForm::None;
+    }
 };
 
 struct LoadReport {
