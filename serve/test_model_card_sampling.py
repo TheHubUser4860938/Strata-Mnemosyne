@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class Recording(MockEngine):
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         self.sampling = dict(sampling or {})
         yield from super().generate(ids, max_new, sampling, cancel, embeddings)
 
