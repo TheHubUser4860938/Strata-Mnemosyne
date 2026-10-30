@@ -1853,7 +1853,8 @@ class AtRestKeyMaterial(unittest.TestCase):
         m = MemoryService(self.dir, encrypt=True)
         try:
             self.assertEqual(os.stat(m.key_path).st_mode & 0o777, 0o600)
-            self.assertEqual(len(open(m.key_path, "rb").read()), 32)
+            with open(m.key_path, "rb") as key:       # closed: an inline open() here leaked a
+                self.assertEqual(len(key.read()), 32)  # ResourceWarning into the CI log
             s = m.stats()
             self.assertTrue(s["at_rest"]["mode"].startswith("pgdata-0700"))
             self.assertTrue(s["at_rest"]["running_is_plaintext"])   # the honest state, said aloud
