@@ -1,4 +1,19 @@
-# CUT3_SPEC — real MAM cartridges on Strata (spec, 2026-10-29)
+# Boundary-cart spec — the MAM idea, retuned for our hybrid (renamed 2026-10-30)
+
+**The owner's ruling, verbatim:** *"I want to pursue the path that works on this model we can't copy his
+work to the letter because he's using a model that is quite different to ours so name things the way it
+works on our model. So take inspiration from but do not copy we need to take a different path and won't be
+replicating his exact results due to architectural differences. So keep tuning so it works well."*
+
+So: the line of work is the **boundary cart** — a partial state at a trunk boundary, mounted with zero
+input embeddings, the layers above recomputed. `CUT3` stays only as the name of their cut (after block 3 of
+80 on a dense model). Ours sits at **layer 12 of 48**, and the honest headline is **escaping the fixed
+floor** (a cart costs 238 MB today whether it knows one sentence or seventeen hundred), not their 10x K/V
+ratio, which a hybrid cannot chase. Two consequences of the swap, both measured: our row is *bigger* per
+token (20,480 B bf16 against their 16,384) because the hyper-connection carries four streams; and this
+engine reads a long prompt on more than one path, so a tap on one path covers 99 positions and calls it a
+day — coverage, not the byte rate, is where the tuning work is.
+
 
 Owner's decision, 2026-10-29: **"I want MAM cartridges otherwise what is the point of the
 cartridges?"** — i.e. the actual CUT3 mechanism (partial state + recompute), not the whole-state

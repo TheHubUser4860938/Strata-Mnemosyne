@@ -52,7 +52,7 @@
 #include "strata/core/sm120_series.hpp"
 #include "strata/core/defaults_026.hpp"
 #include "strata/prefill/kernels.hpp"
-#include "strata/prefill/cut3.hpp"
+#include "strata/prefill/boundary_cart.hpp"
 #include "strata/prefill/kva.hpp"   // STRATA_KVA: the optional approximate-prefill plan (research, off by default)
 
 #include <cuda_runtime.h>
@@ -2970,26 +2970,26 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     kva_floor_ = 0;   // this run's: raised below as chunks are approximated
     if (kva.capture && kva_capture.f.empty()) kva_capture.open(kva.capture_dir, kva.capture_fp32);
     if (kva.capture && pos0 == 0 && hand_in_ == nullptr) kva_capture.begin_prompt();   // one prompt per capture
-    // STRATA_CUT3_CAPTURE (memory-core, 2026-10-29): capture the rows ENTERING one layer boundary for the
+    // STRATA_BOUNDARY_CAPTURE (memory-core, 2026-10-29): capture the rows ENTERING one layer boundary for the
     // positions of a cold read - the residual rows a MAM cartridge is made of, and nothing else.  A probe,
-    // not a request path: an unaccepted read is SKIPPED (include/strata/prefill/cut3.hpp), which is the whole
+    // not a request path: an unaccepted read is SKIPPED (include/strata/prefill/boundary_cart.hpp), which is the whole
     // difference from STRATA_KVA_CAPTURE, whose KvaTap::write ERRORS on an out-of-order position and so can
     // only ever run alone on a quiet box.  Nothing here changes a single byte of the read.
-    static KvaTap cut3_tap;
+    static KvaTap bndy_tap;
     // Process-wide like the tap above it (one cold read is captured at a time): the environment half is fixed
     // at construction, the position counters are this read's.  Not const, because `take` advances them.
-    static Cut3Capture cut3 = Cut3Capture::process();
-    bool cut3_on = false;
+    static BoundaryCapture bndy = BoundaryCapture::process();
+    bool bndy_on = false, bndy_read = false;
     {
-        bool cut3_routine = false;
-        const char* cut3_why = cut3.decline(pos0, n, LB, LE < 0 ? -1 : LE, (int64_t) g.n_layers,
-                                            embd_rows != nullptr, &cut3_routine);
-        if (cut3_why == nullptr) {
-            if (cut3_tap.f.empty()) cut3_tap.open(cut3.dir, false);
-            cut3_tap.begin_prompt();
-            cut3_on = true;
-        } else if (cut3.on && !cut3_routine) {
-            std::fprintf(stderr, "strata prefill: CUT3 capture skipped: %s\n", cut3_why);
+        bool bndy_routine = false;
+        const char* bndy_why = bndy.decline(pos0, n, LB, LE < 0 ? -1 : LE, (int64_t) g.n_layers,
+                                            embd_rows != nullptr, &bndy_routine);
+        if (bndy_why == nullptr) {
+            if (bndy_tap.f.empty()) bndy_tap.open(bndy.dir, false);
+            bndy_tap.begin_prompt();
+            bndy_on = bndy_read = true;   // `bndy_read` survives the capture ending early: it names the READ
+        } else if (bndy.on && !bndy_routine) {
+            std::fprintf(stderr, "strata prefill: boundary capture skipped: %s\n", bndy_why);
         }
     }
     if (kva_run && kva.mode == KvaConfig::Mode::Oracle && kva_oracle.f.empty())
@@ -3711,18 +3711,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             // STRATA_KVA: the capture and the oracle hook the residual ENTERING the layer - the vector a projector
             // has to produce for it.  A capture run is an ordinary full read; the oracle replaces the input.
             if (kva_cap_layer && !kva_capture.write(l, m.R, T, p0, D, cs)) { err = kva_capture.err; return false; }
-            // STRATA_CUT3_CAPTURE: `m.R` as it enters the boundary, in position order, bf16.  A write failure
+            // STRATA_BOUNDARY_CAPTURE: `m.R` as it enters the boundary, in position order, bf16.  A write failure
             // stops the capture and says so; it does not fail the request that happened to carry it.
-            if (cut3_on && cut3.wants(l)) {
-                if (cut3.take(p0, T, n)) {
-                    if (!cut3_tap.write(cut3.boundary, m.R, T, p0, D, cs)) {
-                        std::fprintf(stderr, "strata prefill: CUT3 capture stopped at position %lld: %s\n",
-                                     (long long) p0, cut3_tap.err.c_str());
-                        cut3_on = false;
-                        cut3_tap.err.clear();
+            if (bndy_on && bndy.wants(l)) {
+                if (bndy.take(p0, T, n)) {
+                    if (!bndy_tap.write(bndy.boundary, m.R, T, p0, D, cs)) {
+                        std::fprintf(stderr, "strata prefill: boundary capture stopped at position %lld: %s\n",
+                                     (long long) p0, bndy_tap.err.c_str());
+                        bndy_on = false;
+                        bndy_tap.err.clear();
                     }
                 } else if (p0 + T > n) {
-                    cut3_on = false;   // past the end of this prompt (a decode step rode the same loop)
+                    bndy_on = false;   // past the end of this prompt (a decode step rode the same loop)
                 }
             }
             if (kva_subst) {
@@ -5839,16 +5839,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                              (long long) m.pp->ps_experts, m.pp->layers ? (double) m.pp->ps_experts / m.pp->layers : 0.0);
         }
     }
-    if (cut3.on && (cut3.taken > 0 || n <= cut3.max_prompt)) {
+    if (bndy.on && bndy_read) {   // this read only: a declined read must not repeat the last accepted count
         // T1's measurement: the rows of one body at one boundary, and what they weigh.  The bank arithmetic of
-        // include/strata/prefill/cut3.hpp stands or falls on the second number, so it is printed every time.
-        const int64_t rb = Cut3Capture::row_bytes_bf16(g.hc, g.n_embd);
-        std::fprintf(stderr, "strata prefill: CUT3 capture: %lld of %lld positions at boundary %lld, "
+        // include/strata/prefill/boundary_cart.hpp stands or falls on the second number, so it is printed every time.
+        const int64_t rb = BoundaryCapture::row_bytes_bf16(g.hc, g.n_embd);
+        std::fprintf(stderr, "strata prefill: boundary capture: %lld of %lld positions at boundary %lld, "
                              "%lld B/row (hc %lld x n_embd %lld, bf16), %lld MB in %s/L%lld.bin\n",
-                     (long long) cut3.taken, (long long) n, (long long) cut3.boundary, (long long) rb,
+                     (long long) bndy.taken, (long long) n, (long long) bndy.boundary, (long long) rb,
                      (long long) g.hc, (long long) g.n_embd,
-                     (long long) ((int64_t) cut3.taken * rb + 999999) / 1000000, cut3.dir.c_str(),
-                     (long long) cut3.boundary);
+                     (long long) ((int64_t) bndy.taken * rb + 999999) / 1000000, bndy.dir.c_str(),
+                     (long long) bndy.boundary);
     }
     if (kva_run || kva.capture) {
         const char* mode = kva.skip == KvaConfig::Skip::Moe ? "moe-skip"
