@@ -467,7 +467,17 @@ PLE_Q8 = {   # tree -> (repository, file, bytes, sha256)
                 "84cb63a026bec8d3568b008c2c1876cba48e4ca3062d20203f3010836ecb4179"),
 }
 PLE_Q8_TREE = {"qwen": "ista", "coder": "ista", "dau": "ista", "daureg": "ista",
-               "unsloth": "unsloth", "huihui": "unsloth"}   # swift brings its own tuned table; gyro carries its own; NVFP4 is FP8
+               "unsloth": "unsloth", "huihui": "unsloth",
+               # 2026-10-30: the heretic arm takes the Q8 table too, and MEASUREMENT says why it is valid.  The
+               # n-gram table is ONE trained tensor across these trees: 1 MiB digests at five offsets spanning
+               # all 28,800,138,432 B of it (0, 4e9, 12e9, 24e9, 28.79e9) are equal byte for byte between
+               # huihui's Qwen-based UD-Q4_K_XL-V2 and BOTH of trubisky's Swift-based files.  heretic v2
+               # changes 7 tensors per its card and the table is not among them, and this box verified the
+               # ista tree's shard 2 against its own IQ3_S on 2026-10-23 - so the swift family is eligible on
+               # the same evidence, one step removed, and is left as it is for want of a direct read.
+               # The dev box runs the ista file for both arms (models/IQ3_S/Qwen3.8-Flash-Next-Q8PLETable.gguf,
+               # 54,400,261,312 B), which is the pairing this entry now offers.
+               "heretic": "ista"}   # gyro carries its own; NVFP4 is FP8
 DAU_IQ3_S_SHARDS = {
     "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf":
         (55063664928, "78706315c2fe912777c006b4ae18be1024c9f4353bd25d33b8a306c9c55f9e34"),
@@ -740,10 +750,12 @@ UNSLOTH_MIN_RAM_GB = 48         # the RAM-budget mode below which setup says an 
 CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 # trubisky's quants of jeffpeng3's heretic v2 of ukisai's Swift 1.5 (the "heretic" family): two sizes in one
 # repository, the IQ4_NL set at the root and the IQ4_XS-plus set under IQ4_XS/.  Sizes and SHA-256 are the Hub's
-# LFS pointers at the pinned revision, read 2026-10-30.  Note the two shard-2 files: the SAME
-# 28,800,138,432 B n-gram table in both sets (IQ4_NL either way) with DIFFERENT sums, because the two recipes
-# scaled it against different imatrices - which is exactly why every file here is pinned by sum, not by name
-# or size.
+# LFS pointers at the pinned revision, read 2026-10-30.  Note the two shard-2 files: they are the SAME
+# 28,800,138,432 B n-gram table (IQ4_NL in both) with DIFFERENT sums, and the table bytes are identical -
+# 1 MiB digests at five offsets spanning the whole tensor match - so what differs is the container metadata
+# around it (the imatrix name the file records, and nothing in the weights).  Which is exactly why every file
+# here is pinned by sum, not by name or size: a sum can move with the values untouched, and a name can stay
+# with the values moved.
 # MEASURED from the GGUF headers the same day (per-tensor sizes read off the tensor-info offsets; the method
 # reproduces this file's own 77.0 GB experts figure for huihui's UD-Q4_K_XL as 77.02): the IQ4_NL set is
 # 108.89 GB with 74.61 GB of experts, the IQ4_XS-plus set is 94.70 GB with 60.54 GB.  Both carry the same
@@ -879,19 +891,25 @@ FAMILIES = {
     # 83.84 against upstream 84.75 at low effort, mean KL 0.0269, 0 refusals in 136 held-out prompts where his v1
     # lost 9.1 points of GPQA and blew up the thinking length).  Those are HIS numbers on HIS harness, not this
     # box's; what this box measured is in HERETIC_SHARDS' note: 108.89 GB, 74.61 GB of experts.
-    # NOT YET PACKED OR RUN here.  Two things say it should work: the expert mix (IQ3_S/IQ4_XS gate-up with IQ4_NL
-    # downs through the middle, Q5_K gate-up with Q8_0 downs over the last twelve layers) is inside the formats the
-    # fused i-quant prompt path and the K-quant MMQ library already cover (moe_fused_iq.hpp, iq_kernels.hpp), and the
-    # tensors the release notes warn other engines about are exactly what --compat-bf16 converts at pack time:
-    # blk.0.attn_gate is BF16 and the 24 indexer projections are F16 where the Unsloth files use BF16.  The first
-    # pack is the test.
-    # Two gaps, both honest: the repository ships no mmproj, so the vision reader comes from the swift family's
+    # PACKED AND RUNNING on this box since 2026-10-30 (pack packs/heretic-iq4_nl, arm run-heretic-iq4_nl.sh).
+    # The expert mix (IQ3_S/IQ4_XS gate-up with IQ4_NL downs through the middle, Q5_K gate-up with Q8_0 downs over
+    # the last twelve layers) did land inside the formats the fused i-quant prompt path and the K-quant MMQ library
+    # cover, and the 24 F16 indexer projections went through --compat-bf16 as expected.  The tensor the release
+    # notes warn about cost real work: blk.0.attn_gate is BF16 (uncompressed, 2 bytes a value where the Unsloth
+    # file uses Q8_0 at ~1.01) and the engine had no kernel for a dense projection the pack keeps unquantized -
+    # filed upstream as Niko1221/Strata#4741 with the patch inline.
+    # MEASURED HERE, same box, same instrument (bench/p1/prefill_ab.py, 267k-token cold reads; the noise floor is
+    # 2.5%): prefill 204.3 us/token against huihui's 226.4 - the heretic is ~10% faster per prompt token, once
+    # its config says --prefill auto:32768, and a bare `--prefill auto` clamps to 8192 and costs 1.81x.  Decode is
+    # level: 85.6 against 85.2 tok/s at 150-260k with IDENTICAL 78.2% MTP acceptance, and +5.2% at 260k+
+    # (87.2 against 82.9, acceptance 80.3 against 77.8).  So the tail-heavy bit map costs nothing at runtime here.
+    # ONE gap, not two: the repository ships no mmproj, so the vision reader comes from the swift family's
     # pinned Swift mmproj (heretic v2's card says the vision tower is unchanged, and the local file is the same
-    # bytes the swift family verified); and no Q8_0 n-gram table exists for this tree, so it runs the in-file
-    # IQ4_NL table - the one thing the owner's 2026-10-23 PLE law cannot be satisfied with, for now.  Its GGUF
-    # metadata's chat template does carry the reasoning_effort branches that huihui's stock template lacks, so the
-    # {REASON:} modes are expected to ride it; the server's content-based flavor check decides that at boot and
-    # says so in its banner.
+    # bytes the swift family verified).  The n-gram table gap is CLOSED and was mine: the table is one trained
+    # tensor across these trees (see PLE_Q8_TREE - identical bytes measured), so the Q8_0 sidecar applies to this
+    # family and the arm runs it.  Its GGUF metadata's chat template does carry the reasoning_effort branches that
+    # huihui's stock template lacks, so the {REASON:} modes ride it; the server's content-based flavor check
+    # decides that at boot and says so in its banner.
     "heretic": {"title": "Swift 1.5 Heretic v2",
                 "by": "trubisky's quants of jeffpeng3's heretic v2 of UkisAI's Swift 1.5",
                 "about": "IQ4_NL or IQ4_XS-plus: the reasoning-efficient Swift 1.5 base with the refusals ablated "
