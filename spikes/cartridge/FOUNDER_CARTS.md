@@ -36,7 +36,9 @@ unmeasured — `bench/p1/dilution_test.py` is ready and needs the cap gone to mi
 ## The carts, named to route
 
 Sizes are targets from the table above: **5,000–25,000 tokens per cart (196–513 MB)**, which keeps the floor
-amortised and a graft under a second to stage. Every file below is in
+amortised and a graft under a second to stage. **Superseded by measurement** — see "The measured law of what a
+cart can carry" below: at 8,696 tokens only the front of the cart answers, so the working size is roughly
+2,000–3,000 tokens with the most-asked material last. Every file below is in
 `~/Documents/Clio's_Research/founding_corpus/`, and the `title` field of each mint is the routing sentence,
 because the ledger shows that text wherever carts are listed.
 
@@ -80,6 +82,65 @@ the whole book and defeats the routing. Grouped by subject, each cart is a thing
 `influence-montesquieu`, `influence-locke` (*Second Treatise*, *Human Understanding*), `influence-blackstone`,
 `influence-cato`, `influence-bible` (King James), `influence-plutarch`, `influence-aristotle` — all clean in
 the corpus. These are the carts for "who did the founders read?" and for any argument about pedigree.
+
+## The measured law of what a cart can carry (2026-10-30, after the curve was run)
+
+The targets above were written before the measurement. The measurement is now on record, and it
+changes them. Instruments: `bench/p1/dilution_test.py`, `density_curve_test.py`,
+`density_voice_test.py`, `position_test.py`, `framing_ab_test.py`, `farewell-position-2026-10-30.log`.
+All on nested carts of the same twelve charters, three repeats, temperature 1.0, golds verified present
+in the text and checked cartless first.
+
+1. **A cart is read like a document, not like an index.** In the 12-document cart (8,696 tokens),
+   retrieval by position in the cart: **positions 1-4 = 6/12, positions 5-8 = 0/12, positions
+   9-12 = 1-3/12** (strict; the judged column is within one ask of it). Head strong, middle lost,
+   tail partly recovered — a U-shape, which is the shape the "lost in the middle" literature predicts
+   for a linear read. Document *count* was never the variable; it is a proxy for how much of the cart
+   ends up in the middle.
+2. **Titles are not an index the model can consult.** Asked about the Judiciary Act inside the
+   twelve-document cart, the model answered: *"there is no document titled JUDICIARY ACT, 1789 — the
+   only document provided is titled THE UNITED STATES BILL OF RIGHTS."* It denies documents that are
+   in the state. Title lines in the cart text neither help nor hurt (arm C vs B: 9/36 vs 10/36).
+3. **How the ask is worded matters less than where the answer sits.** Quoting the title vs naming the
+   actor in prose: 7/36 vs 10/36 strict, 7/36 vs 11/36 judged — inside the noise at this n, and the
+   position effect is six times bigger than the framing effect.
+4. **State carries a *known text*, not a searchable transcript.** Probing one document (Washington's
+   Farewell Address, 7,293 tokens, no titles) with exact completions: the tail (93% through) completed
+   correctly **3/4 with the cart and 0/2 without**, while the head and middle completions landed on
+   *other real sentences of the same document* ("bosom of his family") rather than the probed line. The
+   cart gives the model the document as something it has read; an arbitrary probe can still land on the
+   wrong page.
+5. **Content asks beat exact-wording asks.** "Quote the words that follow X" scored 0/108 on a strict
+   five-word quote, and the tolerant scorer still put it far below the same documents asked as content
+   ("what do the subscribers say they combine themselves into?" → "a civil body politick"). Grade
+   content with a cold temperature-0 judge, not only by substring: the judge and the substring matcher
+   disagreed on 3 of 12 documents, always in the direction of a correct paraphrase called a miss.
+6. **Temperature 1.0 is noisy for factual asks.** The same grafted ask abstained in 5 of 6 repeats and
+   quoted the sentence verbatim in the sixth; at temperature 0.3 the abstention rate was the same. The
+   bench rule stands at three repeats minimum, and a single answer is not a result — but note the
+   variance is in the *abstention*, not in the temperature setting.
+7. **Cost, measured on the same carts:** floor 117.7 MB, 15.3-15.6 KB/token up to ~10k tokens
+   (dil3 2,082 tok = 149.9 MB, dil6 4,388 = 185.1, dil9 5,931 = 208.6, dil12 8,696 = 250.8 — the
+   linear model predicts 150.0 / 185.7 / 209.6 / 252.5). Above ~19k tokens the per-token cost rises
+   (fed6 18,971 tok = 525.9 MB is 21.5 KB/tok, fed12 37,376 = 806.9 MB is 18.4 KB/tok), so the linear
+   model is good to about 10k tokens and optimistic beyond it. Staging a cart for a graft stays at
+   ~50 ms for 229 MB (~4.6 GB/s), and a graft of 8,696 tokens costs about 0.9 s end to end.
+8. **One graft per request.** `X-Strata-Carts-Graft` resolves a single cart (server.py:7952 sets one
+   path), so "several small carts mounted together, each with its own head" is not available without
+   engine work. Today the only lever is cart size and ordering.
+
+**What this means for the founder family.** The 5,000-25,000 token target above is too big to be
+consulted: at 8,696 tokens only the front of the cart answers. Until multi-cart grafting exists, the
+rule that the measurements support is:
+
+- **one document per cart** where the document fits in roughly 2,000-3,000 tokens, and
+- **split long documents by section** (the Farewell Address at 7,293 tokens answered reliably only at
+  its tail), one cart per section, named for what the section is about;
+- **put the most-asked material last**, since the tail of the cart is adjacent to the ask and the
+  middle is where answers get lost;
+- **route by the ledger, not by the state**: the cart *name* and *title* are for choosing which cart to
+  mount, and the model cannot be trusted to enumerate what is inside a mounted cart.
+
 
 ## Two caveats, labeled rather than buried
 
