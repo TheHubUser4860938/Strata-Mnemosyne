@@ -7311,8 +7311,32 @@ class CartConflict(ValueError):
     box moved under the mint)."""
 
 
-MINT_LEAD = ("Learn the note below and hold it for later reference. Do not answer it, do not "
-             "restate it; acknowledge with OK only.\n\n")
+# FORGE vs READ - the lesson of the owner's correction, 2026-10-29: "it's supposed to be knowledge not a
+# command".  TEST815's own code (`815.py`, physical_commit) forges a cartridge as a LABEL plus the DOCUMENT
+# ("Scientific article: <title>\n<text>") with no instruction and no acknowledgement, and puts the
+# instruction in the READ prompt instead ("Answer the question using only the physical scientific document
+# memory... If unsupported, answer UNKNOWN.").  Our mint did the opposite: it wrapped the body in "Learn the
+# note... do not answer it, acknowledge with OK only" and saved the state AFTER an assistant "OK".  Measured
+# with the graft finally firing: asked about the mounted cart, the model answered "OK".  It was saluting.
+# So an episode cart now stores the document and nothing else, and the reader supplies the instruction.
+# The standing cart keeps its acknowledgement (seed, below): its 1.000 recall was measured WITH it, and one
+# variable per boot.
+MINT_FORGE_VERSION = 2      # 1 = the instruction-shaped forge; 2 = label + document, no ack turn
+MINT_LABEL = "Document"
+
+
+def mint_forge(text: str, title: str = "") -> str:
+    """The prompt whose tokens become a cart's state: a label and the body, MAM's shape (815.py).  No
+    command, no question, no acknowledgement - the state is the document, so a reader can ask it anything."""
+    head = f"{MINT_LABEL}: {title.strip()}" if str(title or "").strip() else MINT_LABEL
+    return f"{head}\n\n{text}"
+
+
+def mint_hash(text: str) -> str:
+    """A cart's file name from its body AND the forge version: a forge-shape change must not leave the
+    ledger calling an old-shaped file 'caught up' (the same blind spot `caught_up` showed for the engine's
+    config fingerprint the same day - text-hash + file-exists cannot see a change in what the bytes MEAN)."""
+    return "MEM-CART-" + hashlib.sha256(f"v{MINT_FORGE_VERSION}\n{text}".encode("utf-8")).hexdigest()[:8] + ".bin"
 
 
 class CartMinter:
@@ -7453,7 +7477,7 @@ class CartMinter:
                                "force to re-mint")
         text, n_rows, gone = self.render(sources, force=force)
         kind = "episode" if str(sources.get("text") or "").strip() else "rows"
-        file = "MEM-CART-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:8] + ".bin"
+        file = mint_hash(text)
         svc = self.svc
         cart = getattr(svc, "cartridges", None)
         caught_up = (bool(existing) and existing[0]["file"] == file
@@ -7478,9 +7502,9 @@ class CartMinter:
                     raise memory_api.StoreError(f"engine cannot load for mint: {e}")
                 try:
                     ids, thinking, max_new = svc.prepare(
-                        [{"role": "system", "content": MINT_LEAD + text},
-                         {"role": "user", "content": "Acknowledge with OK only."}], None, {}, 24)
-                    for kind_, x in svc.run(ids, thinking, None, max_new or 24, {},
+                        [{"role": "system", "content": mint_forge(text, str(sources.get("title") or ""))}],
+                        None, {}, 1)          # ONE token, no ack turn: the state is the document, not a dialogue
+                    for kind_, x in svc.run(ids, thinking, None, max_new or 1, {},
                                             threading.Event()):
                         if kind_ == "done":
                             break
