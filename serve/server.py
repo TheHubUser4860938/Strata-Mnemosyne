@@ -7377,7 +7377,7 @@ class CartConflict(ValueError):
 # So an episode cart now stores the document and nothing else, and the reader supplies the instruction.
 # The standing cart keeps its acknowledgement (seed, below): its 1.000 recall was measured WITH it, and one
 # variable per boot.
-MINT_FORGE_VERSION = 3      # 1 = instruction-shaped; 2 = label + document; 3 = and the turn stays CLOSED
+MINT_FORGE_VERSION = 4      # 4 = BARE document tokens: no chat template in the cart bytes at all
 MINT_LABEL = "Document"
 
 
@@ -7386,6 +7386,48 @@ def mint_forge(text: str, title: str = "") -> str:
     command, no question, no acknowledgement - the state is the document, so a reader can ask it anything."""
     head = f"{MINT_LABEL}: {title.strip()}" if str(title or "").strip() else MINT_LABEL
     return f"{head}\n\n{text}"
+
+
+def mint_ids(tok, doc: str) -> list[int]:
+    """A knowledge cart's tokens: the document as BARE text, with NO chat template in the bytes.
+
+    The owner's ruling, 2026-10-30: "why are there any chat template args at all in the cart? ... those
+    things are used for how your model operates, it should never be in any of the cartridges or tests,
+    because all it does is poison the data - as soon as you consume them you stop dead in your tracks."
+    That is exactly what was measured all morning: a cart forged through the template mounted its whole
+    body (reused=2318) and answered with ONE token, empty content, finish=stop - the model reading a
+    turn-boundary control token in the middle of a state and doing the only thing a turn marker allows.
+
+    So the cart is knowledge, not a turn: it never enters the turn machinery. `parse_special=False` makes a
+    control token's TEXT inside a source row just text, and the round-trip check below is what proves
+    nothing was inserted - verbatim or nothing, loudly, at mint time rather than as a mystery at read time.
+    MAM's own shape is a raw corpus document, so this is also the faithful reading of their design."""
+    ids = list(tok.encode(doc, parse_special=False))
+    # The ID space, not the text, is the honest guard: this tokenizer's own note (#537 area) records that a
+    # special can come back as ONE token even when parse_special is False, and a special that decodes to its
+    # own markup passes a round-trip check while still sitting in the state as a turn boundary. So ask the
+    # ids directly, and name the culprit rather than say "the forge is dirty".
+    by_id: dict[int, str] = {}
+    for name_, val in (getattr(tok, "special_ids", None) or {}).items():
+        if isinstance(val, int):
+            by_id[val] = str(name_)
+    for text_, val in (getattr(tok, "special_tokens", None) or {}).items():
+        if isinstance(val, int):
+            by_id.setdefault(val, str(text_))
+    leaked = sorted({i for i in ids if i in by_id})
+    if leaked:
+        raise memory_api.StoreError(
+            f"mint: {len(leaked)} chat-template token(s) in the knowledge - "
+            + ", ".join(f"{by_id[i]} (id {i})" for i in leaked[:4])
+            + " - a cart is a document, not a turn")
+    back = tok.decode(ids)
+    if back.strip() != doc.strip():          # a BOS, or a lost byte: the text check catches what ids cannot
+        d = next((i for i, (a, b) in enumerate(zip(back, doc)) if a != b), min(len(back), len(doc)))
+        lo, hi = max(0, d - 24), d + 24
+        raise memory_api.StoreError(
+            f"mint: the bare forge is not verbatim at char {d} - read back {back[lo:hi]!r} against "
+            f"wrote {doc[lo:hi]!r} (a chat-template token got into the knowledge)")
+    return ids
 
 
 def mint_hash(text: str) -> str:
@@ -7557,14 +7599,22 @@ class CartMinter:
                 except Exception as e:                            # noqa: BLE001 - report per op
                     raise memory_api.StoreError(f"engine cannot load for mint: {e}")
                 try:
-                    ids, thinking, max_new = svc.prepare(
-                        [{"role": "system", "content": mint_forge(text, str(sources.get("title") or ""))}],
-                        None, {}, 0, open_turn=False)
-                    # PREFILL ONLY, the way serve/split.py reads a prompt without making a token: the old forge
-                    # generated an acknowledgement and saved AFTER it, so the mounted state carried a stray
-                    # assistant token and its end-of-turn. Measured: a grafted cart answered a question with one
-                    # token and stop - the same "generation closes at a control token" shape that froze this
-                    # assistant's own thinking all evening. The document must end where the document ends.
+                    doc = mint_forge(text, str(sources.get("title") or ""))
+                    ids, thinking, max_new = mint_ids(svc.tok, doc), False, 0
+                    # The comparison, for the log - and it must not COST anything: store=False keeps a cart's
+                    # document out of the conversation prompt store (#567), which exists to share suffixes
+                    # between real turns, not to remember every document ever forged.
+                    template_ids = len(svc.encode_prompt([{"role": "system", "content": doc}], None, {},
+                                                         store=False, open_turn=False))
+                    # PREFILL ONLY, the way serve/split.py reads a prompt without making a token. Two fixes were
+                    # tried here first and both are recorded as insufficient (measured on fed51, 2,318 tok): the
+                    # forge no longer generates an acknowledgement (v2), and the template no longer opens an
+                    # assistant turn it never closes (v3, the open_turn plumbing used by the comparison above) -
+                    # each change still answered a grafted question with one token and stop. The third is the root
+                    # and stop. The third is the root cause, the owner's call: the template itself goes, because
+                    # its control tokens were sitting INSIDE the knowledge (v4). The document now ends where the
+                    # document ends. The STANDING cart keeps the template on purpose: its reuse law is a
+                    # byte-exact match with real requests, so its bytes must look like a request's bytes.
                     for kind_, x in svc.run(ids, thinking, None, 0, {}, threading.Event(), prefill_only=True):
                         if kind_ == "done":
                             break
@@ -7574,6 +7624,10 @@ class CartMinter:
                 if code != 200:
                     raise memory_api.StoreError(f"mint save refused {code}: {str(r)[:120]}")
                 tokens, nbytes = int(r.get("n_saved") or 0), int(r.get("n_written") or 0)
+                print(f"[strata] carts: minted {name} bare - {tokens} tok read into the state "
+                      f"({nbytes / 1e6:.1f} MB); the chat-template forge cost {template_ids} tok for the same "
+                      f"text, so the markup was {template_ids - tokens} tok of turn machinery in the knowledge",
+                      flush=True)
                 if cart is not None and cart.applied and cart.state in ("loaded", "seeded"):
                     applied_was = cart.applied
                     rc, rr = svc.slot_action("0", "restore", applied_was)  # hand the slot back

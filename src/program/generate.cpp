@@ -14687,6 +14687,22 @@ int main(int argc, char** argv) {
                             merged.reserve(ids.size() + graft_image.live.ids.size());
                             for (const int32_t t : graft_image.live.ids) merged.push_back((int64_t) t);
                             merged.insert(merged.end(), ids.begin(), ids.end());
+                            // THE SEAM, on the record (2026-10-30). Two hypotheses about why a grafted read answers with one
+                            // token and stop have already died here - an opened assistant turn inside the image, and the verify window
+                            // skipping the capture - so the merge now PRINTS what the model actually sees at the join: the last ids of
+                            // the mounted image and the first ids of the incoming request. Grafted reads are rare and this is one line
+                            // each. Printed before the move, while `ids` is still the request's own.
+                            {
+                                auto show = [](const auto& v, size_t from, size_t to) {
+                                    std::string s;
+                                    for (size_t i = from; i < to; ++i) { s += std::to_string((long long) v[i]); s += ' '; }
+                                    return s;
+                                };
+                                const auto& gi = graft_image.live.ids;
+                                std::fprintf(stderr, "strata serve: graft seam: image %zu ids [tail %s] + request [%s] %zu ids\n",
+                                             gi.size(), show(gi, gi.size() > 6 ? gi.size() - 6 : 0, gi.size()).c_str(),
+                                             show(ids, 0, ids.size() > 10 ? 10 : ids.size()).c_str(), ids.size());
+                            }
                             ids = std::move(merged);
                             const_cast<int64_t&>(n) = (int64_t) ids.size();   // NOLINT: see the note above
                         }
