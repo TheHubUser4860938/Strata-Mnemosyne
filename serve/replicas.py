@@ -380,7 +380,13 @@ class ReplicaEngine:
                     self.healing[k] = False
             threading.Thread(target=run, daemon=True).start()
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
+        # `prefill_only` is forwarded only when it is set, so a plain request makes exactly the call it
+        # always made (the byte-identical law) while a read-the-prompt-make-no-token request still means
+        # something downstream. Without the argument at all this wrapper raised
+        # "ReplicaEngine.generate() got an unexpected keyword argument 'prefill_only'" and EVERY request to
+        # a replicated box died with a 400 - the drift was not only in the mocks (measured 2026-10-30,
+        # serve/test_replicas.py: 3 errors and 1 failure, all of them this TypeError).
         # imported here: serve.server imports this module
         from serve.server import EngineDied, EngineNonFinite
         k = self.route(ids)
@@ -402,10 +408,11 @@ class ReplicaEngine:
                     if cancel is not None and cancel.is_set():
                         return
                 held = True
+            extra = {"prefill_only": True} if prefill_only else {}
             if embeddings is not None:
-                gen = e.generate(ids, max_new, sampling, cancel, embeddings=embeddings)
+                gen = e.generate(ids, max_new, sampling, cancel, embeddings=embeddings, **extra)
             else:
-                gen = e.generate(ids, max_new, sampling, cancel)
+                gen = e.generate(ids, max_new, sampling, cancel, **extra)
             for t in gen:
                 if t is not None:
                     produced.append(t)
