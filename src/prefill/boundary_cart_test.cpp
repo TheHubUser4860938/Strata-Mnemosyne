@@ -1,23 +1,23 @@
-// src/prefill/cut3_test.cpp - the decision half of STRATA_CUT3_CAPTURE (memory-core, 2026-10-29).
+// src/prefill/boundary_cart_test.cpp - the decision half of STRATA_BOUNDARY_CAPTURE (memory-core, 2026-10-29).
 //
 // Pure policy, no device and no file IO, so the rule that decides WHICH read donates its boundary rows -
 // and which positions inside it - is checked without a GPU, the way the graft lever is
-// (src/core/conversation_graft_test.cpp).  The environment is read by Cut3Capture::process() at run time
+// (src/core/conversation_graft_test.cpp).  The environment is read by BoundaryCapture::process() at run time
 // and is deliberately not exercised here: a static that caches the environment once per process cannot be
 // re-asked inside one test binary, so the cases construct the struct and set the fields they test.
 //
 // What these checks protect, in one line each: the default path (nothing runs, nothing is printed), the
 // skip-don't-fail rule that lets a probe sit beside a serving box's own traffic, the in-order rule that
 // keeps two prompts' rows from landing in one file, and the byte arithmetic that the whole bank claim of
-// include/strata/prefill/cut3.hpp is built on.
+// include/strata/prefill/boundary_cart.hpp is built on.
 
-#include "strata/prefill/cut3.hpp"
+#include "strata/prefill/boundary_cart.hpp"
 #include "strata/core/geometry.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 
-using strata::prefill::Cut3Capture;
+using strata::prefill::BoundaryCapture;
 using strata::core::ModelGeometry;
 using strata::core::is_qsa_layer;
 
@@ -31,30 +31,30 @@ void check(bool value, const char* description) {
 // A capture as the probe would build it after reading its environment: on, boundary 12, one body to 4096
 // positions - the shape the owner chose on 2026-10-29 (tuned, not faithful: "we running a different model
 // than what he was testing").
-Cut3Capture probe() {
-    Cut3Capture c;
+BoundaryCapture probe() {
+    BoundaryCapture c;
     c.on = true;
-    c.dir = "/tmp/cut3-probe";
+    c.dir = "/tmp/bndy-probe";
     return c;
 }
 
-const char* why(const Cut3Capture& c, int64_t pos0, int64_t n, int64_t lb = 0, int64_t le = -1,
+const char* why(const BoundaryCapture& c, int64_t pos0, int64_t n, int64_t lb = 0, int64_t le = -1,
                 bool pictures = false, bool* routine = nullptr) {
     return c.decline(pos0, n, lb, le, (int64_t) ModelGeometry{}.n_layers, pictures, routine);
 }
 }  // namespace
 
 int main() {
-    const Cut3Capture off;   // nothing in the environment: this is every box that never heard of CUT3
+    const BoundaryCapture off;   // nothing in the environment: this is every box that never heard of CUT3
 
     // C1 - the default-path guard.  Unset, the probe declines, and a run must not print or write a thing.
     // This is the check that fails the moment the hook is reached for unconditionally.
-    check(!off.on, "an unset STRATA_CUT3_CAPTURE leaves the probe off");
+    check(!off.on, "an unset STRATA_BOUNDARY_CAPTURE leaves the probe off");
     check(why(off, 0, 1000) != nullptr, "off: the read declines");
     check(why(off, 0, 1000)[0] != '\0', "off: and the reason is a sentence, not an empty string");
-    check(!off.wants(Cut3Capture::kCut3BoundaryDefault), "off: no layer is ever wanted");
+    check(!off.wants(BoundaryCapture::kBoundaryLayerDefault), "off: no layer is ever wanted");
 
-    const Cut3Capture c = probe();
+    const BoundaryCapture c = probe();
 
     // C2 - the shape the probe is for: a cold, whole-trunk, picture-free read of body length.
     check(why(c, 0, 1369) == nullptr, "a cold body-length read is captured");
@@ -82,7 +82,7 @@ int main() {
     // C4 - the in-order rule: two prompts must never share one file, and a chunk past the prompt's end is
     // the decode that followed it, not a corrupted row.
     {
-        Cut3Capture p = probe();
+        BoundaryCapture p = probe();
         p.begin_prompt();
         check(p.taken == 0 && p.next_pos == 0, "begin_prompt starts the position and the body over");
         check(p.take(0, 512, 1369), "chunk 1 (positions 0-511) is taken");
@@ -100,9 +100,9 @@ int main() {
     // geometry so a change to hc or n_embd is a change to this claim, and this test says so.
     {
         const ModelGeometry g;
-        check(Cut3Capture::row_bytes_bf16(g.hc, g.n_embd) == 20480,
+        check(BoundaryCapture::row_bytes_bf16(g.hc, g.n_embd) == 20480,
               "one boundary row is hc x n_embd x bf16 = 20,480 B - the arithmetic of the 6x bank claim");
-        check(Cut3Capture::row_bytes_bf16(4, 2560) == 20480, "and it is spelled out for the reader, not derived");
+        check(BoundaryCapture::row_bytes_bf16(4, 2560) == 20480, "and it is spelled out for the reader, not derived");
     }
 
     // C6 - the architectural claim that makes a layer-boundary cut mean anything on this hybrid at all:
@@ -114,16 +114,16 @@ int main() {
         check(is_qsa_layer(g, 3) && !is_qsa_layer(g, 0) && !is_qsa_layer(g, 2),
               "layer 3 is the FIRST full-attention layer (l % 4 == 3), which is why MAM's cut has a counterpart here");
         int64_t qsa_below = 0, gdn_below = 0;
-        for (int64_t l = 0; l < Cut3Capture::kCut3BoundaryDefault; ++l)
+        for (int64_t l = 0; l < BoundaryCapture::kBoundaryLayerDefault; ++l)
             (is_qsa_layer(g, l) ? qsa_below : gdn_below) += 1;
         check(qsa_below == 3 && gdn_below == 9,
               "boundary 12 leaves exactly 3 attention layers (their K/V) and 9 recurrent ones (their fixed state) below");
-        check(Cut3Capture::kCut3BoundaryDefault % g.qsa_interval == 0,
+        check(BoundaryCapture::kBoundaryLayerDefault % g.qsa_interval == 0,
               "the boundary sits on a stage edge, so no layer is ever split across the cut");
-        check(Cut3Capture::kCut3BoundaryDefault > g.qsa_interval,
+        check(BoundaryCapture::kBoundaryLayerDefault > g.qsa_interval,
               "the tuned cut is above the faithful one (4): the owner chose tuned because this is not the model they measured");
     }
 
-    std::printf("cut3_test: %d checks passed\n", checks);
+    std::printf("boundary_cart_test: %d checks passed\n", checks);
     return 0;
 }

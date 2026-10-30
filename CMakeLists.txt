@@ -179,9 +179,9 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_test(NAME conversation_graft_test COMMAND conversation_graft_test)
   # memory-core (2026-10-29): the capture half of the MAM cartridge line - which read donates its boundary
   # rows, and which positions inside it.  Pure policy: no device, no file IO, so no GPU and no model.
-  add_executable(cut3_test src/prefill/cut3_test.cpp)
-  target_include_directories(cut3_test PRIVATE include)
-  add_test(NAME cut3_test COMMAND cut3_test)
+  add_executable(boundary_cart_test src/prefill/boundary_cart_test.cpp)
+  target_include_directories(boundary_cart_test PRIVATE include)
+  add_test(NAME boundary_cart_test COMMAND boundary_cart_test)
   add_executable(conversation_split_failure_test src/core/conversation_split_failure_test.cpp)
   target_include_directories(conversation_split_failure_test PRIVATE include)
   add_test(NAME conversation_split_failure_test COMMAND conversation_split_failure_test)

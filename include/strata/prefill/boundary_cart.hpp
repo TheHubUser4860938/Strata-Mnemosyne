@@ -1,6 +1,16 @@
 #pragma once
 
-// include/strata/prefill/cut3.hpp - STRATA_CUT3_CAPTURE: the rows a MAM cartridge is made of
+// include/strata/prefill/boundary_cart.hpp - STRATA_BOUNDARY_CAPTURE: the rows a boundary cart is made of.
+//
+// WHY THIS NAME (the owner's ruling, 2026-10-30): "name things the way it works on our model... take
+// inspiration from but do not copy; we need a different path and won't be replicating his exact results due
+// to architectural differences."  MAM's `CUT3` means "the cut after block 3" on their DENSE 80-layer
+// Qwen2.5-72B, where the prize is storing 1/10 of the K/V.  Our trunk is a HYBRID: 36 of its 48 layers carry
+// no per-token K/V at all, they carry a fixed-size recurrent state, so their ratio has no counterpart here
+// and the faithful layer number has none either.  What transfers is the IDEA - a partial state taken at a
+// layer boundary, mounted with zero input embeddings, the layers above recomputed.  What does not transfer
+// is their arithmetic: our row is hc 4 x n_embd 2560 = 20,480 B in bf16 (theirs 16,384), and our prize is
+// escaping the measured 238 MB floor a cart pays for knowing one sentence, not a factor of ten.
 // (memory-core research, 2026-10-29).  Pure policy - no device, no file IO - so the whole rule is
 // testable the way the graft lever is (src/core/conversation_graft_test.cpp).
 //
@@ -43,18 +53,18 @@
 
 namespace strata::prefill {
 
-struct Cut3Capture {
+struct BoundaryCapture {
     /// First layer that does NOT run for captured positions, i.e. rows are taken as they enter it.  Tuned
-    /// for this hybrid, not faithful to the paper: see C6 in src/prefill/cut3_test.cpp for what sits below it.
-    static constexpr int64_t kCut3BoundaryDefault = 12;
+    /// for this hybrid, not faithful to the paper: see C6 in src/prefill/boundary_cart_test.cpp for what sits below it.
+    static constexpr int64_t kBoundaryLayerDefault = 12;
     /// Reads longer than this are skipped by default: an ordinary chat turn on a cartridge box carries the
     /// standing text (measured ~13.9k tokens on this box), and its rows are not a body we asked for.
-    static constexpr int64_t kCut3MaxPromptDefault = 4096;
+    static constexpr int64_t kMaxPromptDefault = 4096;
 
-    bool on = false;              ///< STRATA_CUT3_CAPTURE=<dir>; unset or empty: nothing here runs
-    int64_t boundary = kCut3BoundaryDefault;   ///< STRATA_CUT3_BOUNDARY
-    int64_t min_prompt = 1;       ///< STRATA_CUT3_MIN_PROMPT: shorter reads are not worth a file
-    int64_t max_prompt = kCut3MaxPromptDefault;
+    bool on = false;              ///< STRATA_BOUNDARY_CAPTURE=<dir>; unset or empty: nothing here runs
+    int64_t boundary = kBoundaryLayerDefault;   ///< STRATA_BOUNDARY_LAYER
+    int64_t min_prompt = 1;       ///< STRATA_BOUNDARY_MIN_PROMPT: shorter reads are not worth a file
+    int64_t max_prompt = kMaxPromptDefault;
     std::string dir;
 
     // Bookkeeping for the in-order rule, per captured read:
@@ -66,7 +76,7 @@ struct Cut3Capture {
     const char* decline(int64_t pos0, int64_t n, int64_t lb, int64_t le, int64_t n_layers,
                         bool pictures, bool* routine = nullptr) const {
         if (routine != nullptr) *routine = false;
-        if (!on) return "off (STRATA_CUT3_CAPTURE is not set)";
+        if (!on) return "off (STRATA_BOUNDARY_CAPTURE is not set)";
         if (pos0 != 0) {
             if (routine != nullptr) *routine = true;
             return "not a cold read (pos0 != 0)";
@@ -75,11 +85,11 @@ struct Cut3Capture {
         if (pictures) return "a prompt with pictures";
         if (n < min_prompt) {
             if (routine != nullptr) *routine = true;
-            return "shorter than STRATA_CUT3_MIN_PROMPT";
+            return "shorter than STRATA_BOUNDARY_MIN_PROMPT";
         }
         if (n > max_prompt) {
             if (routine != nullptr) *routine = true;
-            return "longer than STRATA_CUT3_MAX_PROMPT";
+            return "longer than STRATA_BOUNDARY_MAX_PROMPT";
         }
         return nullptr;
     }
@@ -103,10 +113,10 @@ struct Cut3Capture {
 
     /// Read once per process, the way KVA does it: the environment does not change under a running
     /// server, and a knob that could would make a measured run unreproducible.
-    static const Cut3Capture& process() {
-        static const Cut3Capture c = [] {
-            Cut3Capture k;
-            const char* d = std::getenv("STRATA_CUT3_CAPTURE");
+    static const BoundaryCapture& process() {
+        static const BoundaryCapture c = [] {
+            BoundaryCapture k;
+            const char* d = std::getenv("STRATA_BOUNDARY_CAPTURE");
             if (d == nullptr || *d == '\0') return k;
             k.on = true;
             k.dir = d;
@@ -117,9 +127,9 @@ struct Cut3Capture {
                 const long long x = std::strtoll(v, &end, 10);
                 return (end == nullptr || *end != '\0' || x < 0) ? dflt : (int64_t) x;
             };
-            k.boundary = num("STRATA_CUT3_BOUNDARY", kCut3BoundaryDefault);
-            k.min_prompt = num("STRATA_CUT3_MIN_PROMPT", 1);
-            k.max_prompt = num("STRATA_CUT3_MAX_PROMPT", kCut3MaxPromptDefault);
+            k.boundary = num("STRATA_BOUNDARY_LAYER", kBoundaryLayerDefault);
+            k.min_prompt = num("STRATA_BOUNDARY_MIN_PROMPT", 1);
+            k.max_prompt = num("STRATA_BOUNDARY_MAX_PROMPT", kMaxPromptDefault);
             return k;
         }();
         return c;

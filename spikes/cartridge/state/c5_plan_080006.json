@@ -1,0 +1,335 @@
+{
+ "tag": "080006",
+ "sizes": {
+  "R1": [
+   1,
+   20
+  ],
+  "R5": [
+   5,
+   100
+  ],
+  "R10": [
+   10,
+   187
+  ],
+  "R20": [
+   20,
+   294
+  ]
+ },
+ "probes": {
+  "MEM": [
+   {
+    "mark": "MEM",
+    "cue": "enforced",
+    "gold": "rolls",
+    "fact": "Strata memory core, two laws now enforced in code and test (2026-10-23 end-to-end audit): a failed read rolls back the store's single psycop"
+   },
+   {
+    "mark": "MEM",
+    "cue": "tooling",
+    "gold": "debt",
+    "fact": "Strata memory tooling audit (2026-10-16, corrected 2026-10-23): the debt list is stale. m4_position, m4_shelfcall, m4_subject and m4_xref no"
+   }
+  ],
+  "AI": [
+   {
+    "mark": "AI",
+    "cue": "agent-memory",
+    "gold": "survey",
+    "fact": "The 2026-10-24 agent-memory field survey found the leaders converging on OUR laws: Hermes Agent = bounded MEMORY.md/USER.md frozen-snapshot "
+   },
+   {
+    "mark": "AI",
+    "cue": "2026-10-12",
+    "gold": "538b4e16",
+    "fact": "Clio work log 2026-10-12: 2 session entries filed at /home/eugene/Documents/Clio's_Journal/2026-10/worklog-2026-10-12.txt (713 chars, sha8 5"
+   }
+  ],
+  "MEM/USER": [
+   {
+    "mark": "MEM/USER",
+    "cue": "grapheneos",
+    "gold": "phone",
+    "fact": "User runs GrapheneOS on their phone"
+   },
+   {
+    "mark": "MEM/USER",
+    "cue": "political",
+    "gold": "drafting.",
+    "fact": "User wants AI to reference their political documents when drafting."
+   }
+  ],
+  "OPS": [
+   {
+    "mark": "OPS",
+    "cue": "catalog.py",
+    "gold": "4509-4532",
+    "fact": "Phase 1 BUILT and landed 2026-10-24 (owner's 'continue building'): MEM/CAT index cartridges via tools/m4_catalog.py - 24 label rows (ids 450"
+   },
+   {
+    "mark": "OPS",
+    "cue": "live-verified",
+    "gold": "tool-ledger",
+    "fact": "Step 0 live-verified 2026-10-24 (owner restarted; boot carries the build - stats tool-ledger is the fingerprint). Browse gate PASSED on the "
+   }
+  ],
+  "DEC": [
+   {
+    "mark": "DEC",
+    "cue": "ratified",
+    "gold": "cartridge-first",
+    "fact": "Owner's cartridge plan ratified 2026-10-24 (option 3 + cartridge-first): MAM index cartridges approved as live-SQL catalog verb PLUS stored "
+   },
+   {
+    "mark": "DEC",
+    "cue": "rethought",
+    "gold": "browsed",
+    "fact": "Owner's architecture ruling 2026-10-24: tier-3 recall rethought from SERVED to BROWSED - the answering LLM queries the memory store agentica"
+   }
+  ],
+  "EVAL": [
+   {
+    "mark": "EVAL",
+    "cue": "tags",
+    "gold": "stripped",
+    "fact": "On 2026-10-17, it was confirmed that valid tags are stripped from the prompt while the invalid 'xultra' tag leaks through as literal text."
+   },
+   {
+    "mark": "EVAL",
+    "cue": "drained",
+    "gold": "zero.",
+    "fact": "On 2026-10-17, the manual drain process completed with 155 turns drained, resulting in a queue count of zero."
+   }
+  ],
+  "HW": [
+   {
+    "mark": "HW",
+    "cue": "distributes",
+    "gold": "180b",
+    "fact": "2026-10-17 (corrected): Strata distributes its 180B MoE (Qwen3.8-Flash-Next; earlier rows said 125B, owner corrected 2026-10-17) across GPU,"
+   },
+   {
+    "mark": "HW",
+    "cue": "vram-reserve-mib",
+    "gold": "recommends",
+    "fact": "The Strata-MAM-cartrige-mod project defaults the `--vram-reserve-mib` flag to 700 but explicitly recommends setting it to 3072 for AMD deskt"
+   }
+  ],
+  "MEM/STRAT": [
+   {
+    "mark": "MEM/STRAT",
+    "cue": "setup",
+    "gold": "start-here.bat",
+    "fact": "The Strata-MAM-cartrige-mod project uses a setup script (`./setup.sh` or `START-HERE.bat`) with a `--check` flag that performs a system audi"
+   },
+   {
+    "mark": "MEM/STRAT",
+    "cue": "protocols",
+    "gold": "require",
+    "fact": "Strata measurement protocols require testing at temperature 0.8 or 1.0 (never 0) with at least 3 repeats per ask and probe max_tokens of at "
+   }
+  ],
+  "MEM/LONGM": [
+   {
+    "mark": "MEM/LONGM",
+    "cue": "asks",
+    "gold": "estimate",
+    "fact": "On 2026-10-15, a smoke test of the ingest process completed 60 asks in 65 seconds (~1.1 s/ask), leading to an updated full run estimate of ~"
+   },
+   {
+    "mark": "MEM/LONGM",
+    "cue": "instrument",
+    "gold": "validated",
+    "fact": "The LME retrieval offline instrument was validated to three decimal places on 2026-10-15, matching live metrics exactly (turn_top1 0.517, tu"
+   }
+  ],
+  "MEM/TECH": [
+   {
+    "mark": "MEM/TECH",
+    "cue": "rebase",
+    "gold": "backup",
+    "fact": "The query-shelf router mapped postgres rebase/backup to TECH, MEM/LINUX, and DEC/SQLIT on 2026-10-17."
+   },
+   {
+    "mark": "MEM/TECH",
+    "cue": "exposure-decay",
+    "gold": "trilogy",
+    "fact": "The exposure-decay feature in the stuffing trilogy was shipped OFF because replay on 40 real turns showed related% falling from 53.0 to 49.6"
+   }
+  ],
+  "USR/PREF": [
+   {
+    "mark": "USR/PREF",
+    "cue": "designer",
+    "gold": "turbo",
+    "fact": "DavidAU is the designer of the turbo brilliance system that the user wants Strata to adapt to autonomously."
+   },
+   {
+    "mark": "USR/PREF",
+    "cue": "consumers",
+    "gold": "interface",
+    "fact": "The query-shelf router's probe consumers interface relies exclusively on the `vote` method, which remains unchanged."
+   }
+  ],
+  "STR": [
+   {
+    "mark": "STR",
+    "cue": "reverted",
+    "gold": "threading",
+    "fact": "On 2026-10-16, the STRATA configuration was reverted to pure upstream threading defaults by removing experimental flags, while retaining the"
+   },
+   {
+    "mark": "STR",
+    "cue": "restricted",
+    "gold": "c0.",
+    "fact": "The assistant confirmed that the 'auto' helper thread configuration was restricted to core C8, which is the SMT sibling of the host core C0."
+   }
+  ],
+  "DEC/POSTG": [
+   {
+    "mark": "DEC/POSTG",
+    "cue": "shipping",
+    "gold": "rebased",
+    "fact": "Strata's beta-1 shipping plan was rebased to native PostgreSQL per ADR-002, replacing the earlier SQLite-through-beta-1 plan."
+   },
+   {
+    "mark": "DEC/POSTG",
+    "cue": "45-suite",
+    "gold": "rebase.",
+    "fact": "On 2026-10-16, the user's project achieved 896 green tests in 272 seconds across the full 45-suite battery after the PostgreSQL rebase."
+   }
+  ],
+  "MEM/OPENC": [
+   {
+    "mark": "MEM/OPENC",
+    "cue": "317k-token",
+    "gold": "conversation.",
+    "fact": "The user's current project is being conducted within a single 317K-token pinned OpenCode conversation."
+   },
+   {
+    "mark": "MEM/OPENC",
+    "cue": "caches",
+    "gold": "startup",
+    "fact": "The OpenCode service caches its configuration at startup, preventing live updates until a reboot."
+   }
+  ],
+  "TECH/PYTHO": [
+   {
+    "mark": "TECH/PYTHO",
+    "cue": "bin",
+    "gold": "dependency",
+    "fact": "The project's memory sweep cron script was fixed on 2026-10-16 to use .venv/bin/python instead of bare python3 to resolve a missing psycopg "
+   },
+   {
+    "mark": "TECH/PYTHO",
+    "cue": "pgserver",
+    "gold": "mainline",
+    "fact": "The user's Python virtual environment is version 3.14, but the pgserver mainline library only supports up to version 3.12."
+   }
+  ],
+  "POL": [
+   {
+    "mark": "POL",
+    "cue": "joint",
+    "gold": "resolutionproposing",
+    "fact": "Document 'JOINT RESOLUTIONProposing an amendment to the Constitution of the United States restoring the original understanding of ' (.txt, 3"
+   },
+   {
+    "mark": "POL",
+    "cue": "anyone",
+    "gold": "2c20ca5ef4cbeee4",
+    "fact": "Document 'To anyone reading this Article' (.txt, 759 words, sha256 2c20ca5ef4cbeee4) is filed at /home/eugene/Documents/Rebuttals to Article"
+   }
+  ],
+  "USR": [
+   {
+    "mark": "USR",
+    "cue": "klornish-reach",
+    "gold": "fictional",
+    "fact": "Klornish-Reach is a fictional metropolis from the user's fiction, not the user's name. The user's first name is Dustin; Eugene is their midd"
+   },
+   {
+    "mark": "USR",
+    "cue": "e09cc2f7",
+    "gold": "belonging",
+    "fact": "The user identified commit e09cc2f7 as belonging to the 'web' component and commit 481a0ba2 as belonging to the 'R5b' component."
+   }
+  ],
+  "TECH/RESPO": [
+   {
+    "mark": "TECH/RESPO",
+    "cue": "wrong-cartridge",
+    "gold": "show",
+    "fact": "The user's venue scripts read timings from RESPONSES rather than logs, and wrong-cartridge/control tests must show 0 leaks or the venue exit"
+   },
+   {
+    "mark": "TECH/RESPO",
+    "cue": "strict",
+    "gold": "constraint",
+    "fact": "The project enforces a strict constraint that the chat-template delimiter byte-sequence must never be emitted in responses."
+   }
+  ],
+  "HW/NVME": [
+   {
+    "mark": "HW/NVME",
+    "cue": "snapshots",
+    "gold": "sufficient",
+    "fact": "On 2026-10-16, the user's local engine refused to save memory snapshots because the RAM floor check (--conversation-cache-min-free-mib 2560)"
+   },
+   {
+    "mark": "HW/NVME",
+    "cue": "minimum",
+    "gold": "mib",
+    "fact": "The engine enforces a minimum free RAM of 2560 MiB (`--conversation-cache-min-free-mib`) and a minimum free disk space of 4096 MiB (`--sessi"
+   }
+  ],
+  "MEM/COGNE": [
+   {
+    "mark": "MEM/COGNE",
+    "cue": "worklog-2026-10-15.txt",
+    "gold": "9ce15e63",
+    "fact": "Clio work log 2026-10-15: 20 session entries filed at /home/eugene/Documents/Clio's_Journal/2026-10/worklog-2026-10-15.txt (5127 chars, sha8"
+   },
+   {
+    "mark": "MEM/COGNE",
+    "cue": "chunks",
+    "gold": "lose",
+    "fact": "Cognee enforces a byte-exact tiling invariant where stored chunks concatenated in order must equal the source text, but it lacks section hie"
+   }
+  ]
+ },
+ "agg": [
+  {
+   "a": "MEM",
+   "b": "AI",
+   "ca": "enforced",
+   "cb": "agent-memory"
+  },
+  {
+   "a": "MEM/USER",
+   "b": "DEC",
+   "ca": "grapheneos",
+   "cb": "ratified"
+  },
+  {
+   "a": "OPS",
+   "b": "MEM",
+   "ca": "catalog.py",
+   "cb": "enforced"
+  },
+  {
+   "a": "AI",
+   "b": "OPS",
+   "ca": "agent-memory",
+   "cb": "catalog.py"
+  },
+  {
+   "a": "DEC",
+   "b": "MEM/USER",
+   "ca": "ratified",
+   "cb": "grapheneos"
+  }
+ ]
+}
