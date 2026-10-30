@@ -20,7 +20,61 @@ from strata_control.datafolder import data_dir      # the single-root law (2026-
 
 # The pack tokenizer the running server itself builds (serve/server.py L6149-6157). The symlink era
 # spelled this repo/Strata-data; the symlink is gone, so the path is resolved, not guessed.
-TOKDIR = data_dir(ROOT) / "packs/iq3_s/tokenizer"
+# RESOLVED, not remembered (2026-10-30). This line used to read "packs/iq3_s/tokenizer" - and the morning's
+# requant renamed the packs under it, so every sweep since 07:14 died with FileNotFoundError on a vocab.json
+# that no longer exists, with 117 turns of curation piling up behind a dead loop. A pack directory is a thing
+# that CHANGES, so the truth comes from the box's own configs (their `tokenizer` key), and the one that matters
+# is the one the RUNNING server names: this module exists to render the way the server renders, and taking the
+# alphabetically first pack would have handed the curation the heretic vocabulary while the box serves huihui.
+# STRATA_TOKDIR overrides for a venue run; a pack that is not on disk is a loud error naming the candidates,
+# never a stale guess that prices tokens against the wrong book.
+def _configs():
+    out = []
+    for cfg in sorted(ROOT.glob("strata-*.json")):
+        try:
+            d = json.loads(cfg.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if d.get("tokenizer"):
+            out.append((cfg, str(d.get("model_name") or ""), Path(d["tokenizer"])))
+    return out
+
+
+def _running_model():
+    """The model id the server says it serves, or "" when nothing answers: an offline render still works."""
+    import os
+    import urllib.request
+    port = os.environ.get("STRATA_PORT", "8005")
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as r:
+            return str(json.loads(r.read().decode()).get("model") or "")
+    except Exception:                                      # noqa: BLE001 - offline is normal here
+        return ""
+
+
+def _tokdir() -> Path:
+    import os
+    env = os.environ.get("STRATA_TOKDIR")        # a venue run names its own pack; a typo says so NOW,
+    if env:                                      # not three calls later as a mystery FileNotFoundError
+        p = Path(env)
+        if (p / "vocab.json").exists():
+            return p
+        raise FileNotFoundError(
+            f"venue_render: STRATA_TOKDIR={p} has no vocab.json. Packs on disk: "
+            + (", ".join(sorted(str(d) for d in (data_dir(ROOT) / "packs").glob("*/tokenizer")
+                               if (d / "vocab.json").exists())) or "(none)"))
+    cfgs = _configs()
+    live = _running_model()
+    named = [t for _c, m, t in cfgs if live and m == live]
+    order = named + [t for _c, _m, t in cfgs if t not in named]
+    for t in order:
+        if (t / "vocab.json").exists():
+            return t
+    listed = ", ".join(str(t) for t in order) or "(no config named a tokenizer)"
+    raise FileNotFoundError(f"venue_render: no tokenizer pack on disk; the configs name {listed}")
+
+
+TOKDIR = _tokdir()
 
 
 def load_tokenizer():
