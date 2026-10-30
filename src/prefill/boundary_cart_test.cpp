@@ -14,6 +14,7 @@
 #include "strata/prefill/boundary_cart.hpp"
 #include "strata/core/geometry.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -94,6 +95,46 @@ int main() {
         check(!p.take(1369, 1, 1369), "a decode step past the end of the prompt is not captured");
         p.begin_prompt();
         check(p.taken == 0 && p.next_pos == 0, "the next cold read starts over (one body per file)");
+    }
+
+    // C4b and C4c - the two shapes of the same defect, modelled the way the engine calls it: a read hands
+    // over p0 = 0, then 512, then 1024... and the LAST chunk is partial (T = min(capacity, n - p0)). The bug
+    // of 2026-10-30 was that prefill.cpp reset the tap per read and not the rule, so read 2 arrived offering
+    // p0 = 0 against a stale next_pos, captured NOTHING, and the log went on printing the first body's count.
+    // A probe that quietly stops measuring is worse than a missing one: it reads like a result.
+    {
+        // The caller, faithfully: positions start at 0 for every read, whether or not the probe was re-armed.
+        auto run_read = [](BoundaryCapture& c, int64_t n, int64_t cap) {
+            int64_t chunks = 0;
+            for (int64_t p0 = 0; p0 < n; p0 += cap) {
+                if (!c.take(p0, std::min(cap, n - p0), n)) break;
+                ++chunks;
+            }
+            return chunks;
+        };
+
+        // C4b - the polite caller, which re-arms (what prefill.cpp does now).
+        BoundaryCapture a = probe();
+        check(run_read(a, 99, 512) == 1 && a.taken == 99, "read 1: one partial chunk covers a 99-position body");
+        a.begin_prompt();
+        check(run_read(a, 2319, 512) == 5 && a.taken == 2319,
+              "read 2, re-armed: five chunks (four of 512, then a partial 271) cover 2319 positions");
+        a.begin_prompt();
+        check(a.taken == 0 && a.next_pos == 0, "begin_prompt clears both counters, so no read borrows another's count");
+
+        // C4c - the FORGOTTEN re-arm, which is the bug as shipped: no begin_prompt between the two reads.
+        // The self-arming rule in take() is what saves it, and this is the check that would catch its removal.
+        BoundaryCapture b = probe();
+        check(run_read(b, 99, 512) == 1 && b.taken == 99, "read 1 with no re-arm: still captured");
+        const int64_t got = run_read(b, 2319, 512);
+        check(got == 5 && b.taken == 2319,
+              "read 2 with NO re-arm: the probe re-arms itself at position 0 instead of silently capturing nothing");
+
+        // And the face-palm case the log showed: a smaller read must never report the previous, larger count.
+        BoundaryCapture c2 = probe();
+        run_read(c2, 99, 512);
+        run_read(c2, 88, 512);
+        check(c2.taken == 88, "a read of 88 positions reports 88 rows, never the 99 of the body before it (was \"99 of 88\")");
     }
 
     // C5 - the byte arithmetic every bank number in the header is built on.  Pinned to the compiled

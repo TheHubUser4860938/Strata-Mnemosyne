@@ -2991,6 +2991,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         if (bndy_why == nullptr) {
             if (bndy_tap.f.empty()) bndy_tap.open(bndy.dir, false);
             bndy_tap.begin_prompt();
+            bndy.begin_prompt();   // THE READ's counter too, not only the tap's: without this the tap was reset
+                                   // and the rule was not, so every read after the first found `p0 != next_pos`,
+                                   // wrote nothing, and the log kept reporting the FIRST read's row count for
+                                   // bodies ten times larger (measured 2026-10-30: "99 of 2319", and a directory
+                                   // that stayed empty because a write never happened).
             bndy_on = bndy_read = true;   // `bndy_read` survives the capture ending early: it names the READ
         } else if (bndy.on && !bndy_routine) {
             std::fprintf(stderr, "strata prefill: boundary capture skipped: %s\n", bndy_why);
