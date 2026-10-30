@@ -205,3 +205,39 @@ STRATA_CUT3_CAPTURE=/home/eugene/Strata-data/bench/p1/cut3_rows \
 Unset, C1 guarantees nothing runs and nothing prints — the default path stays byte-identical, which is
 the fork's law. The durable shape of this knob is the box config rather than the environment; that move
 is deliberately left to T2, so T1 changes one variable and not two.
+
+---
+
+## Ruled 2026-10-30 08:10 by the owner, and it changed the forge (commit ce9b72e2)
+
+**A knowledge cart holds no chat-template control tokens.** The mint had been rendering the document through the
+chat template, so the stored bytes were role opener + label + body + turn markup: the model's own turn-boundary
+markers, sitting inside stored knowledge. Measured consequence: a grafted cart mounted the whole document
+(reused=2318) and answered with one token, empty content, finish=stop.
+
+Two fixes were tried first and both were measured insufficient, so they are recorded as history rather than
+deleted: v2 stopped generating an acknowledgement, v3 stopped leaving an assistant turn open. The root was the
+template itself.
+
+The forge is now `mint_ids(tok, doc)`: bare text tokens, `parse_special=False`, no template in the path. Two
+guards, each proven able to fail:
+
+1. **The id space** - a special id in the cart is refused BY NAME. This is the primary guard because
+   serve/server.py's own note records a tokenizer returning a special as one id even when told not to parse
+   specials, and such a special decodes back to its own markup, so a pure text round-trip would pass while the
+   state still carried a turn boundary.
+2. **Verbatim** - `tok.decode(ids)` must equal the document, which catches a silent BOS or a lost byte.
+
+**Scope, deliberate:** only knowledge carts are bare. The standing tier-2 cart keeps the template, because its
+reuse law is a byte-exact match with real requests - its bytes must look like a request's bytes, or the prefix
+dies at the first differing token. `mint_hash()` folds the forge version into the file name, so v2/v3 carts are
+re-minted from scratch instead of being called "caught up" by a text hash that cannot see a shape change.
+
+**Density, now measured at every mint:** the per-mint log prints the bare count and what the template forge
+would have cost, so the markup's price in tokens is on the record rather than assumed. It is counted with
+`store=False`, so a cart's document no longer enters the conversation prompt store (#567).
+
+**Open, for the next boot:** whether a bare cart answers a NOVEL gold when grafted. probe-nine is the valid
+test; fed51 is not, because the cartless control answers Federalist 51 from weights - it measures transcription,
+not knowledge. If a bare cart still closes the turn, the graft seam log now prints the ids on both sides of the
+join, so the next hypothesis will be read off evidence.
