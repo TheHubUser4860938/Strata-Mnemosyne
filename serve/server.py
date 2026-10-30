@@ -7957,8 +7957,15 @@ def graft_mark(svc, headers, req):
     except Exception:                                    # the ledger is a pointer: it never kills a request
         rows = []
     gfile = str((rows[0] if rows else {}).get("file") or "")
-    if gfile:
-        req["strata_graft"] = os.path.join(svc.slot_save_path, gfile)
+    gpath = os.path.join(svc.slot_save_path, gfile) if gfile else ""
+    # NO FILE MEANS NO GRAFT, AT READ TIME (branch retire-episode-carts, 2026-10-30). The docstring has
+    # always promised "unknown name, no file, or no vault marks nothing", but the code only asked whether
+    # the ledger NAMED a file. Retiring the episode carts deletes the bench bytes under a running server,
+    # and a stale header must not then stage a path that is gone; a RETIRED row is shelved on purpose, so
+    # grafting it would resurrect a cart the ledger says is put away. Both arms mark nothing: additive,
+    # never a silent substitution, and never a request that dies for a pointer.
+    if gpath and str((rows[0] if rows else {}).get("state") or "") != "retired" and os.path.exists(gpath):
+        req["strata_graft"] = gpath
 
 
 def stand_on(svc: Service, messages, headers, req=None):
@@ -11837,10 +11844,25 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 print("[strata] memory: cartridges need slot_save_path - staying off", flush=True)
             else:
                 svc.cartridges = Cartridges(svc, cart_cfg)
-                if not _memory_switch_off(cart_cfg.get("minted", True)):   # S3 (2026-10-25):
-                    svc.carts = CartMinter(svc, cart_cfg)   # the mint pipeline stands WITH the
-                                                           # cart; minted:false opts out by any
-                                                           # honest spelling (audit finding 13)
+                # RETIRED BY DEFAULT on branch retire-episode-carts (2026-10-30): S3 (2026-10-25) built
+                # the mint pipeline and this box measured what it buys (every number below is ours, in
+                # spikes/cartridge/FOUNDER_CARTS.md):
+                #   fidelity  a grafted cart answered 11/36 = 31% where the same text, warm in the K/V
+                #             cache, answered 33/36 = 92% - and the warm text ran 0.72 s against 0.93 s;
+                #   reach     a grafted read consults the FIRST 2,048 cells (idx_top_k, qsa.hpp:112):
+                #             inside that wall the right cart beat a wrong one 92% to 58%, beyond it a
+                #             right cart contributed +0 points - mounted but unread;
+                #   disk      142 carts carrying 1,017,864 tokens took 34.0 GB where the same text is
+                #             4.9 MB: 6,981x, because a cart pays a 118.1 MB floor plus 15,264 B per
+                #             token no matter what it says, and every profile change invalidates them;
+                #   prompt    the ledger's cart index rode 10,592 chars ~= 2,216 tokens of EVERY ask.
+                # So the episode cart is a cache that costs more than the thing it caches, and the
+                # corpus path is text plus routing (docs/MEMORY_CORE.md, "Naming"). The tier-2 STANDING
+                # cart - soul.md and the persona files, one file, byte-exact prefix reuse - is untouched
+                # and is what a cartridge is genuinely for. minted:true brings the pipeline back by any
+                # honest spelling (audit finding 13 keeps the opt-out as strict as the opt-in was).
+                if not _memory_switch_off(cart_cfg.get("minted", False)):
+                    svc.carts = CartMinter(svc, cart_cfg)   # stands WITH the cart, opt-in now
                 print(f"[strata] memory cartridge on: shelves {', '.join(svc.cartridges.prefixes) or '(none)'} "
                       f"up to {svc.cartridges.max_chars:,} chars, file dir {svc.slot_save_path} "
                       f"(restored at the first standing request; the engine pins the file to model+engine)"
