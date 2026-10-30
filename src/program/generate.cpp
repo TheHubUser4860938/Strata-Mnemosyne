@@ -14647,6 +14647,7 @@ int main(int argc, char** argv) {
                 if (gl.clear_wanted) graft_wanted = false;
             }
             int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
+            bool grafted_read = false;   // THIS read starts on a grafted snapshot (the virtual prefix)
             if (resume == 0) {
                 // memory-core's graft (2026-10-28): the request asked to begin on a staged file and RAM proved no
                 // start of its own, so the file's state goes under it instead of a cold zero. conversation_graft.hpp
@@ -14676,6 +14677,7 @@ int main(int argc, char** argv) {
                         }
                         checks.clear();
                         cvec_cached = graft_image.cvec;
+                        grafted_read = true;   // the seam below, the resume, and the read path all follow this
                         // The graft is a VIRTUAL PREFIX: the file's ids stand in front of the request's own and its
                         // text begins at the graft's length. `live` is NOT assigned here - the request's ids now ARE
                         // the session, so the ordinary park at the end records the grafted conversation and a second
@@ -14707,7 +14709,7 @@ int main(int argc, char** argv) {
                             const_cast<int64_t&>(n) = (int64_t) ids.size();   // NOLINT: see the note above
                         }
                         resume = gd.resume;
-                        std::fprintf(stderr, "strata serve: conversation cache: grafted %lld tokens, prompt %lld, %s\n",
+                        std::fprintf(stderr, "strata serve: conversation cache: grafted %lld tokens, prompt %lld, %s, tail batched (no verify windows)\n",
                                      (long long) resume, (long long) n, gd.prepend ? "ids prepended" : "source re-sent");
                     }
                     graft_staged = false;
@@ -14843,7 +14845,25 @@ int main(int argc, char** argv) {
                                      "whole prompt through the batched path, none of it through the verify windows\n");
             }
             auto windows_ok = [&](int64_t a, int64_t b) -> bool {
-                if (no_short || b - a > req_short_read) return false;
+                // A GRAFTED READ TAKES NO VERIFY WINDOWS. Measured 2026-10-30 across three boots of the same
+                // binary and the same cart bytes: on the boot where STRATA_CKPT_REREAD was set - whose SECOND,
+                // unrelated use (below, `no_short`) keeps every read batched - 11 of 11 grafted reads produced
+                // content: a 55-token novel gold answered 4 times, a 2,275-token document quoted exactly
+                // ("necessary constitutional means and personal motives"), a 1,699-token cart named its own
+                // subject while the cartless control babbled about the prompt's reference tag, and a cart minted
+                // seconds earlier abstained correctly. On the two boots without it, EVERY grafted read emitted
+                // exactly one empty token and stop (8 counted in the last boot alone), in every transcript shape
+                // I could build - question, continuation, system turn, thinking on and off, stop-list override,
+                // document re-sent - while the mount itself was identical: reused=55/2275, "grafted ... ids
+                // prepended", the same seam ids, one file byte for byte across 22 stagings. Across the whole log
+                // 15 reads answered and 46 died at one token, so this path has never been dependable.
+                // The short part that goes through a window after a graft is the assistant header - the message
+                // part of my probe prompts is ~100 tokens, over the 64-token short_read, so it reads batched and
+                // only the header can take a window - and a header read against a RESTORED snapshot is not a
+                // header read against a LIVE prefix: the window path assumes the latter, and that half is a code
+                // reading, not a measurement. Cost is the batched run's ~300 ms on grafted reads only, which are
+                // opt-in by header; every other read keeps its windows and its bytes.
+                if (no_short || grafted_read || b - a > req_short_read) return false;
                 if (sp.embd_rows != nullptr)
                     for (int64_t i = a; i < b; ++i)
                         if (sp.embd_rows[i] != nullptr) return false;
