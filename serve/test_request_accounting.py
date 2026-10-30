@@ -24,7 +24,7 @@ class ClockedThinkingEngine(ThinkingEngine):
         self.fail_continuation = False
         self.cancel_continuation = False
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         self.attempts += 1
         if self.fail_continuation and self.attempts == 2:
             raise EngineDied("the continuation ended without a DONE line")

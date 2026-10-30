@@ -54,7 +54,7 @@ class DsEngine(MockEngine):
         self.last_sampling = None
         self.last = {}
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         self.last_sampling = dict(sampling or {})
         got = 0
         try:
@@ -624,7 +624,7 @@ class ThinkForever(DsEngine):
         super().__init__(tok, "")
         self.prompts = []
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         self.prompts.append(list(ids))
         self.last_prompt = list(ids)
         got = 0

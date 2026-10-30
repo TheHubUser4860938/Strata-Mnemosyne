@@ -159,7 +159,7 @@ from serve.test_dsv41 import TEMPLATE, DsEngine, mini_tokenizer  # noqa: E402
 class SeenEngine(DsEngine):
     """Keeps the picture file's bytes while the engine is 'reading' it (the server deletes the file after the run)."""
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         self.seen_file = Path(embeddings).read_bytes() if embeddings else None
         self.seen_ids = list(ids)
         yield from super().generate(ids, max_new, sampling, cancel, embeddings)

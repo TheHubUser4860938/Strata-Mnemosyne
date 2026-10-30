@@ -145,7 +145,7 @@ class FakeEngine:
             assert Path(path).read_bytes() == b"kv"
         return {"tokens": 123, "bytes": 2, "ms": 1.0}
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         return iter(())
 
 
