@@ -781,23 +781,35 @@ def main():
     # whole time while the harvest was discarded. The channel bytes stay banked; want now grows
     # by whatever THIS boot charges, probed twice per run. A consuming boot measures 0 and prod
     # geometry law survives byte-identical; a counting boot gets honest geometry back.
-    def directive_delta():
+    #
+    # THE SCAR, 2026-10-30: a difference of two BOOT-side renders cannot see a constant the boot
+    # adds to EVERY prompt - it cancels.  That is the hole the "+7" fell into: honest about the
+    # directive, blind to everything else, while the boot had grown a head of its own (one message,
+    # two counts: this tool's local render 19 tok, the boot's prompt_tokens 61 - a constant +42).
+    # So all 27 cold passes of every tick voided by exactly 42, every candidate came back UNSCORED,
+    # no window was marked, and the queue sat at 298 turns overnight.  The probe now measures the
+    # WHOLE gap - boot count minus local render, on the cold shape the gate actually scores - which
+    # is the quantity `want` needs, not merely the directive's share of it.
+    def boot_delta():
         def ptok_of(content):
             body = {"model": model, "messages": [{"role": "user", "content": content}],
                     "temperature": 0.8, "reasoning_effort": "off", "max_tokens": 1, "stream": False}
             st, r = http(url + "/v1/chat/completions", body,
                          headers={"X-Strata-Memory": "off"}, timeout=30)
             return (r.get("usage") or {}).get("prompt_tokens") if st == 200 else None
-        plain, with_d = ptok_of("hi"), ptok_of("{REASON:off}\n\nhi")
-        if plain is None or with_d is None:
-            print("[geom] directive probe failed (transport) - want stays banked", flush=True)
+        probe = f"{COLD_PREAMBLE}\nWhat is the capital of France?"     # the shape score_batch sends
+        ids, _ = live_render(tok, tpl, [{"role": "user", "content": probe}], "off")
+        boot = ptok_of("{REASON:off}\n\n" + probe)                     # the channel ask() uses
+        if boot is None or not ids:
+            print("[geom] overhead probe failed (transport) - want stays banked", flush=True)
             return 0
-        return with_d - plain
+        return boot - len(ids)
 
     stored = {"FILL": 0, "STABILIZE": 0, "CORRECT": 0, "DONT-STORE": 0}
     unscored = 0
-    ddelta = 0 if (a.dry_run or a.extract_only) else directive_delta()
-    print(f"[geom] directive overhead measured this boot: {ddelta:+d} tok", flush=True)
+    ddelta = 0 if (a.dry_run or a.extract_only) else boot_delta()
+    print(f"[geom] prompt overhead measured this boot (boot count - local render): {ddelta:+d} tok",
+          flush=True)
     review: list[str] = []
     store_dir = stats.get("dir") or (os.path.dirname(db_path) if db_path else "")
 
@@ -832,7 +844,11 @@ def main():
                 cold.append({"gold_hit": g, "idk": idk_p(ans), "answer": scrub(ans)[:90],
                              "ptok": ptok})
             if len(cold) < a.passes:
-                unscored += 1
+                # No `unscored += 1` here: the name belongs to the enclosing scope, and a bare
+                # binding in THIS function makes it local (UnboundLocalError, the only thing this
+                # branch ever did).  The tally is `unscored_here` below, returned at the window's
+                # end and added to the run total by the caller.  Cost of the mistake: every tick
+                # from 2026-10-30 00:33 died here before the store and the per-window mark.
                 cls, mixed, full = "UNSCORED", False, None
             else:
                 cls, mixed = classify(cold)
