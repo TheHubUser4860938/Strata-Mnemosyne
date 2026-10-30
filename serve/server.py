@@ -953,7 +953,7 @@ class MockEngine:
         self.cycle = bool(cycle)
         self.last_prompt: list[int] = []
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         self.last_prompt = list(ids)
         self.last_embeddings = embeddings
         # The mock honours the graft the way StrataEngine does (stage first, then generate), so a test that
@@ -962,6 +962,11 @@ class MockEngine:
         # when it was never walked (measured: my own refusal test asserted 400 and got 200).
         if (sampling or {}).get("strata_graft"):
             self.stage_graft(str(sampling["strata_graft"]))
+        if prefill_only:
+            # "read the prompt, make no token" (serve/split.py's shape, and what the cart mint now asks for).
+            # No script is consumed and no turn advances: a prefill-only read leaves the conversation where it
+            # was, which is the whole point of forging a document instead of holding a dialogue.
+            return
         if len(self.scripts) > 1:
             if self.cycle:
                 self.script = self.scripts[self.turns % len(self.scripts)]
@@ -6207,19 +6212,20 @@ class Service:
         return now
 
     def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
-            declared_only=False) -> Iterator[tuple[str, object]]:
+            declared_only=False, prefill_only=False) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
         ka = self.keep_awake
         if ka is not None:
             ka.acquire()
         try:
-            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only)
+            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only,
+                                 prefill_only)
         finally:
             if ka is not None:
                 ka.release()
 
     def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
-             declared_only=False) -> Iterator[tuple[str, object]]:
+             declared_only=False, prefill_only=False) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
         # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
@@ -6403,7 +6409,8 @@ class Service:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
                         gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
-                            else self.engine.generate(prompt, max_new - n, sampling, cancel)
+                            else self.engine.generate(prompt, max_new - n, sampling, cancel,
+                                                      prefill_only=prefill_only)
                         recover_prompt = None
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         nonfinite = False               # #879: the engine ended this pass on non-finite logits
@@ -7549,9 +7556,13 @@ class CartMinter:
                 try:
                     ids, thinking, max_new = svc.prepare(
                         [{"role": "system", "content": mint_forge(text, str(sources.get("title") or ""))}],
-                        None, {}, 1)          # ONE token, no ack turn: the state is the document, not a dialogue
-                    for kind_, x in svc.run(ids, thinking, None, max_new or 1, {},
-                                            threading.Event()):
+                        None, {}, 0)
+                    # PREFILL ONLY, the way serve/split.py reads a prompt without making a token: the old forge
+                    # generated an acknowledgement and saved AFTER it, so the mounted state carried a stray
+                    # assistant token and its end-of-turn. Measured: a grafted cart answered a question with one
+                    # token and stop - the same "generation closes at a control token" shape that froze this
+                    # assistant's own thinking all evening. The document must end where the document ends.
+                    for kind_, x in svc.run(ids, thinking, None, 0, {}, threading.Event(), prefill_only=True):
                         if kind_ == "done":
                             break
                 except Exception as e:                            # noqa: BLE001 - the mint reports
