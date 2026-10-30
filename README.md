@@ -6,29 +6,29 @@ itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one s
 harness ever has to re-send history. The server remembers, and it remembers the same way no
 matter which app is knocking.
 
-This fork is based on upstream Strata 0.2.7.1 — app and Terminal at 0.2.7, Control at 0.1.53, the
-engine packages (Qwen and DeepSeek) at 0.1.52, and the new DGX Spark engine packages at 0.1.53.
-0.2.7 rebuilt both engines, so a Qwen install has a newer engine to take. (The 0.2.6 round between was the packaging and docs round: the slimmed landing
-READMEs, the Windows uninstaller fixes, the DeepSeek engine at 0.1.51.) Upstream's own headline list
-for this round: **faster answers on 12 GB NVIDIA cards** — the router prefers experts already on the
-card (+15 to +37% decode on an RTX 3060; cards over 13 GiB unchanged; `STRATA_ROUTE_PRIOR=0` turns it
-off), **faster Qwen on Radeon RX 9000** (+14 to +31% decode on one R9700), **DeepSeek reads pictures
-by default** (the engine's own 319 MiB vision tower, a one-time ~1 GB download, `--vision off` leaves
-it out), **DeepSeek on Strix Halo Windows**, **DeepSeek at 512K and 1M contexts**, **two NVIDIA cards
-pipeline by default and read long prompts layer-major** (the first word after a 32K prompt in 27.7 s
-instead of 141.8 s on two RTX A4000), and a **large refresh of the served web chat page** — wide
-layout, saved chats with edit and rewind, sending while an answer streams, KaTeX math — the very page
-this fork's Memory tab rides on. The 0.2.7.1 hotfix on top adds two things: Strata on the
-NVIDIA DGX Spark (Linux ARM64, the Terminal only) and DeepSeek-V4.1-Flash on Apple silicon Macs
-with 64 GB or more, text only ([DGX Spark](docs/DGX_SPARK_LINUX.md),
-[the Mac](docs/DEEPSEEK_MAC.md)); an x86 Windows or Linux PC gets no new engine and no speed
-change, only Control's feed reader that skips entries it does not understand instead of stopping.
-`STRATA_DEFAULTS=026` (Qwen) and `DS4_DEFAULTS=026` (DeepSeek) return
-every changed default to 0.2.6 in one step. The earlier rounds' gains — the Strix Halo and Intel Arc
-packages, the DFlash2 drafter, full-context agent chat, one installer per system, the DeepSeek RAM
-store and speed-ups — all still stand. Every number in this paragraph is upstream's, from
-docs/release-notes-0.2.7.md. This fork adds the memory system and the reason-mode steering
-described below.
+This fork is based on upstream Strata 0.2.8 — app and Terminal at 0.2.8, Control and every
+engine package at 0.1.54. Upstream's own headline list for this round: **a pair of Intel Arc Pro
+B65 cards decodes 17 to 23% faster** (71 to 74 tokens per second against 60 to 63, five paired
+runs, same answers; the pair now runs `--pipeline-windows 2` and setup writes `--spec 2`), **four
+Radeon R9700 cards serve 2.4 times the total speed at 32 requests at once** (155 to 370 tokens
+per second; one request alone is unchanged at 67), **DeepSeek on an Apple-silicon Mac no longer
+slows down after a few requests** (every request left about 1.3 GB of GPU buffers behind, so
+decode fell from 16 tokens per second to 3; memory now stays flat at 76 GB over 34 requests and
+decode stays at 18 to 22), and **a tool call the model writes slightly wrong is still read, by
+default** — 98.3% read as intended against 92.9% over 1,462 agent turns, the same family of calls
+the server otherwise hands back as text and counts in `strata_rejected_tool_calls`. Two defaults
+moved the other way, both worth knowing before an upgrade: the 0.2.7 routing speed-up on 12 GB
+NVIDIA cards is **off again** (`STRATA_ROUTE_PRIOR=1.5` brings it back — upstream took it back on
+2026-10-29 over repeated text in long agent sessions, #4402), and a DeepSeek server started from a
+config that did not name its model family no longer ends a reply in the middle of a word (#4576,
+#4137). Going back is one step: `strata components rollback` for the engine, `STRATA_ROUTE_PRIOR=1.5`
+and `"tool_call_recovery": false` for the two defaults; the 16-row HIP batch windows are a build
+option (`-DSTRATA_WINDOW_MAX_T=8`), not a run-time switch. The earlier rounds' gains — the Strix
+Halo and Intel Arc packages, the DFlash2 drafter, full-context agent chat, one installer per
+system, the DeepSeek RAM store and speed-ups, and the 0.2.7 round's DeepSeek picture reading and
+two-NVIDIA-card pipelining — all still stand. Every number in this paragraph is upstream's, from
+the [0.2.8 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.8) and
+docs/DETAILS.md. This fork adds the memory system and the reason-mode steering described below.
 
 ## The two names, and they are not decoration
 
@@ -65,8 +65,7 @@ cd Strata
 
 <img width="1265" height="542" alt="image" src="https://github.com/user-attachments/assets/238eb87c-45f2-4be4-8cb8-91d922efbda8" />
 
-Version 0.2.7.1 (app and Terminal 0.2.7, Control 0.1.53) · the x86 engine packages stay at 0.1.52,
-the new DGX Spark (linux-aarch64) engines are 0.1.53
+Version 0.2.8 (app and Terminal 0.2.8, Control and every engine package 0.1.54)
 
 Two things arrive switched **on**, and everything else stays byte-identical to upstream Strata:
 
@@ -138,15 +137,15 @@ Download the file for your computer, open it, and press install on the model it 
 
 **Windows 10 / 11**
 
-[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.7-windows-x64-setup.exe)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.8-windows-x64-setup.exe)
 
 **Linux**
 
-[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.7-linux-x86_64.AppImage)
+[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.8-linux-x86_64.AppImage)
 
 **Mac** (Apple Silicon, macOS 15 or newer)
 
-[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.7-macos-arm64.dmg)
+[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.8-macos-arm64.dmg)
 
 The app picks the right engine for your graphics card by itself. All files are on the [releases page](https://github.com/Niko1221/Strata/releases/latest).
 
