@@ -2869,6 +2869,10 @@ struct KvaTap {
             p = std::fopen(path(layer).c_str(), "wb");
             if (p == nullptr) { err = "kva capture: cannot write " + path(layer); return false; }
         }
+        // NOTE, not a change: the flush below is the tap's own long-standing behaviour, confirmed while
+        // probing the boundary capture on 2026-10-30. It is recorded here because a capture measured as
+        // "0 rows" straight after a mint looked like a buffering bug and was not one - the file is rewritten
+        // ("wb") by whichever accepted cold read comes next, so a probe on a serving box races its own host.
         if (fp32) {
             std::fwrite(host.data(), 4, (size_t) T * D, p);
         } else {
