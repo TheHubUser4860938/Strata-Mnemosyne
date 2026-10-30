@@ -7467,15 +7467,18 @@ class CartMinter:
 
     def __init__(self, svc: Service, cfg: dict):
         self.svc = svc
-        # NO CAP BY DEFAULT (the owner's ruling, 2026-10-30): "there shouldn't be a character limit - just
-        # don't be trying to cram a library of docs into one cartridge, especially if we can have the size be
-        # smaller." The 16,000 default was MY guard, and it worked against the design: six charters render to
-        # 12,822 chars and fit, a seventh did not - so the number refused PACKING, on size alone, at a fifth of
-        # what a cart costs to mount (16,000 chars is ~3,000 tokens, ~47 MB of a 118 MB floor). Density is what
-        # shares the floor, so density is the point; "don't cram a library" is judgment, and judgment is not a
-        # config number. Set "mint_max_chars" to want a refusal anyway; the sentinel is only a stop for someone
-        # who hands the mint a gigabyte of text and is surprised a thousand seconds later.
-        self.max_chars = int(cfg.get("mint_max_chars") or 1_000_000_000)   # one cart's rendered text
+        # NO CAP IS THE DEFAULT - not something you opt into (the owner's ruling, 2026-10-30: "no cap
+        # shouldn't be opt in but default"). My first cut used a 1e9 sentinel, which he was right to reject: a
+        # sentinel is still a cap, it just refuses politely at a gigabyte. None means no limit, and the places
+        # that used this number now say so in their own conditions. Set "mint_max_chars" only to want a refusal.
+        # Why no limit at all: a cart's cost is dominated by the FLOOR - 117.7 MB measured, paid whether the
+        # cart holds one token or 100,000 - and each token adds ~15.7 KB, so documents in one cart SHARE the
+        # floor. Measured on the founding corpus: a new cart costs 136-162 MB, a document ADDED to one that
+        # stands costs about 6 MB. A per-cart character cap was therefore taxing the cheap thing, at roughly a
+        # fifth of the cart's own floor. "Don't cram a library into one cartridge" is a judgment about
+        # attention and cost, made by whoever mints - not a number in a config.
+        _mc = cfg.get("mint_max_chars")
+        self.max_chars = None if _mc in (None, "", 0) else max(1, int(_mc))   # None = no limit, the default
         _mf = cfg.get("mint_max_facts")
         self.max_facts = 200 if _mf is None else max(1, int(_mf))   # C4's ceiling band, guarded
         # S4 attach budgets (2026-10-25): the owner's C2 set the COUNT (max 10 - hygiene, since
@@ -7554,12 +7557,12 @@ class CartMinter:
                                  "C4 banked the ceiling between 100 and 500 facts per cart: many "
                                  "small carts, not one big bank (the episode ruling)")
             if left:
-                raise ValueError(f"sources: {left} facts did not fit the {self.max_chars:,}-char "
+                raise ValueError(f"sources: {left} facts did not fit the {self.max_chars:,}-char "   # only reachable with a budget set
                                  f"render budget (mint_max_chars)")
             parts.append(rt)
             n_rows = n
         if text:
-            if len(text) > self.max_chars:
+            if self.max_chars and len(text) > self.max_chars:
                 raise ValueError(f"sources.text: {len(text):,} chars over mint_max_chars "
                                  f"{self.max_chars:,}")
             parts.append(text)

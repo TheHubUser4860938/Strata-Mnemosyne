@@ -2166,7 +2166,7 @@ class MemoryService:
         return " ".join(clauses)
 
     @_heals
-    def cart_text(self, row_ids=None, shelf_prefixes=None, max_chars: int = 4000):
+    def cart_text(self, row_ids=None, shelf_prefixes=None, max_chars: int | None = 4000):
         """The mint renderer for ROW sources (S3): the cartridge_text law - confidence descending,
         id ascending, deterministic, bounded, never by hits (the .bin is valid only for its exact
         bytes) - with an EXPLICIT selection: named ids, shelf prefixes, or both (one numbered
@@ -2223,7 +2223,7 @@ class MemoryService:
         lines, used, left = [], len(header) + 1, 0
         for i, (_rid, cls, txt, _conf) in enumerate(rows, 1):
             ln = f"{i}. [{cls}] {txt}"
-            if used + len(ln) + 1 > max_chars:
+            if max_chars is not None and used + len(ln) + 1 > max_chars:
                 left += 1
                 continue
             lines.append(ln)
