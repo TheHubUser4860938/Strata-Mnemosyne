@@ -3714,6 +3714,34 @@ class CartSlotLedger(Mint):
         self.assertTrue(both.get("strata_cart"), "bodies rode, so the fence still applies")
         self.assertIn("strata_graft", both, "and the graft was asked for too: both keys, honestly marked")
 
+    def test_a_retired_or_deleted_cart_grafts_nothing(self):
+        # RETIRE-EPISODE-CARTS (2026-10-30): the retirement SHELVES ledger rows (annotate, never erase)
+        # and deletes their bytes, under a server that stays up. graft_mark asked only whether the ledger
+        # NAMED a file, so a stale header could stage a cart the ledger says is put away, or a path the
+        # vault no longer holds. Each arm fails on its own removal: drop the state test and the retired
+        # arm grafts a shelved cart; drop exists() and the deleted arm points the engine at nothing.
+        import os as _os
+        self._mint("shelved")
+        st, body = self.http("POST", "/memory", {"op": "retire", "name": "shelved", "reason": "bench done"})
+        self.assertEqual(st, 200, body)
+        self.assertEqual(self.svc.memory.carts_get("shelved")[0]["state"], "retired",
+                         "the row survives the shelving - the ledger keeps what this box minted")
+        out = {}
+        stand_on(self.svc, [{"role": "user", "content": "ask a shelved cart"}],
+                 {"X-Strata-Carts-Graft": "shelved"}, out)
+        self.assertNotIn("strata_graft", out, "a retired cart is put away: grafting it resurrects it")
+
+        self._mint("evaporated")
+        live = {}
+        stand_on(self.svc, [{"role": "user", "content": "while the bytes stand"}],
+                 {"X-Strata-Carts-Graft": "evaporated"}, live)
+        self.assertIn("strata_graft", live, "the arm works when the ledger is live and the file is there")
+        _os.remove(live["strata_graft"])
+        gone = {}
+        stand_on(self.svc, [{"role": "user", "content": "after the bytes go"}],
+                 {"X-Strata-Carts-Graft": "evaporated"}, gone)
+        self.assertNotIn("strata_graft", gone, "no file in the vault: mark nothing, ask the engine for nothing")
+
     def test_no_cart_ask_leaves_the_ledger_empty(self):
         # an absent thing is never "zero of something": before any cart ask the ledger says nothing
         # rode, and a plain request must not make it say otherwise (the anti-vacuity law)
