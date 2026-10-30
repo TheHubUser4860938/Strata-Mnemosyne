@@ -53,7 +53,7 @@ class LpEngine(MockEngine):
         return (f"LP {-(i + 1) / 100:.6f} 65:-0.500000 72:-1.250000 "
                 f"88:-3.000000 91:-4.200000\n")
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         self.sampling, self.lp_lines = dict(sampling or {}), LPLines(cancel)
         for i, t in enumerate(super().generate(ids, max_new, sampling, cancel, embeddings)):
             if self.with_lines:
@@ -81,7 +81,7 @@ class NextEngine(LpEngine):
         self.first_in, self.first_generated, self.second_started = (threading.Event(), threading.Event(),
                                                                     threading.Event())
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         self.calls += 1
         mine = self.calls
         if mine == 1:

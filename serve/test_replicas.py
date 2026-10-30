@@ -81,7 +81,7 @@ class FakeEngine:
     def alive(self):
         return self.up
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         yield 7
 
 
@@ -125,7 +125,7 @@ class RouteChoice(unittest.TestCase):
         from serve.server import EngineNonFinite
 
         class NonFinite(FakeEngine):
-            def generate(self, ids, max_new, sampling, cancel):
+            def generate(self, ids, max_new, sampling, cancel, prefill_only=False):
                 yield 7
                 raise EngineNonFinite("the engine's logits became non-finite (#879)")
 

@@ -44,7 +44,7 @@ class ScriptedEngine(MockEngine):
         super().__init__(tok, list(scripts), max_context=max_context, delay_s=delay_s)
         self.prompts = []
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         self.prompts.append(list(ids))
         yield from super().generate(ids, max_new, sampling, cancel, embeddings)
 
