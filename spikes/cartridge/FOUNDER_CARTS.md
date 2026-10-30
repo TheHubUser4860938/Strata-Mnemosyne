@@ -125,7 +125,47 @@ in the text and checked cartless first.
    (fed6 18,971 tok = 525.9 MB is 21.5 KB/tok, fed12 37,376 = 806.9 MB is 18.4 KB/tok), so the linear
    model is good to about 10k tokens and optimistic beyond it. Staging a cart for a graft stays at
    ~50 ms for 229 MB (~4.6 GB/s), and a graft of 8,696 tokens costs about 0.9 s end to end.
-8. **One graft per request.** `X-Strata-Carts-Graft` resolves a single cart (server.py:7952 sets one
+8b. **THE WALL IS 2,048 CELLS, AND IT IS OURS** (measured 2026-10-30, `graft_cliff_test.py`,
+ `cliff-fine-2026-10-30.log`). A 30-cell grid of planted facts, swept by **absolute depth** inside carts
+ of 1,500 / 3,000 / 7,300 / 15,000 tokens, shows the cliff does not scale with cart length: depth 200
+ answers **8/8 across every cart length** (including 15k), depth 4,000+ answers **0/8** at every length.
+ A fine sweep in a single 2,700-token cart - short enough that length cannot be the variable - puts the
+ wall exactly at: **1,900 = 2/2 PASS, 2,000 = 1/2 split, 2,048 = 0/2, 2,100 = 0/2, 2,200 = 0/2,
+ 2,500 = 0/2.** The constant is in the geometry: `qsa.hpp:112` sets `idx_top_k = 2048`, documented as
+ *"2048 cells of selection budget"*, with `idx_block = 4` and `page_size = 4` cells. Three things make
+ this a **restore defect** and not a limit of state-as-memory:
+   - the bytes are present: `cfr-vexlin-2500` holds 2,580 tokens in **157.5 MB** against **157.5 MB**
+     predicted by the fitted cost model - the K/V for the whole cart is stored, merely not consulted;
+   - the same content at the same depth answers when it is read as text (**4/6** at ~7.3k tokens) and
+     when the conversation is continued from parked state (**12/12** at positions 9-12);
+   - so a live read selects the relevant cells and a **grafted read selects the first cells**. The
+     selection budget is being spent on position instead of relevance after a restore.
+ This was then confirmed on REAL documents, not planted facts
+ (`cart_answer_probe.py`, `cart_2afc_test.py`). The TRUE/FALSE instrument died first and informatively:
+ 23 of 24 probes answered TRUE to the paper's own sentence AND to the same sentence with its rarest word
+ reversed ("determinations" as "noitretuned") - the model agrees with anything plausible, so a forced
+ yes/no cannot separate remembering from agreeing, exactly the hole the critic poked in MAM's abstention
+ test. The two-alternative forced choice does separate them: the passage is shown with its rare word
+ blanked and the model must pick between the word the paper really uses and a same-register word from a
+ DIFFERENT paper in the same depth zone, A/B randomised, asked with the right cart mounted and with a
+ wrong one (MAM's own runner-up control):
+
+ | zone | right cart | wrong cart | the cart's contribution |
+ |---|---|---|---|
+ | inside the wall (<2,048 cells) | **11/12 = 92%** | 7/12 = 58% | **+33 points** |
+ | beyond the wall | 7/11 = 64% | 7/11 = 64% | **+0 points** |
+
+ So the wall costs **28 points of real knowledge** (92% against 64%), and past it the cart contributes
+ nothing measurable: the right paper's cart picks its own word no better than a wrong paper's cart does.
+ Both zones sit above the 50% coin-flip because an authentic 18th-century word is often the more
+ plausible fit in context - which is why the wrong-cart column, not chance, is the honest baseline.
+
+ The consequence for design is blunt and useful: **a cart is fully consultable up to ~2,000 tokens
+ today**, which is a measured number rather than the guess this file opened with, and MAM never meets
+ this wall because his cartridges are ~48 rows - forty times under it. The golden test for a fix is
+ already written: graft a 2,700-cell cart, ask about the fact at 2,500, and go from 0/2 to 2/2.
+
+9. **One graft per request.** `X-Strata-Carts-Graft` resolves a single cart (server.py:7952 sets one
    path), so "several small carts mounted together, each with its own head" is not available without
    engine work. Today the only lever is cart size and ordering.
 
