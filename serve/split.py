@@ -426,7 +426,12 @@ class SplitEngine:
             except OSError:
                 pass
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
+        # The wrapper's own prefill side already speaks prefill_only (line: P.generate(ids, 0, {}, cancel,
+        # prefill_only=True)); the decode side did not, so a read-the-prompt request that arrived here
+        # would have made tokens anyway - and before the argument existed at all, Service's unconditional
+        # pass-through raised TypeError on this signature. Forwarded only when set: the plain call stays
+        # byte-identical.
         D = self.decode
         ids = list(ids)
         st = self.stats
@@ -455,8 +460,9 @@ class SplitEngine:
         produced: list[int] = []
         ok = False
         try:
-            gen = D.generate(ids, max_new, sampling, cancel, embeddings=embeddings) if embeddings is not None \
-                else D.generate(ids, max_new, sampling, cancel)
+            extra = {"prefill_only": True} if prefill_only else {}
+            gen = D.generate(ids, max_new, sampling, cancel, embeddings=embeddings, **extra) \
+                if embeddings is not None else D.generate(ids, max_new, sampling, cancel, **extra)
             for t in gen:
                 if t is not None:
                     produced.append(t)

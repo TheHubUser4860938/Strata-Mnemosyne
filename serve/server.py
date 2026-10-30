@@ -5845,6 +5845,18 @@ class Service:
         mode = self._reason_for(messages)       # REASON MODES: the mode names the template's system block
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
+        # A client that names the trailing assistant header in the template's own tongue is not talking
+        # nonsense: llama.cpp and HF both take `add_generation_prompt` inside chat_template_kwargs, and
+        # `open_turn` is that same idea in our words. Until now the value arrived TWICE - ours written
+        # explicitly, the client's riding inside the spread - and ChatTemplate.render answered
+        # "got multiple values for keyword argument", which killed the request with a 400. Measured on
+        # memory-core 2026-10-30: serve.test_server.SharedPrefix errored here and serve.test_replicas
+        # took four more requests down the same way. The client wins the render it asked for; a client
+        # with no opinion leaves every byte as it was (the byte-identical law), so the filter runs only
+        # when the key is actually present.
+        if "add_generation_prompt" in kwargs:
+            open_turn = bool(kwargs["add_generation_prompt"])
+            kwargs = {k: v for k, v in kwargs.items() if k != "add_generation_prompt"}
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
             return self.splice_reason_pair(self.template.render(messages, tools=tools,
                                                                 add_generation_prompt=open_turn,
@@ -5854,7 +5866,11 @@ class Service:
             base["reasoning_effort"] = mode.partition("+")[0]   #  replaces the effort text at the top (a
         history = self.splice_reason_pair(      #  pair splices its answer half), the tail keeps the level
             self.template.render(messages, tools=tools, add_generation_prompt=False, **base), mode)
-        full = self.splice_reason_pair(self.template.render(messages, tools=tools, add_generation_prompt=True,
+        # `open_turn` and not a literal True: this render exists to be DIFFED against `mine` below, and
+        # what the diff buys is the trailing generation prompt (line: full[len(mine):]). A client that
+        # asked for no generation prompt must therefore get an empty diff, not a prompt it never asked
+        # for - which is what a literal True would have appended on this path.
+        full = self.splice_reason_pair(self.template.render(messages, tools=tools, add_generation_prompt=open_turn,
                                                             **apply_reason_mode(kwargs, mode)), mode)
         mine = self.splice_reason_pair(self.template.render(messages, tools=tools, add_generation_prompt=False,
                                                             **apply_reason_mode(kwargs, mode)), mode)

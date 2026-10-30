@@ -1731,6 +1731,22 @@ class SharedPrefix(unittest.TestCase):
         head = self.svc.encode_prompt(self.MSGS[:2], None, {"add_generation_prompt": False})
         self.assertEqual(ids[:n], head[:n])
 
+    def test_the_clients_own_generation_prompt_wins_without_being_doubled(self):
+        # chat_template_kwargs is the TEMPLATE's namespace, so a llama.cpp or HF client puts
+        # add_generation_prompt in it and means "append the assistant header or don't". render_prompt used
+        # to pass that name twice - its own open_turn plus the client's inside the spread - and
+        # ChatTemplate.render raised TypeError, which reached the client as a 400. The repair has to
+        # honour the opinion, not merely survive it: a request that says False must lose exactly the
+        # trailing generation prompt, and a request that says nothing must keep every old byte.
+        absent = list(self.svc.encode_prompt(self.MSGS[:2], None, {}))
+        on = list(self.svc.encode_prompt(self.MSGS[:2], None, {"add_generation_prompt": True}))
+        off = list(self.svc.encode_prompt(self.MSGS[:2], None, {"add_generation_prompt": False}))
+        self.assertEqual(absent, on, "no opinion from the client is the same ids as True")
+        self.assertGreater(len(on), len(off), "the opinion changed the render instead of crashing it")
+        self.assertEqual(on[:len(off)], off, "False is True minus the generation prompt, nothing else")
+        self.assertEqual(list(self.svc.encode_prompt(self.MSGS[:2], None, {"add_generation_prompt": 0})), off,
+                         "and a falsy value spelled as a number reads falsy, the way every other switch here does")
+
     def test_tokens_and_unusable_prefixes(self):
         ids, _, _ = self.svc.prepare(self.MSGS, None, {}, 16)
         req = {"strata_prefix": {"tokens": 100}}
