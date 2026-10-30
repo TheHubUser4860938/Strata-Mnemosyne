@@ -7467,7 +7467,15 @@ class CartMinter:
 
     def __init__(self, svc: Service, cfg: dict):
         self.svc = svc
-        self.max_chars = int(cfg.get("mint_max_chars") or 16000)    # one cart's rendered text
+        # NO CAP BY DEFAULT (the owner's ruling, 2026-10-30): "there shouldn't be a character limit - just
+        # don't be trying to cram a library of docs into one cartridge, especially if we can have the size be
+        # smaller." The 16,000 default was MY guard, and it worked against the design: six charters render to
+        # 12,822 chars and fit, a seventh did not - so the number refused PACKING, on size alone, at a fifth of
+        # what a cart costs to mount (16,000 chars is ~3,000 tokens, ~47 MB of a 118 MB floor). Density is what
+        # shares the floor, so density is the point; "don't cram a library" is judgment, and judgment is not a
+        # config number. Set "mint_max_chars" to want a refusal anyway; the sentinel is only a stop for someone
+        # who hands the mint a gigabyte of text and is surprised a thousand seconds later.
+        self.max_chars = int(cfg.get("mint_max_chars") or 1_000_000_000)   # one cart's rendered text
         _mf = cfg.get("mint_max_facts")
         self.max_facts = 200 if _mf is None else max(1, int(_mf))   # C4's ceiling band, guarded
         # S4 attach budgets (2026-10-25): the owner's C2 set the COUNT (max 10 - hygiene, since
