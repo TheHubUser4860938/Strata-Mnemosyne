@@ -2887,3 +2887,52 @@ pay and return nothing; decode on this box measured ~146 tok/s, putting one extr
 6 in `serve.test_memory.ManualCurationTrigger`; full serve suite 1,548 OK / 17 skipped / 454.5 s against the
 1,506-passed pre-batch baseline. NOT tested live, because the running process predates the commit - until the next
 boot, `tools/curate_loop.py --tag manual` (add `--dry-run`) does the same thing by hand.
+
+## The cartridge question, answered and retired: text plus routing is the corpus path (ruled 2026-10-30)
+
+Three layers of cartridge grew on this fork in two weeks - the tier-2 standing cart (2026-10-12), S3's
+minted episode carts (2026-10-25), S4's attach/pull, and the graft lever (2026-10-28) - and by
+Wednesday the honest answer to "what does a cartridge buy here?" was "we think, not we measured". The
+owner's ruling closes it: *"no cart[ridge] - only a handful of documents used daily at this point, only
+the one we use for your soul.md"*, with CUT3 research held until after. So the corpus path is **text
+plus routing**, the cartridge is a **cache**, and the only cart that stands is the tier-2 one.
+
+The measurements that decided it, all on this box (RTX 4090, engine 0.1.54; the tables and every script
+are in `spikes/cartridge/FOUNDER_CARTS.md` and `~/Strata-data/bench/p1/`):
+
+- **Size.** 142 carts holding 1,017,864 tokens occupied **34.0 GB** where the same text is **4.9 MB**:
+  **6,981x**. The anatomy is a **118.1 MB floor plus 15,264 B per token**, fitted on ten carts to within
+  0.1 MB, paid whether the cart knows one sentence or a document - because the file carries all 36
+  fixed-size gated-Delta-net states. The whole founding corpus as 2,000-token carts is 11,925 carts and
+  **1.77 TB**, on a box with 1.5 TB free. Wear is not the wall: a 4 TB Samsung 990 PRO is rated
+  2,400 TBW, so a full re-mint is ~0.07% of endurance - but a config-fingerprint change invalidates
+  every file at once, and re-writing 1.77 TB to store 114 MB of text is the tax.
+- **Fidelity, with the control the literature skips.** Same 36 asks, three arms: grafted state **11/36
+  = 31%**, the documents as cold text **29/36 = 81%**, the same text warm in the K/V cache **33/36 =
+  92%** - and the warm arm was the *fastest* (0.72 s against the cart's 0.93 s). A mounted cartridge is
+  not a better way to hold a document on this model; it is a worse one that saves prompt tokens.
+- **Reach, and why.** A grafted read consults the **first 2,048 cells**: `qwen4exp.attention.indexer.top_k`
+  is **2048** in the artifact itself (read with `tools/gguf_reader.py` from shard 1) and the kernel requires exactly 2048 (`native_qsa_score.cu:197`), and the cliff measured here
+  lands on the same number (fact at cell 1,900 passes, 2,048 fails). The bytes are all stored - a
+  2,580-token cart is 157.5 MB against 157.5 MB predicted - so a grafted read is selecting by position
+  where a live read selects by relevance. Confirmed on real documents with a two-alternative forced
+  choice and a wrong-cart runner-up control: **92% inside the wall against 58% with a wrong cart, and
+  64% against 64% beyond it** - past 2,048 cells a mounted cart contributes nothing measurable. MAM's
+  cartridges are ~48 rows, forty times under this wall, which is why his method never met it.
+- **What the ledger itself cost per turn.** The cart index appended after the standing bytes rode
+  **10,592 chars ~= 2,216 tokens of every standing request**. Retiring the episode rows took it to 32.
+  (It never rotated the persona prefix: the content hash covers the standing text only, server.py:7169.)
+
+**The code:** `memory.cartridges.minted` is now **opt-IN** - absent is off, so `CartMinter` does not
+stand and the four cart ops answer "carts are off". `Cartridges`, its hash, its slot file and the recall
+path are untouched, and the engine's graft hook stays unused in the tree for CUT3. `graft_mark` also
+grew the guard its own docstring had always promised: a **retired** row or a **missing file** marks
+nothing, which matters the moment the vault is pruned under a running server.
+
+**Also learned, and owned:** the serve suite was red for six hours because my 07:01 commit gave
+`Service.run` a `prefill_only=` argument and thirty test engines kept the old signature - a mock that
+must mirror the wire, found only when a full suite ran, because the 278-test memory file passed the same
+tree. Tested: 1 new test (`CartSlotLedger.test_a_retired_or_deleted_cart_grafts_nothing`) with both
+guards sabotaged to prove each can fail; `serve.test_server.StopStrings` 7 OK after the mock fix; full
+`serve` suite result recorded in the journal entry for this change. Not run: a live boot of the flipped
+default - the serving process predates the commit, so the box needs one restart to make it real.
