@@ -5,6 +5,30 @@ good plan, should also help with picking the correct MAM cartridges for each ask
 like I ask you 'what was Washington's farewell address?'"*. So the naming is not decoration: **the cart name
 is the router.** A person should be able to hear an ask and name the cart without opening anything.
 
+## STATUS, 2026-10-30 (after the owner's ruling): the carts below were NOT built
+
+The economics and the wall, both measured on this box the same day, killed the plan as drawn:
+
+- **Disk.** 142 carts holding 1,017,864 tokens took **34.0 GB** where the same text is **4.9 MB** —
+  **6,981×**, not the ~4,000× this file first estimated (the estimate was per-cart arithmetic; the vault
+  was a measurement). The founding corpus as 2,000-token carts would be **11,925 carts = 1.77 TB** on a
+  box with 1.5 TB free, and a config-fingerprint change invalidates every file at once. On the drive this
+  box has (Samsung 990 PRO 4 TB, rated **2,400 TBW**) one full re-mint is ~0.07% of endurance, so wear is
+  not the binding constraint: **capacity and churn are**.
+- **Fidelity.** Grafted state answered **11/36 = 31%**; the same documents as **warm text answered
+  33/36 = 92%**, and the warm path was *faster* (0.72 s against 0.93 s per ask).
+- **Reach.** A grafted read consults the first **2,048 cells** (law 8b), so a document cart past ~2,000
+  tokens is mounted but unread — and Washington's Farewell Address is 7,293 cells.
+
+**The ruling: the corpus path is text plus routing; carts are a cache; the only cart that stands is the
+tier-2 standing cartridge** (soul.md and the persona files: one file, 9,238 tokens, 377 MB). The founder
+family lands as **document-index rows in the store** — chunked, because the store caps a row at 4,000
+characters — where the routing bench says it belongs: against 36 length-matched same-domain candidates a
+chunked full-text index routed **9/14 lexical, 8/14 fused** where a 120-word summary index routed **2/14
+and 1/14**. The episode-cart surface is retired by default on branch `retire-episode-carts` (e072c65f),
+and CUT3 plus boundary work waits until the index is in place. **Everything below stays as the record of
+what was measured and believed at the time; nothing was deleted.**
+
 ## The measured numbers the design rests on
 
 | fact | value | how it was measured |
@@ -13,7 +37,7 @@ is the router.** A person should be able to hear an ask and name the cart withou
 | cost per token of state | **~15.7 KB** | (152.8 − 117.7) MB ÷ 2,275 tok; predicted 153.3 MB for a new 2,269-tok cart, actual **152.8 MB** |
 | a document *added* to a standing cart | **~6 MB** (a short charter, ~400 tok) | ch3 1,205 tok = 136.5 MB → ch6 2,863 tok = 161.8 MB, i.e. 25.3 MB for 5 more documents |
 | a *new* cart | **136–162 MB** | the same two carts, each carrying the floor |
-| state versus text | **~4,000×** | 15.7 KB/token against ~5.5 bytes/token of text |
+| state versus text | **~4,000×** estimated, **6,981× measured** across a real vault | 15.7 KB/token against ~5.5 bytes/token of text; then 34.0 GB of state against 4.9 MB of text for 142 carts, and 3.7 MB of ledger source text against the 31.99 GB those carts occupied |
 | staging a cart for a graft | **~1.2 GB/s** | 118.9 MB in 45.3 ms, 152.8 MB in 51.7 ms (engine's own "graft staged" lines) |
 
 Two consequences, both of which the owner has now ruled on:
@@ -131,8 +155,11 @@ in the text and checked cartless first.
  answers **8/8 across every cart length** (including 15k), depth 4,000+ answers **0/8** at every length.
  A fine sweep in a single 2,700-token cart - short enough that length cannot be the variable - puts the
  wall exactly at: **1,900 = 2/2 PASS, 2,000 = 1/2 split, 2,048 = 0/2, 2,100 = 0/2, 2,200 = 0/2,
- 2,500 = 0/2.** The constant is in the geometry: `qsa.hpp:112` sets `idx_top_k = 2048`, documented as
- *"2048 cells of selection budget"*, with `idx_block = 4` and `page_size = 4` cells. Three things make
+ 2,500 = 0/2.** Three sources agree on the constant. The artifact declares it: `tools/gguf_reader.py` reading
+  shard 1 gives **`qwen4exp.attention.indexer.top_k = 2048`**, with `head_count = 4` and `key_length = 128`,
+  matching `qsa.hpp:112`'s `idx_n_head = 4`, `idx_dim = 128`, `idx_top_k = 2048`; the CUDA kernel refuses
+  any other value (`native_qsa_score.cu:197`); and the header documents it as *"2048 cells of selection
+  budget"*, with `idx_block = 4` and `page_size = 4` cells. Three things make
  this a **restore defect** and not a limit of state-as-memory:
    - the bytes are present: `cfr-vexlin-2500` holds 2,580 tokens in **157.5 MB** against **157.5 MB**
      predicted by the fitted cost model - the K/V for the whole cart is stored, merely not consulted;
