@@ -552,6 +552,20 @@ MODELS = {
                     "download_gb": 94.7, "ram_gb": 48, "arena_gb": 60.5, "families": ("heretic",), "budget": True,
                     "shards": 6, "file": "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-{q}-0000{i}-of-00006.gguf",
                     "vision": True},
+    # The leanest of the three (measured 2026-10-30 from the headers, the same method that reproduces huihui's
+    # published 77.0 GB as 77.02): 84.59 GB of file, 50.31 GB of it experts.  Its head and middle run IQ2_XXS
+    # gate/up with Q2_0 downs - the exact layout the fused i-quant prompt path lists first - at 0.668 GB/layer,
+    # with Q5_K spikes at layers 15/20/23/35 (1.389), and the last twelve layers are Q5_K gate/up with Q5_1 downs
+    # (Q8_0 at 47).  Worth naming: the card's "mid-network spikes at 15/20/23/30" describes THIS file's shape
+    # better than IQ4_NL's, whose spikes measured at 23 and 30 (15 and 20 are ordinary there) - so the card's
+    # prose was written against the 85 GB recipe, and a reader of IQ4_NL should not expect that exact ladder.
+    "IQ3_S-85G": {"about": "about 3.5-bit (the heretic's leanest set): IQ2_XXS gate/up with Q2_0 downs through the "
+                            "head and middle, Q5_K spikes at 15/20/23/35, Q5_K gate/up with Q5_1/Q8_0 downs over the "
+                            "last twelve layers; 24 GB less model than IQ4_NL and every expert inside a 64 GB PC",
+                  "download_gb": 84.6, "ram_gb": 48, "arena_gb": 50.3, "families": ("heretic",), "budget": True,
+                  "shards": 8,
+                  "file": "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-{q}.gguf-0000{i}-of-00008.gguf",
+                  "vision": True},
     # MODEL-UPDATE: Unsloth's larger files (docs/QUANTS.md).  The same GGUF-in-place mode: every expert in RAM where it
     # fits with UNSLOTH_RESIDENT_BESIDE_GB more (unsloth_budget), else a RAM budget of them and the rest read from the
     # SSD while it answers - so "ram_gb" is the all-in-RAM need, and below it setup asks first (default no).  Their
@@ -790,6 +804,27 @@ HERETIC_SHARDS = {
         (16662985152, "ae9f3f684493f0107f0aa01dd603844266ee8b9a53bad53475761f2acc31202a"),
     "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00006-of-00006.gguf":
         (15036859296, "bcebb4fecfaaf887c2a763c252ecca17749efe175e6c9c1c45d555c0e68906c0"),
+    # The third size (2026-10-30): IQ3_S-85G, 84.59 GB, 8 shards, in its own folder.  Its file names carry a
+    # stray ".gguf" before the split suffix - "…-IQ3_S-85G.gguf-00001-of-00008.gguf" - which is why the size
+    # entry below spells its own file template.  Its shard 2 is the SAME LFS object as IQ4_NL's
+    # (56a18587…), so the three sizes share one n-gram table file, not merely one tensor - the Q8 sidecar
+    # pairing is the same act on all three.
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00001-of-00008.gguf":
+        (693380992, "8b898216c1b83453ba119dfa5d54523a39d893f17efdc66d46f359fde1d1621c"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00002-of-00008.gguf":
+        (28800138432, "56a185873792b560485ee971ba5c4f9c5558def5e3e70dbf0f8925e9849eb513"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00003-of-00008.gguf":
+        (10800339776, "f48ed21f8ab3ce791f0c4540d18b51916730d1aad24d051dea8214e9ebdb0d63"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00004-of-00008.gguf":
+        (10879505216, "4b480bd8bf838d7cd3eabf45ab7301030da8b26a5ff0f41978ee320cebc80374"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00005-of-00008.gguf":
+        (10949843008, "38ad22083b39712dab15f6e4b6f1e15d70abdf6f82b1ef3ce3ca943703de637e"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00006-of-00008.gguf":
+        (10987969088, "427fddfe7677677d2ed664804c227d6b84404ec5081077828914f6f31db006b2"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00007-of-00008.gguf":
+        (10884261536, "a4e7df6bef6cc65023f7c491a08c1d90b7dd46837a959c47f078f5c4da544559"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00008-of-00008.gguf":
+        (595779968, "8506cacd6afdfc1b9efb83c35edf735d2cda0664a8f7da4fe6e86cf6353e43ba"),
 }
 
 # The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
@@ -917,7 +952,20 @@ FAMILIES = {
                          "measured activation energy toward coding, tool use and long system prompts",
                 "hf": hf("trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer"),
                 "folder_q": {"IQ4_XS-plus": hf("trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer")
-                             + "IQ4_XS/"},
+                             + "IQ4_XS/",
+                             "IQ3_S-85G": hf("trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer")
+                             + "IQ3_S-85G/"},
+                # A fresh install's engine defaults, measured on this class of box (CUDA desktop, big RAM) - the
+                # shape both of the dev box's arms serve with.  A person's own choices (SETUP_CHOICE_FLAGS, captured
+                # from the config being rewritten) are applied after these, so they win over the family's preference.
+                # The RAM- and CPU-sized knobs stay with setup's own sizing: --conversation-cache-mib 15000,
+                # --pool-workers 7 and --vram-reserve-mib 900 are this box's numbers, not a law for a 64 GB PC.
+                "config_args": ["--prefill", "auto:32768",       # auto's 8,192 chunk measured 1.81x slower (2026-10-30)
+                                "--spec-min-p", "0.70",           # a SETUP_CHOICE_FLAG, so the person's own value wins
+                                "--ple-io", "direct",             # the engine's default: the 54 GB table stays out of RAM
+                                "--pcie-frac", "0.35",            # measured non-monotone, minimum here (0.25 -> 7.4%, 0.45 -> 7.5%)
+                                "--adapt-async", "1", "--adapt-every", "1", "--adapt-swaps", "160",
+                                "--adapt-decay", "0.97"],         # the async tier, self-measuring
                 "file": "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-{q}-0000{i}-of-00008.gguf",
                 "shards": 8, "tag": "heretic-",
                 "mmproj_hf": hf("ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
@@ -6896,6 +6944,34 @@ def data_folder_in_place() -> tuple:
     return dest, []
 
 
+def apply_config_args(args: list, extra) -> list:
+    """A family's measured engine defaults, merged into the args a FRESH config gets
+    (FAMILIES[fam]["config_args"]).  A flag the family names is stated ONCE: every occurrence setup wrote is
+    dropped and the family's pair appended, because the sizing, vision and ple-io branches of the install each add
+    their own --ple-io / --prefill / --vram-reserve-mib, and a value stated twice is decided by whichever the
+    engine reads last.  Order is the family's.
+
+    This runs LAST in the arg assembly, and the person's own choices (user_args.capture over SETUP_CHOICE_FLAGS)
+    are applied to the config after it - so a tuned --spec-min-p in an existing file still wins, and only new
+    installs inherit the family's preference.
+    """
+    if not extra:
+        return args
+    it = iter(extra)
+    pairs = [(f, v) for f, v in zip(it, it)]
+    out = list(args)
+    for flag, _value in pairs:
+        while flag in out:
+            i = out.index(flag)
+            if i + 1 < len(out) and not str(out[i + 1]).startswith("--"):
+                del out[i:i + 2]                       # the flag and its value
+            else:
+                del out[i]                             # a boolean flag stands alone
+    for flag, value in pairs:
+        out += [flag, str(value)]
+    return out
+
+
 def write_config(path: Path, cfg: dict):
     """A run config, written whole or not at all (#459): to a temporary file first, then moved over the old one, so
     a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind."""
@@ -10645,6 +10721,11 @@ def main() -> int:
         # the package's profile, with llama.cpp's flags (the engine takes the same ones)
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
                  "--cvec-mode", "project", "--cvec-dir", "per-layer"]
+    # The family's measured defaults land LAST: the sizing, vision and ple-io branches above each add their own
+    # --ple-io / --prefill / --vram-reserve-mib, so a preference stated before them is one they overwrite.  A
+    # person's own choices are applied to the config after this, so a tuned value in an existing file still wins
+    # and only new installs inherit the family's (see FAMILIES[...]["config_args"]).
+    args = apply_config_args(args, fam.get("config_args"))
     cfg = {"exe": engine_exe(eng), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(home() / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}
