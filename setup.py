@@ -6107,13 +6107,18 @@ def update_installed_engine(url_base, toolkit=None) -> None:
                      "starting the installed one")
         return
     ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
+    src_ver = tuple(int(x) for x in source_version().split(".")[:4] if x.isdigit())
     local = meta.get("source") == "local"
     vision = meta.get("vision") or "none"
     if local:                                          # compiled here: is it older than the source (a git pull)?
         if meta.get("src") == source_hash(ENGINE_SOURCES) and not stale_binary(eng / EXE) and \
                 (vision == "none" or meta.get("vision_src") == source_hash(VISION_SOURCES)):
             return
-    elif ver >= MIN_ENGINE:
+    elif ver >= MIN_ENGINE and ver >= src_ver:
+        # Fork patch (2026-10-31): the released engine is upstream's and does not carry this fork's
+        # engine work (the CART fence's --conversation-cache-cart-slots, the BF16 projection form).
+        # A ready-made engine older than this checkout is replaced by a build of the checkout, not
+        # by the release's package; the code below takes the local-build branch for it.
         return
     try:                                               # a running engine cannot be replaced (Windows keeps it locked)
         for x in (EXE, VEXE):
@@ -6124,10 +6129,14 @@ def update_installed_engine(url_base, toolkit=None) -> None:
         warn(f"engine {meta.get('version') or ''} is in use: close the model window and run this again to update it")
         return
     gpu = update_engine_gpu(toolkit)
-    if local:
+    if local or ver < src_ver:
         try:                                           # a failed compile must not stop the model from starting
             if gpu is None:
                 raise RuntimeError("no NVIDIA GPU found")
+            if not local:
+                # a ready-made engine's BUILD.json says "cuda13.0"/"cpu", not build_engine's "gpu":
+                # map it before the compile, or a GPU encoder would be replaced by the CPU one
+                vision = prebuilt_vision(meta, gpu, "gpu") if vision not in ("none", "cpu") else vision
             gpu = {**gpu, "archs": sorted({int(gpu["arch"]), *arch_numbers(meta.get("archs"))})}
             if int(toolkit) == 12:                     # the cards it was compiled for (the main GPU may be newer)
                 gpu["archs"] = sorted(arch_numbers(meta.get("archs"))) or gpu["archs"]
