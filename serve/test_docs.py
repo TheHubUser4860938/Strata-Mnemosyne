@@ -187,6 +187,47 @@ class DocIndexStore(unittest.TestCase):
         rows = self._rows("doc-founding")
         self.assertTrue(all(len(x[1]) <= 1500 for x in rows))
 
+    def test_replace_folds_the_retired_rows_out_of_the_token_table(self):
+        """Audit F1: the per-file replace must tell the store's cached token table WHICH rows
+        died (retired=), not just that the stamp moved - else the server ranks against a
+        phantom corpus of deleted chunks until its next rebuild."""
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        seen: list = []
+        real = self.mem._dedupe_amend
+        self.mem._dedupe_amend = lambda *a, **kw: (seen.append(kw.get("retired") or ()),
+                                                   real(*a, **kw))[1]
+        try:
+            (self.docs_dir / "fed51.txt").write_text(_federalish("sphere", 40), encoding="utf-8")
+            self.mem.docs.index(self.docs_dir, corpus="founding")
+        finally:
+            self.mem._dedupe_amend = real
+        folded = [i for fold in seen for i in fold]
+        self.assertTrue(folded, "the replace passed retired ids to the token-table fold")
+
+    def test_a_tilde_folder_is_a_path_not_a_literal_directory_name(self):
+        """Audit F2: an app sends "~/kb"; index() must expanduser it."""
+        import os
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "kb").mkdir()
+            (Path(home) / "kb" / "one.txt").write_text(_federalish("tilde", 2), encoding="utf-8")
+            old = os.environ.get("HOME")
+            os.environ["HOME"] = home
+            try:
+                r = self.mem.docs.index("~/kb", corpus="tilde")
+            finally:
+                if old is not None:
+                    os.environ["HOME"] = old
+            self.assertEqual(r["files"], 1)
+
+    def test_exts_as_a_comma_string_is_not_iterated_as_characters(self):
+        """Audit F4: ".txt,.md" arriving as a STRING used to split into letters, and
+        endswith(('.', 't', ...)) matches half the folder."""
+        (self.docs_dir / "extra.json").write_text('{"a": 1}', encoding="utf-8")
+        r = self.mem.docs.index(self.docs_dir, corpus="founding", exts=".txt,.md")
+        self.assertEqual(r["files"], 3)
+        files = {d["path"] for d in self.mem.docs.list(corpus="founding")}
+        self.assertNotIn("extra.json", files)
+
 
 class AttachingStore(unittest.TestCase):
     """The tools' lane (m8_docs against a RUNNING server): a minimal duck-type - attach()'d
@@ -252,6 +293,21 @@ class DocsOverHttp(unittest.TestCase):
         conn.request("POST", "/memory", json.dumps(req), {"Content-Type": "application/json"})
         resp = conn.getresponse()
         return resp.status, json.loads(resp.read().decode())
+
+    def _get(self, qs):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        conn.request("GET", "/memory?" + qs, headers={"Accept": "application/json"})
+        return json.loads(conn.getresponse().read().decode())
+
+    def test_get_docs_one_answers_the_corpora_tally(self):
+        """Audit F3: the web page and every operator see WHAT the store can route over.
+        stats.docs is a plain list of per-corpus tallies (own corpus: tests share the class)."""
+        status, r = self._post({"op": "docs", "action": "index",
+                                "folder": str(self.docs_dir), "corpus": "garrison"})
+        self.assertEqual(status, 200)
+        card = self._get("docs=1")
+        self.assertEqual([c["corpus"] for c in card["stats"]["docs"]], ["garrison"])
+        self.assertGreater(card["stats"]["docs"][0]["chunks"], 0)
 
     def test_index_then_list_round_trip(self):
         status, r = self._post({"op": "docs", "action": "index",

@@ -9466,6 +9466,8 @@ def make_handler(svc: Service):
                 return
             inv = (qs.get("include_invalid") or [""])[0]   # ?include_invalid=1 walks the version history too
             stats = svc.memory.stats()
+            if (qs.get("docs") or [""])[0]:       # ?docs=1: what corpora the store can route over
+                stats["docs"] = svc.memory.docs.corpora()   # (the ledger is small; the tallies are the map)
             if getattr(svc, "cartridges", None) is not None:    # M3b: the cartridge reports beside the store
                 stats["cartridges"] = svc.cartridges.view()
                 if svc.carts is not None:      # the S3 ledger rides the same card (2026-10-25):

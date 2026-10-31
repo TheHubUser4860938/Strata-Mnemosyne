@@ -126,6 +126,15 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _mtime_us(st) -> int:
+    """The gate's clock: MICROSECOND mtime in a bigint. Second resolution (the first build's
+    int(st_mtime)) made a rewrite inside the same second look unchanged - a suite-load lottery
+    on the replace tests, and a real one-second blind spot in production. Old rows hold
+    second-stamps; the first rescan after the change re-hashes them once, the sha arm absorbs
+    the work, and the ledger restamps in us. Self-healing, no migration."""
+    return int(st.st_mtime * 1_000_000)
+
+
 def _corpus_class(corpus: str) -> str:
     """DOC/<CORPUS>: upper-case, spaces weld to hyphens, and the call-number grammar's other
     separators (/, .) become hyphens too - 'the federalist papers.1788' -> DOC/THE-FEDERALIST-
@@ -155,18 +164,28 @@ class Docs:
         """Index `folder` into rows under `corpus`. Returns the honest tally:
         {files, chunks, skipped, unchanged, removed, seconds, scope, class, corpus}.
         files/chunks/skipped count the WORK this pass did; unchanged counts stat-swept files
-        that needed none; removed counts ledger files that left the folder."""
+        that needed none; removed counts ledger files that left the folder.
+        EDGE (audit F5, annotated not rewritten): a per-file replace deletes the CURRENT
+        scope's rows for that file - re-indexing the same corpus under a CHANGED scope leaves
+        the old scope's rows standing beside the new ones. One scope per corpus is the rule;
+        change it with --remove first."""
         t0 = time.time()
         self._ensure()
         corpus = str(corpus or "").strip()
         if not corpus:
             raise ValueError("index needs a corpus name to shelve and scope the rows under")
-        root = Path(folder)
+        root = Path(str(folder)).expanduser()       # "~/docs" from an app is a path, not a dir name
         if not root.is_dir():
             raise ValueError(f"folder not found: {root} - name a directory of "
                              f"{'/'.join(exts)} files")
         klass = _corpus_class(corpus) if klass is None else class_name(klass)
         scope = scope_name(scope or f"doc-{corpus}")[:40]
+        # exts arrives as a list (the tool) or a comma string (an app hand-writing the JSON);
+        # a bare string iterated as-is splits into CHARACTERS, and endswith on single letters
+        # matches half the folder (audit F4, 2026-10-31). One normalization, dotted and lowered.
+        if isinstance(exts, str):
+            exts = exts.split(",")
+        exts = tuple("." + str(x).strip().lower().lstrip(".") for x in exts if str(x).strip())
         source = f"doc-index-{time.strftime('%Y-%m-%d')}"   # <= 40 chars, the column's ceiling
         seen, n_files, n_chunks, n_skip, n_unchanged = set(), 0, 0, 0, 0
         for dirpath, _dirs, names in os.walk(root):
@@ -181,7 +200,7 @@ class Docs:
                     "select size, mtime, sha256 from docs where corpus=%s and path=%s",
                     (corpus, rel)).fetchone()
                 digest = None
-                if row is not None and int(row[0]) == st.st_size and int(row[1]) == int(st.st_mtime):
+                if row is not None and int(row[0]) == st.st_size and int(row[1]) == _mtime_us(st):
                     n_unchanged += 1
                     continue                            # the morning pass: stat, keep, move on
                 digest = _sha256(p)                     # the authority: cheap gate moved -> hash
@@ -189,7 +208,7 @@ class Docs:
                     with self.svc.lock:                 # touched, not changed: the stamp rides
                         self.svc.conn.execute(
                             "update docs set mtime=%s where corpus=%s and path=%s",
-                            (int(st.st_mtime), corpus, rel))
+                            (_mtime_us(st), corpus, rel))
                         self.svc.conn.commit()
                     n_unchanged += 1
                     continue
@@ -197,12 +216,13 @@ class Docs:
                 chunks = pack_chunks(text, cap=cap, mode=mode)
                 doc_sha = digest if digest is not None else _sha256(p)
                 with self.svc.lock:                     # replace, never append: the file's own
-                    self.svc.conn.execute(              # rows retire together
+                    gone = [r[0] for r in self.svc.conn.execute(   # rows retire together, and the
                         "delete from memories where scope=%s and provenance->>'file'=%s"
-                        " and provenance->>'corpus'=%s", (scope, rel, corpus))
+                        " and provenance->>'corpus'=%s returning id",
+                        (scope, rel, corpus)).fetchall()]          # store's token table folds them
                     self.svc.conn.commit()
                     self.svc._touched(reason="doc-replace")
-                    self.svc._dedupe_amend()            # the deleted rows fold out; an
+                    self.svc._dedupe_amend(retired=gone)  # the deleted rows fold out; an
                     self.svc._vdirty = True             # unpredicted stamp moves the rebuild
                 off = 0
                 for i, chunk in enumerate(chunks):
@@ -219,7 +239,7 @@ class Docs:
                         " on conflict (corpus, path) do update set size=excluded.size,"
                         " mtime=excluded.mtime, sha256=excluded.sha256, chunks=excluded.chunks,"
                         " indexed_at=excluded.indexed_at",
-                        (rel, corpus, scope, st.st_size, int(st.st_mtime), doc_sha, len(chunks),
+                        (rel, corpus, scope, st.st_size, _mtime_us(st), doc_sha, len(chunks),
                          self.svc._dt(time.time())))
                     self.svc.conn.commit()
                 n_files += 1
@@ -268,11 +288,12 @@ class Docs:
             return False
         scope = self._scope_of(corpus)
         with self.svc.lock:
-            self.svc.conn.execute("delete from memories where scope=%s", (scope,))
+            gone = [r[0] for r in self.svc.conn.execute(
+                "delete from memories where scope=%s returning id", (scope,)).fetchall()]
             self.svc.conn.execute("delete from docs where corpus=%s", (corpus,))
             self.svc.conn.commit()
             self.svc._touched(reason="doc-remove")
-            self.svc._dedupe_amend()
+            self.svc._dedupe_amend(retired=gone)
             self.svc._vdirty = True
         return True
 
