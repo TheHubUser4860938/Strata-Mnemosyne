@@ -74,7 +74,9 @@ can differ. Gyro is a memory-saving fallback, currently slower, not a general sp
 These are choices, not an instruction to install every row. The full list and memory estimates are in
 [MODELS.md](MODELS.md). Source setup on this fork's branch additionally offers `dau` and `daureg` (DavidAU's
 Turbo-Brilliance re-quants, which the reason modes ride) and `huihui` (huihui-ai's abliterated re-quants, the same
-Unsloth Dynamic sizes, plain template). For example, inspect the ISTA-DASLab Q2_0 plan:
+Unsloth Dynamic sizes, plain template) and `heretic` (trubisky's quants of jeffpeng3's heretic v2 of Swift 1.5 — three
+sizes, 85 to 109 GB, the reason modes ride its template and the optional Q8_0 n-gram table applies to it). For example,
+inspect the ISTA-DASLab Q2_0 plan:
 
 ```sh
 strata launch --family qwen --model q2_0 --context 32k --plan --output json

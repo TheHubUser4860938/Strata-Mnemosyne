@@ -209,6 +209,39 @@ NVIDIA, AMD and Intel details are in [QUANTS.md](QUANTS.md); the files are descr
 strata launch --family unsloth --model UD-Q5_K_XL
 ```
 
+<a id="heretic"></a>
+
+### Heretic: Swift 1.5, abliterated (trubisky's quants)
+
+`--family heretic` is [trubisky](https://huggingface.co/trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer)'s
+quantization of [jeffpeng3's heretic v2](https://huggingface.co/jeffpeng3/Swift-1.5-Qwen3.8-Flash-Next-heretic) of
+UkisAI's Swift 1.5: the fine-tune that thinks shorter, with the refusals ablated, so it answers plainly as well. The
+bits go where the activations say they matter rather than evenly — IQ4_NL runs IQ3_S/IQ4_XS gate/up with IQ4_NL downs
+through the middle and Q5_K gate/up with Q8_0 downs over the last twelve layers, 2.05 GB a tail layer against 1.37 a
+middle one, where huihui's UD-Q4_K_XL is flat by comparison (1.62 against 1.57). The `{REASON:}` dial rides this
+family: its template carries the `reasoning_effort` branches huihui's stock one lacks, and the server says which
+template it found in its boot banner. All three sizes ship the same n-gram table, so the optional Q8_0 table
+(`--ple-q8 on`, the sleepyeldrazi file) applies here as it does to the Qwen tree — the table is one trained tensor
+across these trees, measured identical bytes. Swift Open License 1.0 over the Qwen Community License.
+
+| Size | Download | Experts | RAM for all experts | Same top token as Q8_0 |
+| --- | ---: | ---: | ---: | ---: |
+| **IQ4_NL** | 109 GB | 70 GiB | ~86 GB | not measured |
+| **IQ4_XS-plus** | 95 GB | 56 GiB | ~73 GB | not measured |
+| **IQ3_S-85G** | 85 GB | 47 GiB | ~62 GB | not measured |
+
+Download and expert bytes are read off the files (per-tensor sizes from the GGUF headers, the method reproducing
+huihui's published 77.0 GB of experts as 77.02), not from the repository's prose; the quality column is the
+yardstick's (`tools/quant_quality.py`) and these files have not been through it. Measured on this fork's dev box
+(RTX 4090, 125 GB RAM) against huihui's UD-Q4_K_XL: prefill 204.3 us/token against 226.4, and decode level at
+150–260k context (85.6 against 85.2 tokens a second, draft acceptance identical at 78.2%), +5.2% at 260k and beyond.
+IQ3_S-85G is the leanest and the most conventional layout of the three: IQ2_XXS gate/up with Q2_0 downs in the head
+and middle, Q5_K spikes at layers 15/20/23/35, Q5_K gate/up with Q5_1 downs in the tail.
+
+```sh
+strata launch --family heretic --model IQ4_NL
+```
+
 <a id="gyro"></a>
 
 ### Gyro-S and Gyro-M (agentionai)
