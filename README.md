@@ -6,29 +6,44 @@ itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one s
 harness ever has to re-send history. The server remembers, and it remembers the same way no
 matter which app is knocking.
 
-This fork is based on upstream Strata 0.2.8 — app and Terminal at 0.2.8, Control and every
-engine package at 0.1.54. Upstream's own headline list for this round: **a pair of Intel Arc Pro
-B65 cards decodes 17 to 23% faster** (71 to 74 tokens per second against 60 to 63, five paired
-runs, same answers; the pair now runs `--pipeline-windows 2` and setup writes `--spec 2`), **four
-Radeon R9700 cards serve 2.4 times the total speed at 32 requests at once** (155 to 370 tokens
-per second; one request alone is unchanged at 67), **DeepSeek on an Apple-silicon Mac no longer
-slows down after a few requests** (every request left about 1.3 GB of GPU buffers behind, so
-decode fell from 16 tokens per second to 3; memory now stays flat at 76 GB over 34 requests and
-decode stays at 18 to 22), and **a tool call the model writes slightly wrong is still read, by
-default** — 98.3% read as intended against 92.9% over 1,462 agent turns, the same family of calls
-the server otherwise hands back as text and counts in `strata_rejected_tool_calls`. Two defaults
-moved the other way, both worth knowing before an upgrade: the 0.2.7 routing speed-up on 12 GB
-NVIDIA cards is **off again** (`STRATA_ROUTE_PRIOR=1.5` brings it back — upstream took it back on
-2026-10-29 over repeated text in long agent sessions, #4402), and a DeepSeek server started from a
-config that did not name its model family no longer ends a reply in the middle of a word (#4576,
-#4137). Going back is one step: `strata components rollback` for the engine, `STRATA_ROUTE_PRIOR=1.5`
-and `"tool_call_recovery": false` for the two defaults; the 16-row HIP batch windows are a build
-option (`-DSTRATA_WINDOW_MAX_T=8`), not a run-time switch. The earlier rounds' gains — the Strix
-Halo and Intel Arc packages, the DFlash2 drafter, full-context agent chat, one installer per
-system, the DeepSeek RAM store and speed-ups, and the 0.2.7 round's DeepSeek picture reading and
-two-NVIDIA-card pipelining — all still stand. Every number in this paragraph is upstream's, from
-the [0.2.8 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.8) and
-docs/DETAILS.md. This fork adds the memory system and the reason-mode steering described below.
+This fork is based on upstream Strata 0.2.9 — app and Terminal at 0.2.9, Control and every
+engine package at 0.1.55. Upstream's own headline list for this round: **prompts 2 to 6% faster on
+Linux with NVIDIA cards, by default** (the Gated DeltaNet prompt kernels now run on the tensor
+cores: +4.4% at 4K and +5.5 to 5.7% on longer prompts on an RTX PRO 5000, +2.6% at 16K and +3.2% at
+32K on an RTX A4000, decode unchanged; the KL check, the 61-task suite at 55 against 54 to 56, and a
+30-minute soak all passed), **parallel requests 1.45 times as fast at eight at once on Linux
+NVIDIA** (one RTX PRO 5000, Qwen3.8 IQ3_S, 1,000-token prompts, 128 tokens out, three paired blocks,
+range 1.451 to 1.459; one request alone is 5.3% faster and its greedy answers matched in 12 of 12 —
+with `--parallel` or `--batch` of 2 or more the server now sets the nine qualified settings
+itself), **Strix Halo on Windows reads Qwen3.8 IQ3_S prompts 1.8 times as fast** (an 8K prompt goes
+from 791 to 1,424 tokens per second and a 32K prompt from 778 to 1,460, decode inside normal spread
+at 57.4 to 58.9, the greedy answers the same), and **Unsloth's 1-bit DeepSeek sets UD-IQ1_S and
+UD-IQ1_M are a choice** (241 GB and 258 GB downloads, about 111 GB less with the ISTA Engram file
+already on hand; against Unsloth's own Q8_K_XL reference, one run each: KL 0.114 and 0.087 against
+ISTA-DAS 2.25's 0.110, top-1 agreement 87.2% and 88.8% against 87.4%, the 61-task suite 53 and 53
+against 56). Two fixes matter to a server that serves a coding agent: calls written inside a code
+fence or an indented block are no longer run as tool calls (#4702, #4703), and a tool the
+conversation already used counts as declared, so a later call to it comes back as a tool call and
+not as raw text (#4663, not covered on the Anthropic and Responses routes). The chat page stops
+redrawing the whole transcript for every streamed token — a 40,000-token answer costs 9.0 seconds
+of main-thread time against 15.7, peak heap 114 MB down to 62-75 MB, measured in the app on a
+synthetic long answer. The new defaults are Linux-only (NVIDIA tensor-core GDN, and the parallel
+stack at `--parallel`/`--batch` of 2 or more; `serve/server.py`'s `gdn_stack_env` and
+`parallel_stack_env` write them, so any value you set yourself still wins) and each keeps its own
+off switch: `STRATA_GDN_TC=0`, `STRATA_GDN_CONVL2=0`, `STRATA_GDN_CHUNKED=0` on Radeon gfx12, and
+the nine `STRATA_CKPT_POOL`-family names. Going back to 0.2.8 is one step: `strata components
+rollback` returns the 0.1.54 engine, and Control stays 0.1.55. Two known problems, from upstream's
+own list: DeepSeek at temperature 0 is not repeatable across requests (the expert cache moves
+experts between the CPU and the GPU, so five identical asks can give five answers;
+`--set=--no-expert-cache=on` repeats, at the cost of 8% to 10% of decode on four cards and 58% on
+one), and on a PC with both NVIDIA and Intel cards `strata launch` takes the NVIDIA card and offers
+no way to name the Intel ones. The earlier rounds' gains — the Arc B65 pair, the four-R9700
+concurrency, the Mac DeepSeek buffer fix, tool-call recovery on by default, the Strix Halo and
+Intel Arc packages, the DFlash2 drafter, full-context agent chat, one installer per system, the
+DeepSeek RAM store and speed-ups — all still stand. Every number in this paragraph is upstream's,
+from the [0.2.9 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.9),
+`docs/GDN_CONTRACT.md` (new this round) and `src/core/arch_defaults.cpp`. This fork adds the memory
+system and the reason-mode steering described below.
 
 ## The two names, and they are not decoration
 
@@ -65,7 +80,7 @@ cd Strata
 
 <img width="1265" height="542" alt="image" src="https://github.com/user-attachments/assets/238eb87c-45f2-4be4-8cb8-91d922efbda8" />
 
-Version 0.2.8 (app and Terminal 0.2.8, Control and every engine package 0.1.54)
+Version 0.2.9 (app and Terminal 0.2.9, Control and every engine package 0.1.55)
 
 Two things arrive switched **on**, and everything else stays byte-identical to upstream Strata:
 
@@ -137,15 +152,15 @@ Download the file for your computer, open it, and press install on the model it 
 
 **Windows 10 / 11**
 
-[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.8-windows-x64-setup.exe)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.9-windows-x64-setup.exe)
 
 **Linux**
 
-[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.8-linux-x86_64.AppImage)
+[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.9-linux-x86_64.AppImage)
 
 **Mac** (Apple Silicon, macOS 15 or newer)
 
-[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.8-macos-arm64.dmg)
+[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.9-macos-arm64.dmg)
 
 The app picks the right engine for your graphics card by itself. All files are on the [releases page](https://github.com/Niko1221/Strata/releases/latest).
 
