@@ -9618,8 +9618,12 @@ def make_handler(svc: Service):
             "until"? date bounds: epoch, ISO date or datetime - the date index};
             "turn" {"user", "assistant", "scope"?, "model"?} journal one exchange by hand (what the eval
             harness posts); "turns" {} list the un-curated journaled turns; "cartridge" {} re-seed the
-            tier-2 standing cartridge (M3b; 400 when cartridges are off). Bad fields are 400s like any other
-            malformed request."""
+            tier-2 standing cartridge (M3b; 400 when cartridges are off); "docs" {"action"?: "index"
+            (default absent = list) | "list" | "remove"} - the document index: index {"folder",
+            "corpus", "scope"?, "class"?, "cap"?, "mode"? paragraphs|fixed, "exts"?} files a folder
+            of text as chunk rows on the DOC/<CORPUS> shelf, incrementally (a rescan re-chunks only
+            what moved); list {"corpus"?} answers the ledger and the per-corpus tallies; remove
+            {"corpus"} retires one. Bad fields are 400s like any other malformed request."""
             if svc.memory is None:
                 self._json(404, {"error": {"message": 'memory is off: add "memory" to the engine config, or '
                                                       "start the server with --memory DIR"}})
@@ -9741,6 +9745,30 @@ def make_handler(svc: Service):
                 if svc.cartridges is None:
                     raise ValueError("cartridges are off (memory.cartridges.enabled in the config)")
                 r = {"cartridge": svc.cartridges.reseed()}
+            elif op == "docs":            # the document index (2026-10-31): a folder of text files
+                # becomes chunk rows on a DOC/<CORPUS> shelf - text + routing, the file stays the
+                # territory, the store keeps the map, and a rescan re-chunks only what moved.
+                action = (str(req.get("action") or "list")).strip().lower()
+                if action == "index":
+                    folder = str(req.get("folder") or "").strip()
+                    corpus = str(req.get("corpus") or "").strip()
+                    if not folder:
+                        raise ValueError('index needs "folder" (a directory of text files) and '
+                                         '"corpus" (the shelf family to file it under)')
+                    r = {"docs": {"indexed": svc.memory.docs.index(
+                        folder, corpus,
+                        klass=req.get("class") or None, scope=req.get("scope") or None,
+                        cap=int(req.get("cap") or 3900),
+                        mode=str(req.get("mode") or "paragraphs"),
+                        exts=tuple(str(x) for x in (req.get("exts") or (".txt", ".md"))))}}
+                elif action == "remove":
+                    r = {"docs": {"removed": svc.memory.docs.remove(str(req.get("corpus") or ""))}}
+                elif action == "list":
+                    corpus = str(req.get("corpus") or "").strip()
+                    r = {"docs": {"files": svc.memory.docs.list(corpus or None),
+                                  "corpora": svc.memory.docs.corpora()}}
+                else:
+                    raise ValueError('docs action: one of "index", "list", "remove"')
             elif op in ("mint", "remint", "retire", "carts"):     # S3 (2026-10-25): one experience,
                 if svc.carts is None:                             # one cartridge - and the ledger
                     raise ValueError("carts are off (memory.cartridges needs slot_save_path "    #  lives in the store; the base
@@ -9767,7 +9795,7 @@ def make_handler(svc: Service):
                 # and the menu moves with them, or the menu lies
                 raise ValueError('op: one of "remember", "forget", "purge", "invalidate", "correct", '
                                  '"classify", "pin", "link", "curate", "search", "turn", "turns", "cartridge", '
-                                 '"mint", "remint", "retire", "carts"')
+                                 '"docs", "mint", "remint", "retire", "carts"')
             self._json(200, {"ok": True, **r})
         def _images(self, req):
             """POST /v1/images/generations (serve/images.py): one sd-cli job in the GPU's turn."""

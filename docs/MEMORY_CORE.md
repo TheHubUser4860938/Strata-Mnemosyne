@@ -2887,3 +2887,67 @@ pay and return nothing; decode on this box measured ~146 tok/s, putting one extr
 6 in `serve.test_memory.ManualCurationTrigger`; full serve suite 1,548 OK / 17 skipped / 454.5 s against the
 1,506-passed pre-batch baseline. NOT tested live, because the running process predates the commit - until the next
 boot, `tools/curate_loop.py --tag manual` (add `--dry-run`) does the same thing by hand.
+
+## The document index: RAG for the corpus, in the store the engine already runs (built 2026-10-31)
+
+The 2026-10-30 ruling - the corpus path is **text + routing**, documents are paths, the store
+keeps facts - is now a machine, not a sentence. `serve/docs.py` turns a folder of text files
+into **chunk rows**: `memories` rows on a `DOC/<CORPUS>` shelf, in a **scope per corpus**,
+`source='doc-index-<date>'`, each carrying the **spine** provenance
+`{file, corpus, offset, n, sha256, chunk_sha256}` - the row that answers a quote expands back
+into the original passage by `read file from offset` (the gap RESEARCH.md item 7 named:
+sentences with provenance, no document object; Cognee's finding stands: the spine buys citation
+and deletion, not precision). Retrieval is not new machinery: chunk rows ride the store's
+lexical arm (GIN → BM25) today and the fused arm the moment vectors exist. The curation sweep
+never reads them - the harvest drains `turns`, the document rows ride in inert.
+
+**Incremental is the point.** The `docs` ledger (one row per file: corpus, path, scope, size,
+mtime, sha256, chunks) remembers what is indexed; a rescan stats every file and re-chunks only
+what moved - mtime+size the cheap gate, sha256 the authority (a touch that rewrites identical
+bytes re-stamps the ledger and re-chunks nothing). The community complaint of 2026-10-30 - "the
+whole corpus gets re-indexed from scratch every morning, 10-15 minutes" - is a cold lexical
+pass measured at 27 ms/row on 3,900-char chunks: 13.3 min for a 118 MB corpus, **once**.
+The warm morning pass is one stat() sweep: seconds.
+
+**Chunking is an experiment, not a constant** (arXiv 2603.06976: paragraph grouping nDCG@5
+0.459 / P@1 24% against fixed-size char windows <0.244 / P@1 2-3%; Vectara NAACL 2025 found
+fixed can win on realistic sets). Default `mode='paragraphs'` packs whole paragraphs to the
+row ceiling and hard-splits only a paragraph that cannot fit; `mode='fixed'` is the control
+windower the 2026-10-30 routing bench measured (0/12 on the fly, 8/12 from the store). Both
+feed the same rows; the eval sweeps both. The row ceiling is remember()'s 4,000 chars,
+whitespace-collapsed: a 3,900-char chunk stores at 3,899 (measured).
+
+**Lexical first, semantic lazy.** Writes embed inside `remember()` (embed-then-lock), so the
+default pass runs the embedder-free lane (measured: 200 real corpus chunks at 27 ms/row);
+`--embed` (or an embedder-on server) pays the measured 2.4 chunks/s of embeddinggemma-2 on
+8 CPU threads (~3.4 h for the full founding corpus, one-time), and `tools/m4_embed.py` closes
+the vector gap for rows written before. Day one answers lexically; the fused arm sharpens
+without a restart (the `_vec_matrix` embedded-count pickup).
+
+**Scope-per-corpus is load-bearing**: remember()'s exact-text dedup scan runs over the writing
+scope, so a folder-shaped scope keeps every write at the flat measured rate; the store's one
+named wall (the ~50k per-scope scan, 2026-10-14 scale probe above) is sidested by construction.
+pgvector stays the documented 1M-row trigger (ADR-002): at ~30k rows the exhaustive cosine scan
+is ~1.5 ms/query and the matrix ~91 MB - invisible.
+
+**Two doors, one pipeline.** `op=docs` on `/memory` -
+`{"action":"index","folder","corpus","scope"?,"class"?,"cap"?,"mode"?,"exts"?}`,
+`{"action":"list","corpus"?}` (ledger + per-corpus tallies), `{"action":"remove","corpus"}` -
+so every app inherits the index through the server; and `tools/m8_docs.py`, the attach-lane
+twin that runs against a live store from a boot that predates the op (it creates the ledger
+table itself, IF NOT EXISTS, byte-identical to `_PG_DDL`).
+
+**The offset is into the collapsed body.** Rows are whitespace-collapsed (remember()'s law),
+and `provenance.offset` counts characters of the concatenation of the file's rows joined by one
+space - enough to route and to quote from; `read file from offset` lands within a paragraph,
+not on a character. The raw-file offset (walking paragraphs in the source) is phase-2 polish.
+
+Measured cost of the shelf (projections from this box's slopes, table in
+`Documents/Clio's_Research/12_RAG_AND_THE_CORPUS.md`): per-query cosine +~0.5 ms; `_vec_matrix`
+rebuild ~250-350 ms on first traffic after a write batch; `_dedupe_tables` rebuild ~4.6 s on
+the first near-dupe check after a write batch (stamp-cached); BM25 up to ~150 ms at the
+4,000-candidate cap; `m4_catalog` +~125 ms per shelf per 30-min tick; the catalog map +1 line.
+Tested: 15 in `serve.test_docs` (chunker contract, ledger, spine, the stat-sweep rescan,
+per-file replace, prune, nested paths, shelf recall, the HTTP op), three sabotages each caught
+by a failing test (gate, class, replace). The reading stage (block caps for chunk-shaped rows,
+an LLM-rerank arm on the fused candidates) is the named next work.

@@ -844,6 +844,24 @@ _PG_DDL: tuple[str, ...] = (
     # re-mints. A re-mint keeps created_at, moves minted_at, records the superseded .bin in
     # previous_file and counts the act: supersession with the scar visible, not a silent edit.
     # retired = shelved by name; the .bin itself obeys the vault's own retention law.
+    # The document ledger (the RAG-for-the-corpus build, 2026-10-31): one row per INDEXED FILE -
+    # the map of the territory, not the territory. The chunk ROWS live in `memories` (a scope
+    # per corpus, a DOC/<CORPUS> shelf, provenance {file, corpus, offset, n, sha256,
+    # chunk_sha256}); this table is the INCREMENTAL law's memory: a rescan stats each file
+    # against (size, mtime) and re-chunks only what moved, sha256 as the authority - so the
+    # morning pass over an unchanged folder costs one stat() sweep, not the 10-15 minutes the
+    # community reported. The scope column stores where the rows actually went (an explicit
+    # scope at index time is remembered here, not re-derived).
+    """create table if not exists docs(
+         corpus text not null,
+         path text not null,
+         scope text not null default '',
+         size bigint not null default 0,
+         mtime bigint not null default 0,
+         sha256 text not null default '',
+         chunks integer not null default 0,
+         indexed_at timestamptz,
+         primary key (corpus, path))""",
     """create table if not exists carts(
          name text primary key,
          file text not null,
@@ -3244,6 +3262,18 @@ class MemoryService:
                 "db": self.db_path,
                 "dir": self.directory}    # the store dir - what tools/attach() needs (the tools'
                                           # native twin of the old stats.db file path)
+
+    @property
+    def docs(self):
+        """The document index (serve/docs.py, 2026-10-31): folder -> chunk rows on a DOC/<CORPUS>
+        shelf, incremental by the `docs` ledger. Hung off the store, not beside it: the rows are
+        memories, the retrieval is the store's, and the curation sweep never reads them - the
+        harvest drains `turns`, the document rows ride in inert until a query reaches them."""
+        d = getattr(self, "_docs", None)
+        if d is None:
+            from .docs import Docs
+            d = self._docs = Docs(self)
+        return d
 
     def close(self) -> None:
         """Close the store connection, then release the cluster handle. The library's own law,
