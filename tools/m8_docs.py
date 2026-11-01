@@ -90,7 +90,9 @@ def main() -> int:
     ap.add_argument("--class", dest="klass", default=None, help="shelf (default DOC/<CORPUS>)")
     ap.add_argument("--scope", default=None, help="store scope (default doc-<corpus>)")
     ap.add_argument("--mode", choices=("paragraphs", "fixed"), default="paragraphs")
-    ap.add_argument("--cap", type=int, default=3900, help="row ceiling in chars (<= 4000)")
+    ap.add_argument("--cap", type=int, default=3900,
+                    help="row ceiling in chars (32-4000; a larger value is clamped to 4000, "
+                         "remember()'s ceiling)")
     ap.add_argument("--exts", default=".txt,.md", help="comma-separated suffixes to index")
     ap.add_argument("--embed", action="store_true", help="embed each chunk at write time (slow arm)")
     ap.add_argument("--model", default=str(data_dir(ROOT) / "embeddings/embeddinggemma-2"),

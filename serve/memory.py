@@ -1425,7 +1425,7 @@ class MemoryService:
     @_heals
     def remember(self, text: str, scope: str = USER_SCOPE, source: str = "manual",
                  confidence: float | None = None, provenance: dict | None = None,
-                 klass: str | None = None, guard: bool = True) -> dict:
+                 klass: str | None = None, guard: bool = True, exact: bool = True) -> dict:
         """Store one durable fact. An active row with the same normalized text and scope is updated instead
         of duplicated: the curation loop may propose the same thing many times. klass is the call number
         (class axis, PHASE 4.5): a re-learned fact never RE-SHELVES a row that already has one - the
@@ -1433,7 +1433,12 @@ class MemoryService:
         guard=False stands the SEMANTIC near-dupe verdict aside (the row is still embedded, and exact-text
         dedup still applies) for writes that must land complete: a benchmark haystack is evidence, not a
         set of proposals, and consolidation retires rows the gold map still points at - measured, 317
-        oracle rows in lme_ scopes were superseded by the guard during one ingest with the embedder on."""
+        oracle rows in lme_ scopes were superseded by the guard during one ingest with the embedder on.
+        exact=False stands the EXACT-TEXT dedup aside too (the mirror of guard): the document index
+        writes one row per chunk even when two files carry the same passage, because the provenance
+        (file, offset) is the point - and skipping the scope-wide text scan is what keeps a 22k-chunk
+        pass linear instead of scanning every text in the scope once per chunk. With no `same`
+        candidates the semantic guard has nothing to compare, so it stands aside as well."""
         text = " ".join(str(text).split())
         if not text:
             raise ValueError("memory text is empty")
@@ -1452,10 +1457,13 @@ class MemoryService:
         # vector (honest: it stays recallable by bm25) - tools/m4_embed.py closes those gaps.
         vec = self.embedder.embed_docs([text])[0] if self.embedder is not None else None
         with self.lock:
-            same = self.conn.execute(
-                "select id, text, class from memories where scope=%s and invalid_at is null",
-                (scope,)).fetchall()
-            hit = next((r for r in same if norm_text(r[1]) == norm_text(text)), None)
+            if exact:
+                same = self.conn.execute(
+                    "select id, text, class from memories where scope=%s and invalid_at is null",
+                    (scope,)).fetchall()
+                hit = next((r for r in same if norm_text(r[1]) == norm_text(text)), None)
+            else:
+                same, hit = [], None      # the document index: every chunk keeps its own row
             if hit:
                 self.conn.execute(
                     "update memories set updated_at=%s, confidence=greatest(confidence,%s), class=%s where id=%s",
