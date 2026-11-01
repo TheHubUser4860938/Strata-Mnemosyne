@@ -20,10 +20,11 @@ nDCG@5 0.459 against <0.244; Vectara NAACL 2025 found fixed can win): the defaul
 paragraphs to the row ceiling; mode='fixed' is the control, the ~4,000-char windows the
 routing bench measured. Both feed the same rows; the eval sweeps both.
 
-Scope-per-corpus (not one mega-scope) is deliberate: remember()'s exact-text dedup scan runs
-over the writing scope, so a folder-sized scope keeps every write at the measured flat
-~27 ms/row on 3,900-char chunks. The embed pass rides inside remember() (embed-then-lock),
-so a 30k-chunk corpus indexes in the measured ~13 min lexical / ~3.4 h with the embedder on.
+Scope-per-corpus (not one mega-scope) is deliberate: a corpus is one address on the shelf and one
+recall scope. The chunk writes ride remember() with exact=False - one row per chunk even when two
+files carry the same passage, and no scope-wide text scan per write (that scan is what made the
+22k-row founding pass take hours). The embed pass still rides inside remember() (embed-then-lock),
+so the embedder is the long pole when it is on.
 """
 from __future__ import annotations
 
@@ -33,10 +34,11 @@ import re
 import time
 from pathlib import Path
 
-from .memory import class_name, scope_name
+from .memory import CLASS_MAX, class_name, scope_name
 
 DEFAULT_EXTS = (".txt", ".md")
 CHUNK_CAP = 3900          # remember()'s 4,000-char ceiling minus the whitespace-collapse slack
+ROW_MAX = 4000            # remember()'s hard ceiling; Docs.index clamps a larger --cap here
 PARA_RE = re.compile(r"\n\s*\n+")
 
 # The ledger's DDL, byte-identical to the entry in serve/memory.py's _PG_DDL. The store creates
@@ -61,7 +63,8 @@ def pack_chunks(text: str, cap: int = CHUNK_CAP, mode: str = "paragraphs") -> li
     'paragraphs': pack whole blank-line-separated paragraphs while they fit, so a row ENDS at a
     paragraph boundary - a hard split only when one paragraph cannot fit alone.
     'fixed': the control windower, ~`cap` characters cut at word boundaries.
-    In both modes every word of the source survives exactly once, in order."""
+    In both modes every character of the source survives exactly once, in order (a word longer
+    than `cap` is cut, because remember() refuses a row over its own ceiling)."""
     if cap < 32:
         raise ValueError(f"chunk cap must be >= 32 (got {cap})")
     if mode not in ("paragraphs", "fixed"):
@@ -105,9 +108,20 @@ def _words_to_units(text: str, cap: int) -> list[str]:
 
 
 def _hard_split(unit: str, cap: int) -> list[str]:
-    """Cut at word boundaries so the rows are whole words; a word longer than cap rides alone."""
+    """Cut at word boundaries so the rows are whole words; a word longer than cap is cut into
+    cap-sized pieces. The old version let that word ride alone, which produced a row over the
+    row ceiling and made remember() raise mid-pass (a base64 blob or a long URL was enough).
+    Every character still survives exactly once, in order."""
     pieces, cur = [], ""
     for word in unit.split():
+        while len(word) > cap:                 # no word boundary can save this one: cut it
+            if cur:
+                pieces.append(cur)
+                cur = ""
+            pieces.append(word[:cap])
+            word = word[cap:]
+        if not word:
+            continue
         if cur and len(cur) + 1 + len(word) > cap:
             pieces.append(cur)
             cur = word
@@ -136,10 +150,33 @@ def _mtime_us(st) -> int:
 
 
 def _corpus_class(corpus: str) -> str:
-    """DOC/<CORPUS>: upper-case, spaces weld to hyphens, and the call-number grammar's other
-    separators (/, .) become hyphens too - 'the federalist papers.1788' -> DOC/THE-FEDERALIST-
-    PAPERS-1788, one address, not a shelf tree the owner never chose."""
-    return class_name("DOC/" + re.sub(r"[/ .]+", "-", corpus))
+    """DOC/<CORPUS>: upper-case, and every run the call-number grammar cannot hold becomes a DOT -
+    the one legal separator that keeps the name one address, not a shelf tree:
+    'the federalist papers.1788' -> DOC/THE.FEDERALIST.PAPERS.1788. CLASS_RE has no hyphen (a
+    hyphenated address is refused on purpose, see class_list), so the previous version's hyphen
+    weld could never pass class_name: a corpus with a space failed to index at all."""
+    slug = re.sub(r"[^A-Z0-9]+", ".", str(corpus).upper()).strip(".")
+    if not slug:
+        raise ValueError(f"corpus {corpus!r} has no letters or digits to shelve it under")
+    try:
+        return class_name("DOC/" + slug)
+    except ValueError as e:
+        raise ValueError(f"corpus {corpus!r} makes a shelf longer than {CLASS_MAX} characters; "
+                         "pass a shorter --class") from e
+
+
+def _scope_for(corpus: str) -> str:
+    """The default scope for a corpus: 'doc-<corpus>' with every run SCOPE_RE cannot hold welded
+    to a hyphen (40 chars max, starts with a letter or digit, A-Z a-z 0-9 . _ - only).
+
+    The old form handed 'doc-the federalist papers' to scope_name(), whose fallback is
+    'default' - so a human corpus name silently filed its rows in the user's default project
+    scope, where a chunk could exact-dedup against a real fact (and remove() would then have
+    deleted that whole scope). A docs scope fails closed now; it never borrows 'default'."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(corpus)).strip("._-")
+    if not slug:
+        raise ValueError(f"corpus {corpus!r} has no letters or digits to name a scope")
+    return ("doc-" + slug)[:40].rstrip("._-") or "doc"
 
 
 class Docs:
@@ -165,27 +202,47 @@ class Docs:
         {files, chunks, skipped, unchanged, removed, seconds, scope, class, corpus}.
         files/chunks/skipped count the WORK this pass did; unchanged counts stat-swept files
         that needed none; removed counts ledger files that left the folder.
-        EDGE (audit F5, annotated not rewritten): a per-file replace deletes the CURRENT
-        scope's rows for that file - re-indexing the same corpus under a CHANGED scope leaves
-        the old scope's rows standing beside the new ones. One scope per corpus is the rule;
-        change it with --remove first."""
+        ONE SCOPE PER CORPUS: a re-index that names no scope adopts the ledger's stored scope;
+        naming a different one is refused (remove the corpus first), because the per-file
+        replace only knows the current scope and a silent move would leave the old scope's rows
+        standing beside the new ones (the audit's F5 edge, now guarded rather than annotated)."""
         t0 = time.time()
         self._ensure()
         corpus = str(corpus or "").strip()
         if not corpus:
             raise ValueError("index needs a corpus name to shelve and scope the rows under")
+        # exts arrives as a list (the tool), a comma string (an app hand-writing the JSON), or a
+        # list of comma strings; a bare string iterated as-is splits into CHARACTERS, and endswith
+        # on single letters matches half the folder (audit F4, 2026-10-31). One normalization.
+        if isinstance(exts, str):
+            exts = [exts]
+        parts: list[str] = []
+        for x in (exts if exts is not None else DEFAULT_EXTS):
+            parts.extend(str(x).split(","))
+        exts = tuple("." + x.strip().lower().lstrip(".") for x in parts if x.strip())
         root = Path(str(folder)).expanduser()       # "~/docs" from an app is a path, not a dir name
         if not root.is_dir():
             raise ValueError(f"folder not found: {root} - name a directory of "
                              f"{'/'.join(exts)} files")
         klass = _corpus_class(corpus) if klass is None else class_name(klass)
-        scope = scope_name(scope or f"doc-{corpus}")[:40]
-        # exts arrives as a list (the tool) or a comma string (an app hand-writing the JSON);
-        # a bare string iterated as-is splits into CHARACTERS, and endswith on single letters
-        # matches half the folder (audit F4, 2026-10-31). One normalization, dotted and lowered.
-        if isinstance(exts, str):
-            exts = exts.split(",")
-        exts = tuple("." + str(x).strip().lower().lstrip(".") for x in exts if str(x).strip())
+        requested, scope = scope, None
+        if requested is None:
+            scope = _scope_for(corpus)
+        else:
+            scope = scope_name(requested, fallback="")   # never the 'default' fallback: fail closed
+            if not scope:
+                raise ValueError("scope must be 1-40 characters of A-Z a-z 0-9 . _ - and start "
+                                 "with a letter or digit")
+        with self.svc.lock:                         # the ledger's home for this corpus, if any
+            homes = sorted({r[0] for r in self.svc.conn.execute(
+                "select distinct scope from docs where corpus=%s", (corpus,)).fetchall() if r[0]})
+        if homes and scope not in homes:
+            if requested is None and len(homes) == 1:
+                scope = homes[0]                    # a plain re-index keeps the corpus where it lives
+            else:
+                raise ValueError(f"corpus {corpus!r} is already indexed under scope {homes[0]!r}; "
+                                 f"one scope per corpus - remove it first to move it to {scope!r}")
+        cap = min(int(cap), ROW_MAX)                # remember() refuses a row over its ceiling
         source = f"doc-index-{time.strftime('%Y-%m-%d')}"   # <= 40 chars, the column's ceiling
         seen, n_files, n_chunks, n_skip, n_unchanged = set(), 0, 0, 0, 0
         for dirpath, _dirs, names in os.walk(root):
@@ -196,9 +253,10 @@ class Docs:
                 rel = p.relative_to(root).as_posix()
                 seen.add(rel)
                 st = p.stat()
-                row = self.svc.conn.execute(
-                    "select size, mtime, sha256 from docs where corpus=%s and path=%s",
-                    (corpus, rel)).fetchone()
+                with self.svc.lock:                 # every statement on this connection, by law
+                    row = self.svc.conn.execute(
+                        "select size, mtime, sha256 from docs where corpus=%s and path=%s",
+                        (corpus, rel)).fetchone()
                 digest = None
                 if row is not None and int(row[0]) == st.st_size and int(row[1]) == _mtime_us(st):
                     n_unchanged += 1
@@ -224,21 +282,30 @@ class Docs:
                     self.svc._touched(reason="doc-replace")
                     self.svc._dedupe_amend(retired=gone)  # the deleted rows fold out; an
                     self.svc._vdirty = True             # unpredicted stamp moves the rebuild
-                off = 0
+                collapsed = " ".join(text.split())   # the body the spine's offsets count in -
+                cur = 0                              # the eval harness collapses the same way
                 for i, chunk in enumerate(chunks):
-                    self.svc.remember(chunk, scope=scope, source=source, guard=guard, klass=klass,
+                    pos = collapsed.find(chunk, cur)  # anchor it: a cut long word joins with no
+                    off = pos if pos >= 0 else cur    # space and a packed paragraph with one, so
+                    self.svc.remember(chunk, scope=scope, source=source, guard=guard, exact=False,
+                                      klass=klass,
                                       provenance={"file": rel, "corpus": corpus, "offset": off,
                                                   "n": i, "sha256": doc_sha,
                                                   "chunk_sha256": hashlib.sha256(
                                                       chunk.encode("utf-8")).hexdigest()})
-                    off += len(chunk) + 1               # the joiner's char in the concatenated body
+                    cur = off + len(chunk)            # the next row starts here (a cut word) or
+                                                      # one char later (the space between rows)
                 with self.svc.lock:
                     self.svc.conn.execute(
                         "insert into docs(path, corpus, scope, size, mtime, sha256, chunks,"
                         " indexed_at) values(%s,%s,%s,%s,%s,%s,%s,%s)"
                         " on conflict (corpus, path) do update set size=excluded.size,"
                         " mtime=excluded.mtime, sha256=excluded.sha256, chunks=excluded.chunks,"
-                        " indexed_at=excluded.indexed_at",
+                        " scope=excluded.scope, indexed_at=excluded.indexed_at",
+                        # scope=excluded.scope is belt-and-braces, not the load-bearing part: the
+                        # guard above means a stored scope cannot drift, and the blank-fill after
+                        # the walk repairs the rows the first build left empty (so the upsert arm
+                        # has no test of its own - say so rather than imply one)
                         (rel, corpus, scope, st.st_size, _mtime_us(st), doc_sha, len(chunks),
                          self.svc._dt(time.time())))
                     self.svc.conn.commit()
@@ -246,52 +313,61 @@ class Docs:
                 n_chunks += len(chunks)
                 n_skip += sum(1 for c in chunks if len(c) >= cap)   # a full row = a split paragraph
         removed = self._prune(corpus, seen)
+        with self.svc.lock:                         # legacy ledger rows carried no scope: the
+            blank = self.svc.conn.execute(           # pass that knows the answer fills them in
+                "update docs set scope=%s where corpus=%s and scope=''", (scope, corpus))
+            if blank.rowcount:
+                self.svc.conn.commit()
         return {"files": n_files, "chunks": n_chunks, "skipped": n_skip,
                 "unchanged": n_unchanged, "removed": removed,
                 "seconds": round(time.time() - t0, 3), "scope": scope, "class": klass,
                 "corpus": corpus}
 
     def list(self, corpus: str | None = None) -> list[dict]:
-        """The ledger: one row per indexed file. Without a corpus, every corpus's files."""
+        """The ledger: one row per indexed file. Without a corpus, every corpus's files.
+        `scope` rides too: it is the corpus's home, and an operator comparing two stores wants
+        to see it (a blank is a row from the first build, which index() restamps on its next pass)."""
         self._ensure()
-        q = ("select path, corpus, size, mtime, sha256, chunks, indexed_at from docs"
+        q = ("select path, corpus, scope, size, mtime, sha256, chunks, indexed_at from docs"
              + (" where corpus=%s" if corpus else "") + " order by corpus, path")
         with self.svc.lock:
             rows = self.svc.conn.execute(q, (corpus,) if corpus else ()).fetchall()
-        return [{"path": r[0], "corpus": r[1], "size": r[2], "mtime": r[3], "sha256": r[4],
-                 "chunks": r[5], "indexed_at": str(r[6])} for r in rows]
-
-    def _scope_of(self, corpus: str) -> str:
-        """Where the corpus's rows ACTUALLY live: the ledger's stored scope (an explicit scope
-        at index time is kept there), with the doc-<corpus> default as the fallback for a
-        corpus indexed before the column existed."""
-        with self.svc.lock:
-            row = self.svc.conn.execute(
-                "select scope from docs where corpus=%s limit 1", (corpus,)).fetchone()
-        return (row and row[0]) or scope_name(f"doc-{corpus}")[:40]
+        return [{"path": r[0], "corpus": r[1], "scope": r[2], "size": r[3], "mtime": r[4],
+                 "sha256": r[5], "chunks": r[6], "indexed_at": str(r[7])} for r in rows]
 
     def corpora(self) -> list[dict]:
-        """Per-corpus tallies - the map a reader uses to know what the store can route over."""
+        """Per-corpus tallies - the map a reader uses to know what the store can route over.
+        `scope` is the corpus's home as the ledger records it (null when every row predates the
+        column, which index() restamps on the file's next pass)."""
         self._ensure()
         with self.svc.lock:
             rows = self.svc.conn.execute(
-                "select corpus, count(*), sum(chunks), max(indexed_at) from docs"
+                "select corpus, count(*), sum(chunks), max(indexed_at),"
+                " string_agg(distinct nullif(scope, ''), ',') from docs"
                 " group by corpus order by corpus").fetchall()
-        return [{"corpus": r[0], "files": r[1], "chunks": r[2], "indexed_at": str(r[3])}
-                for r in rows]
+        return [{"corpus": r[0], "files": r[1], "chunks": r[2], "indexed_at": str(r[3]),
+                 "scope": r[4]} for r in rows]
 
     def remove(self, corpus: str) -> bool:
         """Retire a corpus: its chunk rows go, its ledger goes. The FILES on disk are the
-        territory and stay untouched (the text-plus-routing law: rows are the map)."""
-        led = self.list(corpus)
-        if not led:
+        territory and stay untouched (the text-plus-routing law: rows are the map).
+
+        Rows are matched by provenance corpus, NOT by wiping the whole scope: two corpora may
+        share an explicit scope, and the old scope-wide delete would retire the other one's
+        rows too. Orphan rows (a killed pass, no ledger entry) are retired as well, so remove()
+        answers for everything carrying the corpus name."""
+        corpus = str(corpus or "").strip()
+        if not corpus:
             return False
-        scope = self._scope_of(corpus)
+        self._ensure()
         with self.svc.lock:
             gone = [r[0] for r in self.svc.conn.execute(
-                "delete from memories where scope=%s returning id", (scope,)).fetchall()]
-            self.svc.conn.execute("delete from docs where corpus=%s", (corpus,))
+                "delete from memories where provenance->>'corpus'=%s returning id",
+                (corpus,)).fetchall()]
+            cur = self.svc.conn.execute("delete from docs where corpus=%s", (corpus,))
             self.svc.conn.commit()
+            if not gone and not cur.rowcount:
+                return False
             self.svc._touched(reason="doc-remove")
             self.svc._dedupe_amend(retired=gone)
             self.svc._vdirty = True
@@ -299,24 +375,29 @@ class Docs:
 
     def _prune(self, corpus: str, seen: set) -> int:
         """Files that left the folder since the last pass: their ledger rows and their chunk
-        rows go together (a map entry with no territory behind it is a lie)."""
+        rows go together (a map entry with no territory behind it is a lie).
+
+        Rows whose file is not in this pass's `seen` set are retired even without a ledger row:
+        a pass killed between its chunk writes and its ledger upsert leaves rows the ledger
+        never learned (the 2026-10-31 founding pass left 66 for one Hume volume), and a
+        ledger-only prune cannot see them. Returns the number of ledger files retired."""
         with self.svc.lock:
-            stale = self.svc.conn.execute(
+            stale = [r[0] for r in self.svc.conn.execute(
                 "select path from docs where corpus=%s", (corpus,)).fetchall()
-            gone = [r[0] for r in stale if r[0] not in seen]
-            if gone:
-                scope = self._scope_of(corpus)
-                self.svc.conn.execute(
-                    "delete from memories where scope=%s and provenance->>'corpus'=%s"
-                    " and provenance->>'file' = any(%s)",
-                    (scope, corpus, gone))
+                if r[0] not in seen]
+            gone = [r[0] for r in self.svc.conn.execute(
+                "delete from memories where provenance->>'corpus'=%s"
+                " and coalesce(provenance->>'file','') <> all(%s) returning id",
+                (corpus, sorted(seen))).fetchall()]
+            if stale:
                 self.svc.conn.execute("delete from docs where corpus=%s and path = any(%s)",
-                                      (corpus, gone))
+                                      (corpus, stale))
+            if stale or gone:
                 self.svc.conn.commit()
                 self.svc._touched(reason="doc-prune")
-                self.svc._dedupe_amend()
+                self.svc._dedupe_amend(retired=gone)
                 self.svc._vdirty = True
-        return len(gone)
+        return len(stale)
 
     @staticmethod
     def _read(p: Path) -> str:

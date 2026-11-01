@@ -103,6 +103,17 @@ class Store(unittest.TestCase):
         self.assertEqual(a["id"], b["id"])
         self.assertEqual(len(self.mem.list_memories()), 1)
 
+    def test_dedup_exact_false_is_the_other_door(self):
+        """The document index needs one row per chunk even when two files carry the same passage.
+        exact=False is that door, and it is the ONLY one: guard=False alone still runs the
+        exact-text dedup (the HTTP test keeps that law), and exact=False alone stands the whole
+        scope scan aside - no candidates, so the semantic guard has nothing to fold into."""
+        a = self.mem.remember("Alpha Beta Gamma fact", scope="user")
+        b = self.mem.remember("  alpha   beta gamma   fact  ", scope="user", exact=False)
+        self.assertFalse(b.get("deduped"), "exact=False writes the row instead of folding it")
+        self.assertNotEqual(a["id"], b["id"])
+        self.assertEqual(len(self.mem.list_memories()), 2)
+
     def test_block_stickiness(self):
         self.mem.remember("fact about kernel uvc webcams", scope="fw")
         msgs = [{"role": "user", "content": "questions about kernel uvc webcams today"}]

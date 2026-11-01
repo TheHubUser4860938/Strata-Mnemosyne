@@ -9958,7 +9958,7 @@ def make_handler(svc: Service):
                         klass=req.get("class") or None, scope=req.get("scope") or None,
                         cap=int(req.get("cap") or 3900),
                         mode=str(req.get("mode") or "paragraphs"),
-                        exts=tuple(str(x) for x in (req.get("exts") or (".txt", ".md"))))}}
+                        exts=req.get("exts") or (".txt", ".md"))}}
                 elif action == "remove":
                     r = {"docs": {"removed": svc.memory.docs.remove(str(req.get("corpus") or ""))}}
                 elif action == "list":
