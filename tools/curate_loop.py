@@ -591,6 +591,54 @@ FIC_CUTTERS = {"krevven": "KREVV", "krevvens": "KREVV", "voldranium": "VOLDR", "
 PREF_V = ("prefers", "preference", "preferences", "wants", "likes", "loves", "hates")
 
 
+# THE CLERK AT HARVEST (2026-11-02). fact_class is a keyword argmax: it files what it
+# can name and leaves the rest WILD, and 583 of 2,226 fact rows (26%) were riding on
+# that. The offline clerk (tools/m4_reshelve.py) sorts the pile against the store's own
+# shelf list; this is the same job at the moment of writing, so the pile stops growing.
+# The menu is the TOPS (the harvest runs over HTTP and has no shelf census to read); a
+# fact that wants a cutter gets one from the offline pass, which sees the live list.
+SHELF_MENU = """MEM - the memory system: recall, curation, the sweep, cartridges, shelves, provenance
+OPS - operations: machine state, boots, restarts, github, ghidra, the venue's running order
+HW - hardware: gpu, vram, cpu pinning, ram, nvme, the desktop, keys
+AI - agents and model design: reasoning modes, harnesses, frameworks
+TECH - code and tooling: python, playwright, the responses api, libraries
+DEC - a decision that was TAKEN, with the reason behind it
+USR - the person: preferences, personal details, family
+POL - politics and opinion
+EVAL - benchmarks and bench runs: gpqa, lme, the venue pool, probes
+STR - the engine's internals: prefill, decode, quant, gguf, rope, slots, context
+DOC - a document that is indexed: the founding corpus, a firmware datasheet
+FIC - fiction"""
+SHELF_TOPS = set(CLASS_MAP) | {"DOC", "FIC", "USR", "POL", "EVAL", "STR", "HW", "AI", "TECH",
+                               "MEM", "OPS", "DEC", "FILL"}
+SHELF_ONE = """File this ONE fact on a shelf. A shelf code is `TOP` or `TOP/CUTTER`.
+
+Shelves:
+{menu}
+
+Prefer an existing top. Reply with ONE line and nothing else: the shelf code, or WILD \
+if the fact is miscellaneous.
+
+Fact: {fact}
+"""
+SHELF_ANSWER = re.compile(r"\b([A-Z][A-Z0-9]{1,7}(?:/[A-Z0-9]{2,8})?)\b")
+
+
+def clerk_class(fact: str, ask) -> str:
+    """One fact, one shelf, from the served model. Empty string = leave it wild, which
+    stays the safe home: a wrong shelf HIDES a fact from every filtered request that
+    stops asking for it, a wild shelf only waits. So an answer whose top is not on the
+    menu does not move the row."""
+    if ask is None:
+        return ""
+    try:
+        ans = ask(SHELF_ONE.format(menu=SHELF_MENU, fact=fact[:400]), 64, kind="shelf")
+    except Exception:                                   # a sweep must not stall on a label
+        return ""
+    codes = [c for c in SHELF_ANSWER.findall(ans or "") if c.split("/")[0] in SHELF_TOPS]
+    return codes[-1] if codes else ""
+
+
 def fact_class(fact: str, scope: str, lane: str = "fact") -> str:
     """The shelf mark for a stored fact (PHASE 4.5). Order is deliberate:
     0. the LANES (2026-10-23, item 4) shelf first when they fire: a taboo is a RULE, so it
@@ -880,7 +928,10 @@ def main():
                 # code; they were forgotten by hand the same night, source-tag verified.)
                 fields = {"text": c["fact"], "scope": c["scope"],
                           "source": f"curation-{datetime.date.today().isoformat()}",
-                          "class": fact_class(c["fact"], c["scope"], c.get("lane", "fact")),
+                          "class": fact_class(c["fact"], c["scope"], c.get("lane", "fact"))
+                                   # 2026-11-02: keywords first (free), then the clerk for
+                                   # what they cannot name - one model call per wild fact
+                                   or clerk_class(c["fact"], ask),
                           # PHASE 4.5: shelf at store time; the lanes (item 4, 2026-10-23) shelve first
                           "provenance": {"turn_id": c["turn_id"], "probe": c["probe"], "gold": c["gold"],
                                          "cls": cls, "mixed": mixed, "passes": cold, "model": model,
