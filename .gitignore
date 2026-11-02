@@ -120,3 +120,10 @@ node_modules/
 /build-spark/
 /build-vision-spark/
 /.venv-build/
+
+# The unpacked engine feed is a cache, not a source (33f775ef builds the fork's own
+# engine). GitHub takes blobs up to 100 MB, so these three live local only, and each
+# `git add -A` was re-staging them and costing a rejected push.
+engine-feed/engine/*/strata
+engine-feed/engine/*/strata-vision
+engine-feed/engine/*/libcublasLt.so.*
