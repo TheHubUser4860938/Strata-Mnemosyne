@@ -1,0 +1,79 @@
+{
+  "base": "http://127.0.0.1:8005",
+  "date": "2026-10-29",
+  "source": "/home/eugene/Projects/Strata-Mnemosyne/docs/DETAILS.md",
+  "rows": [
+    {
+      "target": 16384,
+      "run": 0,
+      "prompt_tokens": 16700,
+      "prompt_ms": 5329.3,
+      "prompt_tps": 1251.0,
+      "ttft_s": 5.518,
+      "err": null
+    },
+    {
+      "target": 16384,
+      "run": 1,
+      "prompt_tokens": 16967,
+      "prompt_ms": 5259.7,
+      "prompt_tps": 1318.3,
+      "ttft_s": 5.452,
+      "err": null
+    },
+    {
+      "target": 32768,
+      "run": 0,
+      "prompt_tokens": 31190,
+      "prompt_ms": 10892.4,
+      "prompt_tps": 1942.4,
+      "ttft_s": 11.078,
+      "err": null
+    },
+    {
+      "target": 32768,
+      "run": 1,
+      "prompt_tokens": 31230,
+      "prompt_ms": 10606.0,
+      "prompt_tps": 1998.6,
+      "ttft_s": 10.859,
+      "err": null
+    },
+    {
+      "target": 65536,
+      "run": 0,
+      "prompt_tokens": 63200,
+      "prompt_ms": 19373.3,
+      "prompt_tps": 2744.3,
+      "ttft_s": 19.574,
+      "err": null
+    },
+    {
+      "target": 65536,
+      "run": 1,
+      "prompt_tokens": 63260,
+      "prompt_ms": 21489.6,
+      "prompt_tps": 2476.9,
+      "ttft_s": 21.68,
+      "err": null
+    },
+    {
+      "target": 131072,
+      "run": 0,
+      "prompt_tokens": 130002,
+      "prompt_ms": 43742.0,
+      "prompt_tps": 2742.7,
+      "ttft_s": 107.082,
+      "err": null
+    },
+    {
+      "target": 131072,
+      "run": 1,
+      "prompt_tokens": 130673,
+      "prompt_ms": 37961.2,
+      "prompt_tps": 3178.0,
+      "ttft_s": 47.811,
+      "err": null
+    }
+  ]
+}
