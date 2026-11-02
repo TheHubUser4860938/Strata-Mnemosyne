@@ -94,6 +94,10 @@ def main() -> int:
                     help="row ceiling in chars (32-4000; a larger value is clamped to 4000, "
                          "remember()'s ceiling)")
     ap.add_argument("--exts", default=".txt,.md", help="comma-separated suffixes to index")
+    ap.add_argument("--cut", nargs="?", const="", metavar="PREFIX",
+                    help="file each corpus file under <PREFIX><CUTTER> - one UPDATE per"
+                         " book, no re-chunk, vectors intact (prefix defaults to the"
+                         " corpus's own shelf, e.g. DOC/FOUNDING)")
     ap.add_argument("--set-root", nargs=2, metavar=("CORPUS", "FOLDER"),
                     help="stamp the corpus's folder in the ledger without "
                          "re-chunking (a store indexed before the root column)")
@@ -106,13 +110,30 @@ def main() -> int:
     ap.add_argument("--dir", default=str(data_dir(ROOT) / "memory-eval"), help="the store dir")
     a = ap.parse_args()
 
-    need_embed = a.embed and not (a.remove or a.list is not None or a.set_root)
+    need_embed = a.embed and not (a.remove or a.list is not None or a.set_root
+                                  or a.cut is not None)
     svc = build(a.dir, a.model if need_embed else None, a.threads)
     from serve.docs import Docs
     svc.docs = Docs(svc)
     try:
         if a.remove:
             print(json.dumps({"removed": svc.docs.remove(a.remove)}))
+            return 0
+        if a.cut is not None:
+            from serve.docs import _corpus_class
+            pre = (a.cut or _corpus_class(a.corpus)).strip().rstrip("/")
+            got = svc.docs.cutters(a.corpus)
+            if not got:
+                print(json.dumps({"corpus": a.corpus, "files": 0,
+                                  "error": "no ledger rows for this corpus"}))
+                return 0
+            moved = 0
+            for rel in sorted(got):
+                moved += svc.docs.set_class(a.corpus, f"{pre}/{got[rel]}", path=rel)
+            print(json.dumps({"corpus": a.corpus, "prefix": pre, "files": len(got),
+                              "rows": moved}))
+            print(f"m8_docs: {len(got)} books -> {moved:,} rows under {pre}/<cutter>"
+                  f" - no re-chunking, vectors intact", file=sys.stderr)
             return 0
         if a.set_root:
             corpus, folder = a.set_root
@@ -126,7 +147,7 @@ def main() -> int:
                               "corpora": svc.docs.corpora()}, indent=1))
             return 0
         if not a.folder:
-            ap.error("name a FOLDER to index, or use --list / --remove / --set-root")
+            ap.error("name a FOLDER to index, or use --list / --remove / --set-root / --cut")
         t0 = time.time()
         r = svc.docs.index(a.folder, a.corpus, klass=a.klass, scope=a.scope, cap=a.cap,
                            mode=a.mode, exts=tuple("." + x.strip().lstrip(".")

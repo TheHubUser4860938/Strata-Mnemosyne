@@ -445,6 +445,57 @@ class Docs:
             self.svc.conn.commit()
         return int(n)
 
+    def set_class(self, corpus: str, klass: str, path: str | None = None) -> int:
+        """Re-shelve a corpus's rows, or one file's rows, WITHOUT re-chunking (2026-11-02).
+
+        The class is a column on the row, so a cutter is one UPDATE: ids survive,
+        offsets survive, and the vectors survive (they key on id). The cutters give the
+        browse map a drawer per book - `DOC/FOUNDING/HAMILT` beside `DOC/FOUNDING/FEDER`
+        - and a filtered request can name one book. Prefix filters keep working: a query
+        for DOC/FOUNDING reaches every cutter under it.
+        """
+        self._ensure()
+        klass = class_name(klass)
+        if not klass:
+            raise ValueError("class must be a call number like DOC/FOUNDING/HAMILT")
+        q = ("update memories set class=%s, updated_at=updated_at"
+             " where invalid_at is null and provenance->>'corpus'=%s")
+        args: list = [klass, corpus]
+        if path is not None:
+            q += " and provenance->>'file'=%s"
+            args.append(str(path))
+        with self.svc.lock:
+            n = self.svc.conn.execute(q, args).rowcount
+            self.svc.conn.commit()
+            self.svc._vdirty = True        # the matrix carries a CLASS column for the
+                                           # cosine arm's shelf_mask (classify's lesson)
+        return int(n)
+
+    def cutters(self, corpus: str, width: int = 6) -> dict[str, str]:
+        """A cutter per file: the stem's letters, upper-cased, made unique in file-name
+        order, so the same folder always produces the same shelf codes. `hamilton_works_
+        cu32371…` -> `HAMILT`; a collision gets a digit suffix (`MADISO`, `MADIS1`)."""
+        self._ensure()
+        with self.svc.lock:
+            paths = [r[0] for r in self.svc.conn.execute(
+                "select path from docs where corpus=%s order by path", (corpus,)).fetchall()]
+            self.svc.conn.commit()
+        used: set[str] = set()
+        seen: dict[str, int] = {}
+        out: dict[str, str] = {}
+        for rel in paths:
+            stem = re.sub(r"[^A-Za-z]", "", Path(str(rel)).stem)[:width].upper() or "DOC"
+            n = seen.get(stem, 0)
+            seen[stem] = n + 1
+            cut = stem if n == 0 else f"{stem[:width - 1]}{n}"
+            while cut in used:                      # a file whose own stem is a
+                n += 1                               # collision code (DECLA1.txt) must
+                seen[stem] = n + 1                   # not be handed that code twice
+                cut = f"{stem[:width - 1]}{n}"
+            used.add(cut)
+            out[str(rel)] = cut
+        return out
+
     def reader(self, corpus: str) -> DocReader:
         r = self._readers.get(corpus)
         if r is None:

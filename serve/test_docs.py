@@ -507,6 +507,58 @@ class DocsOverHttp(unittest.TestCase):
         self.assertEqual([d["path"] for d in files], ["a.txt"])
 
 
+class Cutters(DocIndexStore):
+    """The doc shelf's cutters (2026-11-02): a drawer per book, one UPDATE."""
+
+    def test_the_cutter_comes_from_the_stem_and_stays_unique(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        c = self.mem.docs.cutters("founding")
+        # the fixture's stems are fed10 / fed51 / notes: the digits are stripped, so the
+        # two fed files collide on FED and the second is filed under FED1
+        self.assertEqual(c, {"fed10.txt": "FED", "fed51.txt": "FED1", "notes.md": "NOTES"}, c)
+
+    def test_a_shared_stem_gets_a_number_and_never_a_duplicate(self):
+        for n in range(4):
+            (self.docs_dir / f"paper_{n}.txt").write_text(f"paper {n} text", encoding="utf-8")
+        (self.docs_dir / "paperPAPER.txt").write_text("a stem that IS a collision code",
+                                                      encoding="utf-8")
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        c = self.mem.docs.cutters("founding")
+        self.assertEqual(len(set(c.values())), len(c), f"cutters collide: {c}")
+
+    def test_set_class_files_one_book_without_touching_the_others(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        n = self.mem.docs.set_class("founding", "DOC/FOUNDING/HAMILT", path="fed51.txt")
+        self.assertGreater(n, 0)
+        shelves = {r[3] for r in self._rows("doc-founding")}
+        self.assertIn("DOC/FOUNDING/HAMILT", shelves)
+        self.assertIn("DOC/FOUNDING", shelves, "the other books stay put")
+
+    def test_a_cuttered_corpus_still_answers_a_prefix_filter(self):
+        from serve.memory import class_list
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        self.mem.docs.set_class("founding", "DOC/FOUNDING/MADISN", path="fed10.txt")
+        hits = self.mem.search("faction sphere", scope="doc-founding", limit=5,
+                               classes=class_list(["DOC/FOUNDING"]))
+        self.assertTrue(hits, "DOC/FOUNDING must reach its cutters")
+        deep = self.mem.search("faction sphere", scope="doc-founding", limit=5,
+                               classes=class_list(["DOC/FOUNDING/MADISN"]))
+        self.assertTrue(all(h["class"] == "DOC/FOUNDING/MADISN" for h in deep))
+
+    def test_the_rows_survive_the_move_ids_offsets_and_vectors_and_all(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        before = {r[0]: (r[1], r[4]["offset"]) for r in self._rows("doc-founding")}
+        self.mem.docs.set_class("founding", "DOC/FOUNDING/HAMILT", path="fed51.txt")
+        after = {r[0]: (r[1], r[4]["offset"]) for r in self._rows("doc-founding")}
+        self.assertEqual(set(before), set(after), "same ids, no re-chunk")
+        self.assertEqual(before, after, "same text, same offsets")
+
+    def test_an_empty_class_is_refused(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        with self.assertRaises(ValueError):
+            self.mem.docs.set_class("founding", "")
+
+
 class ReadingStage(DocIndexStore):
     """The reading stage (2026-11-02): a hit is a map entry; the file is the territory.
 
