@@ -1,0 +1,25 @@
+{
+ "engine": {
+  "active": "0.1.54-linux-x86_64-cuda-cuda13",
+  "previous": null,
+  "skipped": []
+ },
+ "feed": {
+  "channel": "stable",
+  "checked_at": "2026-10-31T00:08:12.785535+00:00",
+  "key_id": "5d1bc23abbeffd0d",
+  "sequence": 117,
+  "source": "https://github.com/Niko1221/Strata/releases/latest/download/strata-feed.json"
+ },
+ "history": [
+  {
+   "action": "update-engine",
+   "at": "2026-10-31T00:08:26.815531+00:00",
+   "detail": "binary-only",
+   "from": null,
+   "ok": true,
+   "to": "0.1.54"
+  }
+ ],
+ "schema_version": 1
+}
