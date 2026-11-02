@@ -1,0 +1,231 @@
+# always.md — the map of this box
+
+**What this file is for.** Paths, ports, and the live state of the box — read at the start of every
+session, on every application, because it rides the tier-2 cartridge as standing K/V text. It is
+therefore the most expensive prose I own: 26.7 KB of it was one accreted history paragraph, which is
+~4,400 tokens spent on the past every single request. History belongs in the journal
+(`~/.opencode/plan/strata-memory-core.md`, ~9,000 lines, costs nothing per turn); **this file costs
+tokens by the line, so I keep it a map and move prose out of it, never delete it.**
+
+The dev box ("huihui"): Strata serves on 127.0.0.1:8005 (this fork's port); the memory pages ride
+/memory — tier-3 facts and the tier-2 cartridge card. The served model id is
+`swift-1.5-flash-next-heretic-iq4_nl` (`GET /health`), while OpenCode's provider declares the label
+`qwen3.8-flash-next-iq3_s`: same box, two names; the PLE table's real path is the one the config's
+`args` carry (named with the boot stack below), and a label does not imply a folder.
+The **`--family heretic`** family (trubisky's quants of jeffpeng3's heretic v2 of Swift 1.5) is
+**installed and serving** as of the 2026-11-01 07:19 boot; the abliterated Q4_K_XL set it replaced is
+still on disk under `models/`. Stack read from `/proc/$(pidof strata)/cmdline` at that boot: engine
+**0.1.55**, built from this checkout by `setup.build_engine` (see "Live state"); RTX 4090 (24 GB) +
+125 GB RAM; `--pack packs/heretic-iq4_nl --native models/heretic-IQ4_NL/…-00001-of-00008.gguf` (8
+shards, 89.2 GiB of tensors) **plus `--native-dense-gguf` ×8 naming the same shards** — the dense
+side reads from the expert files; **context 524,288** (YaRN ×2 over a trained 262,144,
+`--rope-scaling yarn --rope-scale 2`); `--conversation-cache-mib 15000` (no `--conversation-cache-cart-slots` flag this boot — `/metrics`
+reports the server's own default `carts.cap: 10`, and
+`conversation_cache_slots: 4`); KV int8 `--kv-resident 32768`; MTP (`--spec 4 --mtp mtp/rt
+--spec-min-p 0.70`; the engine's `/metrics` answers `spec: 6, mtp_max: 4, lookup: 3`); Q8 PLE table
+(`models/Qwen3.8-Flash-Next-GSQ-RCO-Q8_0-00002-of-00002.gguf`, 51,881 MB) with `--ple-io direct`;
+`--expert-cache auto --expert-profile data/expert-profile.bin --prefill auto:32768 --vision
+--pool-workers 7 --pcie-frac 0.35 --vram-reserve-mib 800 --tail-role-token 8678`; async tier
+self-measuring (`--adapt-async 1 --adapt-every 1 --adapt-swaps 160 --adapt-decay 0.97`).
+Boot env carries `STRATA_GDN_TC=1 STRATA_GDN_CONVL2=2` (the Linux Qwen arm — prompts +2-6%
+upstream, NOT bit-exact) plus `STRATA_F16_RANGE=1 STRATA_MTP_BATCH_F16=1 STRATA_PF_FUSED=1
+STRATA_PF_FUSED_F16=1 STRATA_PREFILL_RING=384 STRATA_STAGER_THREADS=8 STRATA_ROUTE_TAIL_SKIP=0
+CUDA_DISABLE_PERF_BOOST=1`, read from `/proc/<pid>/environ` 2026-11-01.
+**OpenCode declares the same
+window** (`~/.config/opencode/opencode.jsonc` → provider `strata-dev` `limit.context` 524288); the
+`strata` provider on **8004 stays at 393,216 because nothing listens there**, and guessing high is the
+dangerous direction. OpenCode caches model/provider config at startup, so that line needs a restart;
+**skills hot-reload — verified twice, no restart.**
+
+Paths, live-verified 2026-10-24 (the identity law: a store is its realpath, not its path string):
+
+- Repo: /home/eugene/Projects/Strata-Mnemosyne. Working branch **`memory-core`**, pushed to origin;
+  manual is AGENTS.md. `retire-episode-carts` (3 commits, forked at 339a60d2) is **not merged**.
+- Store: /home/eugene/Strata-data/memory-eval (Postgres-native per ADR-002; embedded cluster, its own
+  socket; **36,503 active rows — 34,478 doc chunks beside 2,025 facts — on 380 shelves**, counted
+  after the 2026-10-31 19:53 boot; `max_memories = 0` here, so
+  budget eviction never fires — the live auto-retire path is the harvest's supersession).
+- Slot vault: /home/eugene/Strata-data/sessions — **610 MB, one file**: the standing cart. It held
+  31.99 GB of episode-cart bytes until 2026-10-30; what remains of them is 3.7 MB of source text in
+  the ledger, which is also everything a deleted cart would need to be re-minted from.
+- Bench records: /home/eugene/Strata-data/bench — durable, never /tmp. `bench/p1/` carries the cart
+  scripts and every log named below.
+- Documents: /home/eugene/Documents; my research under `Documents/Clio's_Research/` (scratch/ for
+  fetched sources, 99_SOURCES.md for URLs). The opencode tool-output dir is parking, not storage.
+  **The primary-source corpus is `founding_corpus/`: 141 files, 114 MB (du), indexed for reading by
+  its own `MANIFEST.md` - a per-file table (folder, file, KB, title-sniff, source) in 163 lines
+  (15,377 chars = 3,217 tokens to READ whole - my first draft of this line said ~900, unmeasured, and
+  was corrected the same day). Documents are cited by PATH and grepped, not
+  minted: the store keeps facts, not document text — and since 2026-10-31 also a routing MAP of
+  34,478 chunk rows on `DOC/FOUNDING` (the doc index; the file stays the territory). But grep alone
+  does not ROUTE it: window+idf ranking scored 0/12 topic and 1/12 quote
+  (`bench/p1/corpus_window_test.py`), and the shelf's own lexical arm reaches 1/12 top-1 (7/12 inside
+  top-20) until the embed pass runs — so a browse is a loop with reading in it, not one call (the
+  owner's ruling, 2026-10-30). The shelving worry that "30,338 chunks would outweigh the 5,547 facts"
+  is answered by doing it anyway: 34,478 chunks beside 2,025 facts, one shelf family, 229 s a pass.
+- Journal: /home/eugene/.opencode/plan/strata-memory-core.md — read before touching code; decisions
+  land there, dated. **Not a git object** (~/.opencode is not a repo).
+- Persona: soul.md at the **repo root** (memory.soul), plus persona/{agent,skill,user,always}.md —
+  those five are `cartridges.files`. `persona/README.md` is on disk but NOT in the cartridge.
+  soul/agent/skill are tracked in git; **user.md and always.md are box-local and have no git
+  history** — back them up by hand before a big edit (copies of always.md:
+  `bench/p1/always.md.pre-compact-2026-10-29` 26,729 B, `...pre-cart-retire-2026-10-30` 9,832 B,
+  `...pre-docsfix-2026-10-31` 13,766 B).
+- Skills (learned 2026-10-29): installed under `~/.config/opencode/skills/*/SKILL.md`, also read from
+  `~/.agents/skills/` (where `npx skills add -g` puts them); retired ones moved to
+  `~/.config/opencode/skills-retired/`; upstream clones live in `~/.config/opencode/skill-sources/`.
+  **A skill's description is context load — it rides every request; its body loads only when
+  invoked.** 55 skills ≈ 7.3 KB of block. Changing the set **forks every parked conversation's prefix
+  once**, so batch skill edits.
+
+## What stands: the cart ruling of 2026-10-30
+
+**Text plus routing is the corpus path, a cartridge is a cache, and the only cart on this box is the
+tier-2 standing one.** Every number below was measured here; receipts in
+`spikes/cartridge/FOUNDER_CARTS.md`.
+
+| the number | value |
+|---|---|
+| state versus the same text | **6,981×** — 142 carts, 1,017,864 tok = 34.0 GB against 4.9 MB |
+| cart anatomy | **118.1 MB floor + 15,264 B per token**, whatever the cart says |
+| a grafted cart versus warm text | **31%** (11/36) against **92%** (33/36), and 0.93 s against 0.72 s |
+| the wall a grafted read consults | **2,048 cells** = `qwen4exp.attention.indexer.top_k`; 1,900 passes, 2,048 fails |
+| what that wall costs | right cart **92%** inside against a wrong cart 58%; **64% against 64%** beyond it |
+| the ledger index that rode every ask | **2,216 tokens**, now **32** |
+
+The episode surface (`CartMinter`: mint/remint/retire/carts, `X-Strata-Carts*`) is **ruled off**, but
+that ruling is NOT in this branch: it sits on the unmerged `retire-episode-carts` (three commits), so
+`memory.cartridges.minted` still defaults **True** here (server.py:12140). Nothing is lost today —
+the engine reports `carts=0` and no cart row has been created since 2026-10-30 — but the map used to
+say "off by default on this branch", which is false for `memory-core`. The standing cart is
+untouched. The engine's graft hook stays in the tree because CUT3/boundary work is
+the one cart line left, deferred until the document index exists (it now exists); its golden test is
+already written — a 2,700-cell cart asked about a fact at cell 2,500: **0/2 today, 2/2 when fixed.**
+
+The standing cart (tier-2): static mode — the five files, **~44.9 KB raw** as of 2026-11-01 (soul 13,816 /
+agent 6,639 / skill 1,858 / user 3,685 / always 18,896 — always is the moving one, and this line is
+self-referential, so it is rounded on purpose; hand-backed-up to
+`Strata-data/bench/p1/always.md.pre-hereticboot-2026-11-01`), `cartridges.facts: false` so shelved
+facts ride the tier-3 block and never enter the standing hash. Its name is a content hash: a rotation
+means a hand moved a file, and the harvest cannot move it. It stands as **`MEM-CRG-8a9c70a4.bin`**
+(411,267,104 B, written 2026-11-01 07:22: the boot's re-seed of the same five files onto the heretic
+engine — `MEM-CRG-e5e3bd08.bin`, 249,261,360 B, was the abliterated-Q4_K_XL cart and is no longer in
+`sessions/`); state "seeded" is what
+applied means (server.py:6820). **Do not read the `carts.tokens` column as the text's token count** —
+it read 858 here while the text grew (9,238 for the previous, larger cart): the field-name law again,
+read `stats.cartridges {state, soul_chars, sources}` for health. **`op:cartridge` re-seeds, it does
+not read** — asking it for the text cost one 377 MB write once.
+
+The venue box is a separate store with separate numbers; never cross-write, and the sweep sits out of
+venue days so nothing moves the instrument mid-run.
+
+## The 23.5 GB on the VRAM card — where it goes
+
+Measured 2026-11-01 on the heretic boot. The card's **"Experts in VRAM 12.0 GB" is one line item, not the
+model**: `nvidia-smi` reads 23,791 / 24,564 MiB, and the desktop's per-process table splits that as `strata`
+**20.3 GiB** (Compute) + `strata-vision` **1.44 GiB** (its own context, carrying the 866 MB BF16 mmproj) +
+the desktop **~0.8 GiB visible** (kwin 69 + lact 86 + brave 359 + plasma-shell 215 MiB… the list is longer).
+Inside the `strata` process (GiB): expert cache **11.98** (`/metrics expert_cache_mib 12270` — 4,227 of
+18,432 slots, so a hot 21% of the 57.30 GiB of routed experts, the rest over PCIe); resident non-expert
+weights **5.07** (attn/GDN 2.23 + token emb/out 1.45 + norms, router, hyper-connections, indexer 1.39,
+parsed from all 8 shards' tensor-info tables); MTP module **0.77**; resident KV **0.38** (32,768 positions ×
+12 full-attention layers × 2 kv heads × (256+256) int8 — `full_attention_interval: 4` of 48 blocks); the
+reserve **0.72** (`vram_free_mib 741`); and ≈ **1.4** of CUDA context, cuBLAS workspaces, prefill scratch
+(`prefill_cap 19968`) and GDN states ×7 pool workers — **that last figure is a residual by subtraction, not
+an engine itemization.** Two tables cost no VRAM at all: the 51,881 MB PLE/n-gram file (`--ple-io direct`)
+and the 26.8 GiB `per_layer_token_embd.weight` (IQ4_NL, shape [160, 320,001,536]) ride the **71,150 MiB CPU
+arena** (`/metrics arena_mib`) beside the experts — that is why this box wants 125 GB of RAM, and why PCIe
+is on the monitor.
+
+## Live state — 2026-11-01 (the pushes below are from 2026-10-31)
+
+**Pushed to `origin/memory-core`:** `3edd73fc` (upstream **v0.2.9** merged — app/Terminal 0.2.9,
+Control + engine packages 0.1.55), `33f775ef` (the update builds the fork's OWN engine), `a5691927`
+(the document index survives its own corpus: seven bugs, each with a test and a sabotage check;
+`serve/test_docs.py` 20 → 33). Serve suite **1,683 OK / 17 skipped / 463 s** — `.venv/bin/python -m
+unittest discover -s serve -p 'test_*.py'`, run against the pushed tree.
+
+**Engine 0.1.55, compiled from THIS checkout, is what you are serving** (`engine/BUILD.json` source
+`local`, `src e97fba10e48a7163`, `vision_src 587022c4c655ad94`; `strata-vision` stays the 0.1.54
+prebuilt because vision source did not move between the merges). **Upstream's 0.1.55 release cannot
+serve this fork** — its feed build `99866a47` predates the fork's `--conversation-cache-cart-slots`
+commit, so it rejects this config exactly as 0.1.54 did. That boot carries `STRATA_GDN_TC=1` +
+`STRATA_GDN_CONVL2=2` for this Linux Qwen arm (prompts +2-6% upstream, NOT bit-exact — a NEW ARM of
+the ladder), the parallel stack stays off (no `--parallel`/`--batch`; it needs slots ≥ 2), and the
+cart re-seeds once per engine version (the session fingerprint hashes `engine_version`). Receipts:
+`bench/p1/v029_*.log`, `docs-index-founding-2026-10-31-after-fix.*`,
+`docs-eval-store-2026-10-31-postfix.log`; journal 2026-10-31 09:55 and 20:1x.
+
+**The founding shelf is rebuilt and it agrees with itself:** 141 files → **34,478 chunk rows** on
+`DOC/FOUNDING` in scope `doc-founding` in **228.9 s** through the attach lane (~151 rows/s, against
+the old pass that ran 08:14→18:35 and stopped at 22,027 with 60 rows folded into another file's
+provenance and 66 orphans). Ledger sum = rows exactly; **0 of 34,478 spine offsets miss their own
+text**; longest row 3,900 ≤ the 4,000 ceiling. `op=docs` is **live** on the server — the old "reboot
+ready" note is dead.
+
+**Not measured, so nobody may claim it:** the semantic arm. **0 of 34,478 shelf rows carry vectors**,
+so the fused ranking this index exists for is untested; lexical-only the topic panel scores **1/12
+top-1, 4/12 top-5, 7/12 top-20**. And the filed "8/12 topic, 9/14 quote" bar is NOT a whole-corpus
+number — it is the 2026-10-30 **36-cart** bench (`cart-routing-2026-10-30.log`: chunked full-text
+9/14 quotes lexical, 8/14 fused; topics fused 8/12, lexical 7/12). My own eval script inherited it
+as a bar; that is the laundered citation of the day and it is mine. Measured and unfixed: **70% of
+shelf rows carry a print line-break hyphen** (`gov- ernment`), splitting corpus words away from the
+lexical arm.
+
+**Ruled, so nobody re-litigates:** the corpus path is **text + routing** and the cart is a cache (the
+owner, 2026-10-30) — the doc index IS the routing, the file stays the territory; CUT3/boundary is
+**deferred** (the index now exists); MEX (mex-memory/mex), the per-project standing cart and the GPU
+probes are **dropped**; held out with reasons are Mind's T1/T2/T3 promotion-on-read (our reads are
+ambient) and `pg_trgm` typo recall (a ranking change, kept as a strict "typo rescue" firing only when
+the lexical arm returns nothing). Not built: "cart the skills" — the block already sits
+downstream of the cart in the same stable head, so carting changes byte **ownership**, not cost, and a
+cartridge never frees window space.
+
+**Owed:** the **embed pass** for the shelf (~2.4 chunks/s measured on 8 CPU threads ⇒ roughly 4 h for
+34,478 rows; `m8_docs --embed` or `m4_embed.py`) — until it runs there is no honest fused number.
+**Merge `retire-episode-carts`?** its three commits (the mint-off ruling, the serve-suite mock fix,
+the corpus-path doc) are unmerged, so `minted` defaults True here. A `reseed` bypass on `op=remint`,
+or a config fingerprint on the cart row — `caught_up` is text-hash + file-exists (server.py:7394) and
+cannot see a profile change. The **reading stage** for chunk rows: block caps (doc hits head-truncated
+~1,200 chars, full passages on the tool arm) and the LLM-rerank arm on fused candidates (external
+expectation +5-15 nDCG@10). Shelf row **3332** names a dead path
+(`~/Projects/Strata-MAM-cartrige-mod` is gone; annotate, don't rewrite). The Memory-page tier toggle
+(tier-3 text ↔ tier-2 cartridge) is **not built** — `cartridges.facts` is exactly that switch and
+already exists, defaulted true off-box and false here.
+
+## Standing laws about this box, learned the expensive way
+
+- **A session file is bound to a CONFIG FINGERPRINT**: a rope-scaling or context change invalidates
+  every cart minted before it — the engine refuses "saved with another engine configuration".
+- **The boot adds a constant to every prompt that a local render does not** (+42 tok measured on
+  0.1.54, 2026-10-30; the `{REASON:off}` directive's own share is +7). Never *predict* prompt_tokens
+  from a chat-template render — measure the gap on the shape being scored: a difference of two
+  boot-side renders cancels any constant out of sight. That blindness froze the curation queue a night.
+- **A grafted read selects by POSITION where a live read selects by RELEVANCE.** The first 2,048 cells
+  of a cart are consultable and nothing past them is, even though the file holds every byte (2,580 tok
+  = 157.5 MB measured against 157.5 MB predicted). The cause is engine-side and narrowed, not proven.
+  Until it is fixed: cut a cart at ~2,000 cells ≈ 8,000 chars ≈ 9.8 KB of source text per query.
+- **The floor is the argument**: a cart that knows ONE SENTENCE costs 118-238 MB, because the file
+  carries all 36 fixed-size GDN states whatever the body says — C4's fixed 236.1 MB + 15.6 KB/token,
+  reproduced live. That is why the CUT3 boundary cut is the cart idea worth keeping.
+- **A cart-file mtime moving without a persona edit is an engine re-seed of the same bytes** — the hash
+  is the identity; re-seed never renames.
+- **The curation is gated four ways**, and the third is why facts wait: `strata-sweep.timer` every 30
+  min (a **systemd user timer, not a crontab**), the tick runs only when `pressure=1` or `pending>5`,
+  `--batches 2`, and `--sweep` waits for **240 s of total engine silence** — so while a human works,
+  the harvest is forbidden to run. Measured median said→written: **6.92 h**. The 240 s was bought
+  2026-10-16 to protect KV reuse; `op=curate` spends it on purpose.
+- **The engine process is named `strata-host`** since upstream 7a559958 (2026-10-20, thread naming at
+  src/core/session.cpp:569), and the picture reader is a second process, **`strata-vision`**. Per-app
+  GPU settings key on that name, so a whitelist must carry both.
+- **Two store answers do not wear the shape I expect**: `op:"carts"` answers BARE
+  `{"ok": true, "carts": [...]}` with no `result` wrapper — I read `.get("result", {})` and reported
+  carts missing twice in one day — and `remember()` refuses any row over **4,000 characters**, so a
+  full-text index is necessarily chunked and a document's rank is its best chunk's rank.
+- **The documented runner is `python -m unittest discover -s serve -p 'test_*.py'`; pytest is not it**
+  (pytest reports subtests as failures and inflates the count). And a server-side signature change must
+  update the mocks: my 07:01 commit gave `Service.run` a `prefill_only=` argument and 30 test engines
+  kept the old signature, so the serve suite sat red for six hours while my own 278-test memory run
+  reported everything green.
+
+This line ages — rewrite or delete it when it does.
