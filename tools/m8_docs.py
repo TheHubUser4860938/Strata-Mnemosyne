@@ -94,6 +94,9 @@ def main() -> int:
                     help="row ceiling in chars (32-4000; a larger value is clamped to 4000, "
                          "remember()'s ceiling)")
     ap.add_argument("--exts", default=".txt,.md", help="comma-separated suffixes to index")
+    ap.add_argument("--set-root", nargs=2, metavar=("CORPUS", "FOLDER"),
+                    help="stamp the corpus's folder in the ledger without "
+                         "re-chunking (a store indexed before the root column)")
     ap.add_argument("--embed", action="store_true", help="embed each chunk at write time (slow arm)")
     ap.add_argument("--model", default=str(data_dir(ROOT) / "embeddings/embeddinggemma-2"),
                     help="embedder dir (default: the box's live model)")
@@ -103,7 +106,7 @@ def main() -> int:
     ap.add_argument("--dir", default=str(data_dir(ROOT) / "memory-eval"), help="the store dir")
     a = ap.parse_args()
 
-    need_embed = a.embed and not (a.remove or a.list is not None)
+    need_embed = a.embed and not (a.remove or a.list is not None or a.set_root)
     svc = build(a.dir, a.model if need_embed else None, a.threads)
     from serve.docs import Docs
     svc.docs = Docs(svc)
@@ -111,12 +114,19 @@ def main() -> int:
         if a.remove:
             print(json.dumps({"removed": svc.docs.remove(a.remove)}))
             return 0
+        if a.set_root:
+            corpus, folder = a.set_root
+            n = svc.docs.set_root(corpus, folder)
+            print(json.dumps({"stamped": n, "corpus": corpus, "root": str(folder)}))
+            print(f"m8_docs: {n} ledger rows for corpus {corpus!r} now point at {folder}"
+                  f" - no re-chunking", file=sys.stderr)
+            return 0
         if a.list is not None:
             print(json.dumps({"files": svc.docs.list(a.list or None),
                               "corpora": svc.docs.corpora()}, indent=1))
             return 0
         if not a.folder:
-            ap.error("name a FOLDER to index, or use --list / --remove")
+            ap.error("name a FOLDER to index, or use --list / --remove / --set-root")
         t0 = time.time()
         r = svc.docs.index(a.folder, a.corpus, klass=a.klass, scope=a.scope, cap=a.cap,
                            mode=a.mode, exts=tuple("." + x.strip().lstrip(".")

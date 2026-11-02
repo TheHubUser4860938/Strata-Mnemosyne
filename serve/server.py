@@ -9965,8 +9965,24 @@ def make_handler(svc: Service):
                     corpus = str(req.get("corpus") or "").strip()
                     r = {"docs": {"files": svc.memory.docs.list(corpus or None),
                                   "corpora": svc.memory.docs.corpora()}}
+                elif action == "read":       # the reading stage (2026-11-02): the TOOL arm's
+                    r = {"docs": {"passage": svc.memory.docs.read(  # full passage, no block cap
+                        str(req.get("corpus") or ""), str(req.get("path") or ""),
+                        int(req.get("offset") or 0), int(req.get("n") or 0),
+                        before=int(req.get("before") or 0),
+                        after=int(req.get("after") or 0),
+                        cap=int(req.get("cap") or 6000))}}
+                elif action == "expand":     # the same, from a hit the caller already holds
+                    r = {"docs": {"passage": svc.memory.docs.expand(
+                        req.get("hit") or {}, window=int(req.get("window") or 0),
+                        cap=int(req.get("cap") or 6000))}}
+                elif action == "rerank":     # opt-in: with no rerank_ask wired, order is kept
+                    r = {"docs": {"hits": svc.memory.docs.rerank(
+                        str(req.get("query") or ""), list(req.get("hits") or []),
+                        k=int(req.get("k") or 8))}}
                 else:
-                    raise ValueError('docs action: one of "index", "list", "remove"')
+                    raise ValueError('docs action: one of "index", "list", "remove", "read", '
+                                     '"expand", "rerank"')
             elif op in ("mint", "remint", "retire", "carts"):     # S3 (2026-10-25): one experience,
                 if svc.carts is None:                             # one cartridge - and the ledger
                     raise ValueError("carts are off (memory.cartridges needs slot_save_path "    #  lives in the store; the base
@@ -12087,6 +12103,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 auto_shelve=mcfg.get("auto_shelve") is True
                             or str(mcfg.get("auto_shelve") or "").lower() in ("1", "on", "true"),
                 block_min_score=float(mcfg.get("block_min_score") or 0.0),
+                block_doc_cap=int(mcfg.get("block_doc_cap")
+                                  if mcfg.get("block_doc_cap") is not None else 1200),
                 expose_window=int(mcfg.get("expose_window") or 0),
                 expose_step=float(mcfg.get("expose_step") or 0.0),
                 expose_cap=int(mcfg.get("expose_cap") or 3),
@@ -12097,6 +12115,22 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 embedder=ed or None)
         except (ValueError, OSError, TypeError) as e:
             raise SystemExit(f"[strata] memory: {e}")
+        # THE RERANK ARM (2026-11-02, the reading stage): opt-in, and the client is
+        # the box's own HTTP surface - serve/ keeps no model-client dependency, so
+        # the store asks the server the same way any app does. memory.rerank = "on"
+        # uses this process's port; a URL uses that one (a second, bigger model).
+        _rr = str(mcfg.get("rerank") or "").strip()
+        if _rr and _rr.lower() not in ("off", "0", "none"):
+            from .docs import ask_url
+            _url = _rr if _rr.startswith("http") else None
+            svc.memory.rerank_ask = ask_url(
+                (lambda _u=_url: _u
+                 or f"http://127.0.0.1:{getattr(svc, 'bound_port', 8000)}"
+                    "/v1/chat/completions"),
+                model=str(mcfg.get("rerank_model") or ""),
+                max_tokens=int(mcfg.get("rerank_max_tokens") or 60),
+                timeout=float(mcfg.get("rerank_timeout") or 20.0))
+            print(f"[strata] memory rerank arm on: {_url}")
         at_rest_line = ("data-dir 0700, encrypted pg_dump backups: tools/m6_backup.py"
                         if svc.memory.encrypt else "data-dir 0700")   # ADR-002: the seal law retired
         rt = ("off" if not svc.memory.route_shelves else "on (bm25 vote, unaddressed blocks only" +
@@ -12257,6 +12291,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         atexit.register(hub.close)                      # the servers Strata started end with it
     httpd = serve(svc, host=a.host, port=a.port)
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
+    svc.bound_port = bound_port                        # the rerank arm asks this process by it
     svc.start_idle_unload()
     svc.start_vision_idle()
     here = "[::1]" if a.host == "::" else "127.0.0.1" if a.host in ("0.0.0.0", "") else f"[{a.host}]" if ":" in a.host else a.host
