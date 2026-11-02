@@ -507,5 +507,237 @@ class DocsOverHttp(unittest.TestCase):
         self.assertEqual([d["path"] for d in files], ["a.txt"])
 
 
+class ReadingStage(DocIndexStore):
+    """The reading stage (2026-11-02): a hit is a map entry; the file is the territory.
+
+    Inherits the index suite's fixtures, so every read test runs over the same
+    rows the index suite proves.
+    """
+
+    def _one_row(self, scope="doc-founding"):
+        rows = self._rows(scope)
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        return self._rows(scope)[0]
+
+    def test_index_records_the_root_it_walked(self):
+        r = self.mem.docs.index(self.docs_dir, corpus="founding")
+        self.assertEqual(r["root"], str(self.docs_dir))
+        self.assertEqual(self.mem.docs.corpus_root("founding"), str(self.docs_dir))
+
+    def test_an_unknown_corpus_records_no_root(self):
+        self.assertEqual(self.mem.docs.corpus_root("nobody"), "")
+
+    def test_a_row_read_out_of_the_file_is_the_row(self):
+        """The spine law, run against the TERRITORY: the row's text is the file's
+        text at the row's offset. 34,478 rows passed this in the store on
+        2026-10-31; this is the same claim against the file, per row shape."""
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        for row in self._rows("doc-founding")[:6]:
+            prov = row[4]
+            out = self.mem.docs.read(prov["corpus"], prov["file"], prov["offset"],
+                                     len(row[1]), expect=row[1])
+            self.assertTrue(out["ok"], out)
+            self.assertTrue(out["match"], f"{prov['file']}@{prov['offset']} drifted")
+            self.assertEqual(out["text"][:len(row[1])], row[1])
+
+    def test_a_window_widens_the_passage_beyond_the_row(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding", cap=200, mode="fixed")
+        row = self._rows("doc-founding")[1]
+        prov = row[4]
+        tight = self.mem.docs.read(prov["corpus"], prov["file"], prov["offset"],
+                                   len(row[1]))
+        wide = self.mem.docs.read(prov["corpus"], prov["file"], prov["offset"],
+                                  len(row[1]), before=80, after=80)
+        self.assertGreater(wide["n"], tight["n"])
+        self.assertTrue(tight["text"] in wide["text"], "the window moved, not widened")
+
+    def test_the_cap_clips_at_a_word_and_says_so(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding", cap=200, mode="fixed")
+        row = self._rows("doc-founding")[0]
+        prov = row[4]
+        out = self.mem.docs.read(prov["corpus"], prov["file"], prov["offset"],
+                                 len(row[1]) * 4, cap=120)
+        self.assertTrue(out["truncated"])
+        self.assertLessEqual(out["chars"], 120)
+        # a clip lands on a word boundary: the character the passage was cut BEFORE
+        # is a space in the file, so no word is split in the reader's eye
+        body, _ = self.mem.docs.reader("founding").body(prov["file"])
+        self.assertEqual(body[out["offset"] + out["chars"]], " ")
+
+    def test_expand_reads_a_search_hit_by_its_provenance(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        hits = self.mem.search("faction sphere", scope="doc-founding", limit=3)
+        self.assertTrue(hits, "the lexical arm must answer for the reading stage")
+        out = self.mem.docs.expand(hits[0])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["file"], hits[0]["provenance"]["file"])
+
+    def test_expand_accepts_a_hit_whose_provenance_is_json_text(self):
+        out = self.mem.docs.expand({"provenance": json.dumps(
+            {"corpus": "founding", "file": "fed10.txt", "offset": 0, "n_chars": 40}),
+            "text": "It is a truth"})
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        out = self.mem.docs.expand({"provenance": json.dumps(
+            {"corpus": "founding", "file": "fed10.txt", "offset": 0, "n_chars": 40}),
+            "text": "It is a truth"})
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(out["text"].startswith("It is a truth"))
+
+    def test_a_fact_row_says_it_has_no_document(self):
+        self.mem.remember("A fact with no provenance at all", scope="notes")
+        hits = self.mem.search("provenance", scope="notes", limit=1)
+        out = self.mem.docs.expand(hits[0])
+        self.assertFalse(out["ok"])
+        self.assertIn("no document provenance", out["error"])
+
+    def test_a_missing_file_is_an_answer_not_an_exception(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        out = self.mem.docs.read("founding", "ghost.txt", 0, 10)
+        self.assertFalse(out["ok"])
+        self.assertIn("ghost.txt", out["error"])
+
+    def test_a_store_indexed_before_the_root_column_can_be_stamped(self):
+        """2026-11-02: the founding shelf's 34,478 good rows have no address.
+        set_root is the one UPDATE that gives it back without re-chunking."""
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        with self.mem.conn.cursor() as cur:
+            cur.execute("update docs set root='' where corpus='founding'")
+            self.mem.conn.commit()
+        self.assertEqual(self.mem.docs.corpus_root("founding"), "")
+        self.mem.docs._readers.pop("founding", None)
+        gone = self.mem.docs.expand({"provenance": {"corpus": "founding",
+                                                     "file": "fed10.txt", "offset": 0},
+                                      "text": "It is a truth"})
+        self.assertFalse(gone["ok"])
+        n = self.mem.docs.set_root("founding", self.docs_dir)
+        self.assertEqual(n, 3, "the ledger's three files, and no re-chunking")
+        self.mem.docs._readers.pop("founding", None)      # the reader caches the root
+        back = self.mem.docs.expand({"provenance": {"corpus": "founding",
+                                                     "file": "fed10.txt", "offset": 0,
+                                                     "n_chars": 40},
+                                      "text": "It is a truth"})
+        self.assertTrue(back["ok"], back)
+
+    def test_a_root_that_is_not_a_folder_is_refused(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        with self.assertRaises(ValueError):
+            self.mem.docs.set_root("founding", Path(self.tmp.name) / "nowhere")
+
+    def test_the_reader_caches_by_mtime_and_sees_a_new_version(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        r = self.mem.docs.reader("founding")
+        first, stamp = r.body("fed51.txt")
+        again, _ = r.body("fed51.txt")
+        self.assertIs(first, again, "an unchanged file should not be re-read")
+        time.sleep(0.01)
+        (self.docs_dir / "fed51.txt").write_text(_federalish("changed", 8),
+                                                 encoding="utf-8")
+        fresh, stamp2 = r.body("fed51.txt")
+        self.assertNotEqual(stamp, stamp2)
+        self.assertIn("changed", fresh)
+
+
+class BlockCaps(unittest.TestCase):
+    """The block shows a document row's HEAD; the tool arm shows the passage."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mem = MemoryService(self.tmp.name)
+
+    def tearDown(self):
+        self.mem.close()
+        self.tmp.cleanup()
+
+    def _block(self, hits, cap):
+        self.mem.block_doc_cap = cap
+        text, shown = self.mem._render_block(hits, 40000, "doc-founding")
+        return text, shown
+
+    def _hits(self):
+        return [{"scope": "doc-founding", "class": "DOC/FOUNDING", "score": 1.0,
+                 "text": "word " * 600},
+                {"scope": "default", "class": "TECH", "score": 0.9,
+                 "text": "a fact row"}]
+
+    def test_a_doc_row_is_head_truncated_and_marked(self):
+        text, shown = self._block(self._hits(), 1200)
+        line = next(l for l in text.splitlines() if "word word" in l)
+        self.assertLess(len(line), 1300)
+        self.assertTrue(line.endswith("…"), "a clipped passage should say so")
+        self.assertEqual(len(shown), 2, "the cap shortens lines, it does not drop rows")
+
+    def test_a_fact_row_is_shown_whole(self):
+        text, _ = self._block(self._hits(), 1200)
+        self.assertIn("a fact row", text)
+        self.assertNotIn("a fact row …", text)
+
+    def test_the_cap_can_be_turned_off(self):
+        text, _ = self._block(self._hits(), 0)
+        self.assertIn("word " * 600, text.replace("\n", " ").replace("word word", "word word"))
+
+    def test_the_default_cap_is_the_reading_stages_budget(self):
+        from serve.docs import EXPAND_CAP, PASSAGE_CAP
+        self.assertEqual(self.mem.block_doc_cap, PASSAGE_CAP)
+        self.assertGreater(EXPAND_CAP, PASSAGE_CAP)
+
+
+class RerankArm(unittest.TestCase):
+    """The LLM arm is a reordering, not a filter, and it is opt-in."""
+
+    HITS = [{"text": "about factions in a sphere", "score": 0.30},
+            {"text": "the confederacy under the articles", "score": 0.28},
+            {"text": "the judiciary and the sword", "score": 0.27},
+            {"text": "census and representation", "score": 0.20},
+            {"text": "energy in the executive", "score": 0.10}]
+
+    def test_the_stub_answer_reorders_the_head_and_keeps_the_tail(self):
+        from serve.docs import rerank
+        out = rerank("who holds the sword?", self.HITS, lambda _p: "3, 1, 2")
+        self.assertEqual([h["text"] for h in out][:3],
+                         [self.HITS[2]["text"], self.HITS[0]["text"],
+                          self.HITS[1]["text"]])
+        self.assertEqual([h["text"] for h in out][3:],
+                         [h["text"] for h in self.HITS[3:]], "the tail keeps its order")
+        self.assertEqual(out[0]["rerank"], 0)
+
+    def test_prose_and_duplicates_parse(self):
+        from serve.docs import _parse_order
+        self.assertEqual(_parse_order("Best: 2, then 2 and 1.", 3), [1, 0, 2])
+        self.assertEqual(_parse_order("no numbers here", 3), [0, 1, 2])
+        self.assertEqual(_parse_order("3 1", 3), [2, 0, 1])
+
+    def test_the_prompt_asks_for_numbers_only(self):
+        from serve.docs import RERANK_PROMPT
+        self.assertIn("Question: {q}", RERANK_PROMPT)
+        self.assertIn("numbers only", RERANK_PROMPT)
+        self.assertIn("1. about factions",
+                      RERANK_PROMPT.format(q="x", body="1. about factions"))
+
+    def test_no_ask_means_the_retrievals_order(self):
+        tmp = tempfile.TemporaryDirectory()
+        mem = MemoryService(tmp.name)
+        try:
+            self.assertEqual(mem.docs.rerank("q", self.HITS), self.HITS)
+        finally:
+            mem.close()
+            tmp.cleanup()
+
+    def test_one_candidate_cannot_be_reranked(self):
+        from serve.docs import rerank
+        out = rerank("q", self.HITS[:1], lambda _p: "1")
+        self.assertEqual(out, self.HITS[:1])
+
+    def test_the_arm_caps_what_the_model_reads(self):
+        from serve.docs import rerank
+        seen = {}
+
+        def ask(prompt):
+            seen["prompt"] = prompt
+            return "1, 2"
+        rerank("q", [{"text": "x " * 2000}, {"text": "y"}], ask, cap=100)
+        self.assertLess(len(seen["prompt"]), 2000)
+
+
+
 if __name__ == "__main__":
     unittest.main()

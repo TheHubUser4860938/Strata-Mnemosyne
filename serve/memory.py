@@ -984,6 +984,7 @@ class MemoryService:
                  tool: bool = False, tool_rounds: int = 3, embedder=None, floor_cosine: float = 0.0,
                  block_position: str = "head",
                  auto_shelve: bool = False, block_min_score: float = 0.0,
+                 block_doc_cap: int = 1200,
                  expose_window: int = 0, expose_step: float = 0.0, expose_cap: int = 3,
                  route_shelves: bool = False, route_demote: float = 0.0):
         self.directory = memory_dir(directory)      # absolute, created 0700 - same rules as slot_save_path
@@ -1049,6 +1050,12 @@ class MemoryService:
         # semantic arm's VOTE cost -7.2 points of gold coverage; this gates what the block SHOWS,
         # both arms alike, and rides the score fusion the retrieval A/B already stands behind.
         self.block_min_score = max(0.0, float(block_min_score))
+        # THE READING STAGE'S CAP (2026-11-02): a DOC/<CORPUS> row is a chunk of up to 3,900
+        # characters, and eight of them is 31 KB of context. The block shows the HEAD of one,
+        # capped here; the full passage is the tool arm's (op=docs action=read / expand). A
+        # row of ANY other class is shown whole, as it always was - the cap is for documents,
+        # not for facts. 0 disables it (byte-identical to the pre-reading-stage block).
+        self.block_doc_cap = max(0, int(block_doc_cap))
         # EXPOSURE-DECAY (2026-10-16, the lever the m4_blockrule sweep pointed at): a row the last
         # expose_window journaled turns already injected pays step*min(exposures, expose_cap) off
         # its fused score. The ledger is turns.injected - what the model really read, not what
@@ -2541,7 +2548,33 @@ class MemoryService:
         hits = out[:limit]
         if hits and credit:
             self._seen([h["id"] for h in hits])
+        if hits:
+            self._attach_provenance(hits)   # the reading stage's join (2026-11-02):
+                                            # a DOC row is a MAP entry, and a hit that
+                                            # cannot name its file cannot be expanded
         return hits
+
+    def _attach_provenance(self, hits: list[dict]) -> None:
+        """Put each returned hit's provenance on it - one round trip, `limit` rows.
+
+        Deliberately NOT in the candidate SELECT: that query reads up to 4,000 rows
+        per search, and a jsonb text read on 4,000 rows to decorate 10 of them is
+        the wrong trade. Facts carry none and pay nothing: the key is simply absent,
+        the same shape expand() reports for them.
+        """
+        ids = [h["id"] for h in hits]
+        if not ids:
+            return
+        with self.lock, _rollback_on_error(self.conn):
+            rows = self.conn.execute(
+                "select id, provenance from memories where id = any(%s)"
+                " and provenance is not null", (ids,)).fetchall()
+            self.conn.commit()
+        by = {r[0]: r[1] for r in rows}
+        for h in hits:
+            prov = by.get(h["id"])
+            if prov:
+                h["provenance"] = prov
 
     @_heals
     def browse(self, scope: str, prefixes: list[str] | None = None, limit: int = 8,
@@ -2906,7 +2939,13 @@ class MemoryService:
         def head(n: int) -> str:      # the count is written AFTER trimming: shown = what the model reads
             return f'<server_memory version="{v}" scope="{scope}" shown="{n} of {n_active} active">'
         lines = [head(len(hits)), instruction]
-        lines += [f"[{i + 1}] ({h['scope']}) {h['text']}" for i, h in enumerate(hits)]
+        def show(h: dict) -> str:     # the block shows a document row's head, not its 3,900
+            t = h["text"]             # chars; the ellipsis says the passage is longer, and
+            if self.block_doc_cap and str(h.get("class") or "").startswith("DOC/") \
+                    and len(t) > self.block_doc_cap:      # the tool arm can reach the rest
+                t = t[:self.block_doc_cap].rsplit(" ", 1)[0] + " …"
+            return t
+        lines += [f"[{i + 1}] ({h['scope']}) {show(h)}" for i, h in enumerate(hits)]
         lines.append("</server_memory>")
         trimmed, used = [], len(lines[0]) + len(lines[-1]) + 120          # the header and the instruction line cost
         shown = []

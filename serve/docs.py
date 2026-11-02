@@ -54,7 +54,14 @@ _DOCS_DDL = """create table if not exists docs(
      sha256 text not null default '',
      chunks integer not null default 0,
      indexed_at timestamptz,
+     root text not null default '',
      primary key (corpus, path))"""
+
+#: the reading stage's two budgets (2026-11-02). A chunk row is up to ROW_MAX
+#: characters; the tier-3 BLOCK shows the head of one, capped here, and the tool
+#: arm (op=docs action=read) returns the passage the row points at.
+PASSAGE_CAP = 1200               # what the block shows of one doc row
+EXPAND_CAP = 6000                # what the tool arm returns: a full passage
 
 
 def pack_chunks(text: str, cap: int = CHUNK_CAP, mode: str = "paragraphs") -> list[str]:
@@ -186,6 +193,7 @@ class Docs:
 
     def __init__(self, svc):
         self.svc = svc
+        self._readers: dict[str, DocReader] = {}   # corpus -> the cached file reader
 
     def _ensure(self):
         """The ledger exists before any verb reads it - the attacher's path (a running server
@@ -193,6 +201,12 @@ class Docs:
         startup ran. One IF NOT EXISTS, idempotent against the store's own _startup."""
         with self.svc.lock:
             self.svc.conn.execute(_DOCS_DDL)
+            # 2026-11-02, the reading stage: a store indexed before this build has
+            # the table and not the column. ADD COLUMN IF NOT EXISTS is the whole
+            # migration - a blank root means "indexed before we recorded it", which
+            # read() reports instead of guessing a folder.
+            self.svc.conn.execute("alter table docs add column if not exists"
+                                  " root text not null default ''")
             self.svc.conn.commit()
 
     def index(self, folder, corpus: str, *, klass: str | None = None, scope: str | None = None,
@@ -298,16 +312,17 @@ class Docs:
                 with self.svc.lock:
                     self.svc.conn.execute(
                         "insert into docs(path, corpus, scope, size, mtime, sha256, chunks,"
-                        " indexed_at) values(%s,%s,%s,%s,%s,%s,%s,%s)"
+                        " indexed_at, root) values(%s,%s,%s,%s,%s,%s,%s,%s,%s)"
                         " on conflict (corpus, path) do update set size=excluded.size,"
                         " mtime=excluded.mtime, sha256=excluded.sha256, chunks=excluded.chunks,"
-                        " scope=excluded.scope, indexed_at=excluded.indexed_at",
+                        " scope=excluded.scope, indexed_at=excluded.indexed_at,"
+                        " root=excluded.root",
                         # scope=excluded.scope is belt-and-braces, not the load-bearing part: the
                         # guard above means a stored scope cannot drift, and the blank-fill after
                         # the walk repairs the rows the first build left empty (so the upsert arm
                         # has no test of its own - say so rather than imply one)
                         (rel, corpus, scope, st.st_size, _mtime_us(st), doc_sha, len(chunks),
-                         self.svc._dt(time.time())))
+                         self.svc._dt(time.time()), str(root)))
                     self.svc.conn.commit()
                 n_files += 1
                 n_chunks += len(chunks)
@@ -321,7 +336,7 @@ class Docs:
         return {"files": n_files, "chunks": n_chunks, "skipped": n_skip,
                 "unchanged": n_unchanged, "removed": removed,
                 "seconds": round(time.time() - t0, 3), "scope": scope, "class": klass,
-                "corpus": corpus}
+                "corpus": corpus, "root": str(root)}
 
     def list(self, corpus: str | None = None) -> list[dict]:
         """The ledger: one row per indexed file. Without a corpus, every corpus's files.
@@ -399,6 +414,110 @@ class Docs:
                 self.svc._vdirty = True
         return len(stale)
 
+    # -- the reading stage (2026-11-02) ------------------------------------
+    def corpus_root(self, corpus: str) -> str:
+        """The folder a corpus was indexed from - the territory a hit expands into.
+        '' when the ledger predates the column: say so, do not guess a folder."""
+        self._ensure()
+        with self.svc.lock:
+            row = self.svc.conn.execute(
+                "select root from docs where corpus=%s and root<>'' limit 1",
+                (corpus,)).fetchone()
+            self.svc.conn.commit()
+        return row[0] if row else ""
+
+    def set_root(self, corpus: str, root: str | Path) -> int:
+        """Stamp the folder a corpus lives in, WITHOUT re-chunking it (2026-11-02).
+
+        A store indexed before the `root` column has 34,478 good rows and no
+        address; re-indexing to get the address costs the whole pass. This is the
+        one UPDATE. It validates the folder, and read() validates the SPINE - so a
+        wrong stamp shows up as rows that do not match their own text, not as a
+        silent success.
+        """
+        self._ensure()
+        r = Path(str(root)).expanduser()
+        if not r.is_dir():
+            raise ValueError(f"not a directory: {r}")
+        with self.svc.lock:
+            n = self.svc.conn.execute("update docs set root=%s where corpus=%s",
+                                      (str(r), corpus)).rowcount
+            self.svc.conn.commit()
+        return int(n)
+
+    def reader(self, corpus: str) -> DocReader:
+        r = self._readers.get(corpus)
+        if r is None:
+            root = self.corpus_root(corpus)
+            if not root:
+                raise ValueError(f"corpus {corpus!r} records no root folder - re-index it "
+                                 "once (tools/m8_docs.py) to enable passage reads")
+            r = self._readers[corpus] = DocReader(root)
+        return r
+
+    def read(self, corpus: str, path: str, offset: int = 0, n: int = 0, *,
+             before: int = 0, after: int = 0, cap: int = EXPAND_CAP,
+             expect: str | None = None) -> dict:
+        """Cut the passage a row points at out of the FILE.
+
+        Offsets count the WHITESPACE-COLLAPSED body, the same space index() stored
+        them in (the spine law: a row's text is a substring of that body, and the
+        2026-10-31 build measured 0 of 34,478 rows missing their own text). With
+        `expect` (the row's own text) the result carries `match`, which is that
+        check run against the file, not against the store.
+
+        Two numbers, deliberately: `n` is the WINDOW the reader asked for, `chars`
+        is what came back after the cap - a clipped passage is shorter than its
+        window, and a caller who wants to continue reads from offset + chars.
+        """
+        try:
+            body, stamp = self.reader(corpus).body(str(path))
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "corpus": corpus, "file": str(path),
+                    "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        offset, n = int(offset), max(0, int(n))
+        lo = max(0, offset - int(before))
+        hi = (min(len(body), offset + n + int(after)) if n or after
+              else min(len(body), lo + int(cap)))
+        text, truncated = _clip(body[lo:hi], int(cap))
+        return {"ok": True, "corpus": corpus, "file": str(path), "offset": lo,
+                "n": hi - lo, "chars": len(text), "total": len(body),
+                "truncated": truncated, "mtime": stamp, "text": text,
+                "match": (body[offset:offset + len(expect)] == expect
+                          if expect else None)}
+
+    def expand(self, hit: dict, *, window: int = 0, cap: int = EXPAND_CAP) -> dict:
+        """read() driven by a search hit: the provenance is the join.
+
+        A hit's provenance arrives as a dict from search() and as a JSON string
+        from a raw row read, so both are accepted. A hit with no provenance is a
+        fact row, not a doc row, and says so.
+        """
+        prov = hit.get("provenance") if isinstance(hit, dict) else None
+        if isinstance(prov, str):
+            import json
+            try:
+                prov = json.loads(prov)
+            except ValueError:
+                prov = None
+        if not isinstance(prov, dict) or not prov.get("corpus") or not prov.get("file"):
+            return {"ok": False, "error": "this hit carries no document provenance",
+                    "id": hit.get("id") if isinstance(hit, dict) else None}
+        n = int(prov.get("n_chars") or 0) or len(str(hit.get("text") or ""))
+        return self.read(str(prov["corpus"]), str(prov["file"]),
+                         int(prov.get("offset") or 0), n,
+                         before=int(window), after=int(window), cap=cap,
+                         expect=str(hit.get("text") or "") or None)
+
+    def rerank(self, query: str, hits: list[dict], ask=None, **kw) -> list[dict]:
+        """Ask the model which candidates answer `query`, and reorder. Opt-in:
+        with no `ask` (and no `svc.rerank_ask`) the order is the retrieval's, so
+        turning the arm on cannot change a store that never asked for it."""
+        ask = ask or getattr(self.svc, "rerank_ask", None)
+        if not ask or not hits:
+            return list(hits)
+        return rerank(query, hits, ask, **kw)
+
     @staticmethod
     def _read(p: Path) -> str:
         for enc in ("utf-8", "utf-16", "latin-1"):       # the corpus is a library, not a schema
@@ -407,3 +526,130 @@ class Docs:
             except UnicodeDecodeError:
                 continue
         return p.read_text(encoding="utf-8", errors="replace")
+
+
+# ---- 2026-11-02: the reading stage ----------------------------------------
+# A hit is a MAP entry: the row's text is one <=3,900-char chunk, and the file
+# is the territory. Three things a reader needs, in order of cost:
+#
+#   read()    the passage a row points at, cut out of the file by its provenance
+#   expand()  the same thing from a search hit (the provenance is the join)
+#   rerank()  ask the served model which of the candidates answers the question
+#
+# The BLOCK shows PASSAGE_CAP characters of a row; the TOOL arm returns
+# EXPAND_CAP. That split is the whole reading stage's budget story: a chunk row
+# is 3,900 chars, eight of them is 31 KB of context, and the head of a passage
+# is what pays for itself in the block.
+def _collapse(text: str) -> str:
+    """The body a row's `offset` counts in: whitespace collapsed, as index() stores it."""
+    return " ".join(text.split())
+
+
+class DocReader:
+    """The file side of the document index: cached, collapsed, offset-honest.
+
+    One instance per MemoryService (`svc.docs.reader` is not a thing - the methods
+    live on Docs and hang their cache off `svc.doc_cache`), so an index pass and a
+    read pass see the same bytes without re-reading a 6 MB paper per hit.
+    """
+
+    def __init__(self, root: Path | str, keep: int = 8):
+        self.root = Path(str(root)).expanduser()
+        self.keep = max(1, int(keep))
+        self.files: dict[str, tuple[int, str]] = {}      # path -> (mtime_us, collapsed)
+
+    def body(self, rel: str) -> tuple[str, int]:
+        """The file's collapsed text, and the mtime stamp it was read at."""
+        st = (self.root / rel).stat()
+        stamp = _mtime_us(st)
+        hit = self.files.get(rel)
+        if hit and hit[0] == stamp:
+            return hit[1], stamp
+        body = _collapse(Docs._read(self.root / rel))
+        self.files[rel] = (stamp, body)
+        while len(self.files) > self.keep:                # a corpus is a library
+            self.files.pop(next(iter(self.files)))        # FIFO, 8 files, ~40 MB at most
+        return body, stamp
+
+
+def _clip(text: str, cap: int) -> tuple[str, bool]:
+    """Cut at `cap`, then at the last word boundary, and say whether it was cut."""
+    if len(text) <= cap:
+        return text, False
+    head = text[:cap]
+    cut = head.rfind(" ")
+    return (head[:cut] if cut > cap // 2 else head), True
+
+
+#: The listwise prompt. Shaped for a small local model: one instruction, the
+#: passages, and a reply format a parser cannot misread. Kept in one place so an
+#: eval can A/B the phrasing without touching the ranking code.
+RERANK_PROMPT = ("You are ranking passages by how well each one ANSWERS the question.\n\n"
+                 "Question: {q}\n\n{body}\n\n"
+                 "Reply with the passage numbers only, best first, separated by commas.")
+
+
+def _parse_order(text: str, n: int) -> list[int]:
+    """The model's ranking as indices, 0-based. Numbers it skipped sort last, in
+    the order retrieval put them - a rerank reorders, it never drops (cap not
+    quota, m4_blockrule's law)."""
+    seen: list[int] = []
+    for tok in re.findall(r"\d+", text or ""):
+        i = int(tok) - 1
+        if 0 <= i < n and i not in seen:
+            seen.append(i)
+    seen += [i for i in range(n) if i not in seen]
+    return seen
+
+
+def rerank(query: str, hits: list[dict], ask, *, k: int = 8, cap: int = 900,
+           label: str = "text") -> list[dict]:
+    """Reorder the top `k` candidates by an LLM's judgement; keep the tail's order.
+
+    `ask` is any callable prompt -> text, which is what makes this testable with a
+    stub and what lets the server use its own engine. `rerank` is stamped on each
+    moved hit so a run says what the arm did to it (the scar stays visible).
+    """
+    head = list(hits)[:k]
+    tail = list(hits)[k:]
+    if len(head) < 2:
+        return list(hits)
+    body = "\n\n".join(f"{i + 1}. {_clip(str(h.get(label) or ''), cap)[0]}"
+                       for i, h in enumerate(head))
+    order = _parse_order(ask(RERANK_PROMPT.format(q=query, body=body)), len(head))
+    out = []
+    for rank, i in enumerate(order):
+        h = dict(head[i])
+        h["rerank"] = rank
+        out.append(h)
+    return out + tail
+
+
+def ask_url(url, *, model: str = "", max_tokens: int = 60, timeout: float = 20.0):
+    """A prompt -> text callable over the box's own OpenAI surface.
+
+    The store keeps no model-client dependency (serve/ runs without any SDK), so
+    the rerank arm asks the server the way every other app does - one POST. This
+    is the wiring the config turns on (`memory.rerank = "on"` for this process's
+    port, or a URL for a second model); with it off, `Docs.rerank` returns the
+    retrieval's own order, byte-identical to the pre-reading-stage path.
+    """
+    import json
+    import urllib.request
+
+    def ask(prompt: str) -> str:
+        # `url` may be a callable: the server wires this before it knows the port
+        # it bound (--port 0), so the address is resolved at ask time.
+        target = url() if callable(url) else url
+        body = json.dumps({"model": model or "strata", "temperature": 0.0,
+                           "max_tokens": max_tokens,
+                           "messages": [{"role": "user", "content": prompt}]}).encode()
+        req = urllib.request.Request(target, data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:     # noqa: S310
+            data = json.loads(resp.read().decode())
+        ch = (data.get("choices") or [{}])[0]
+        msg = ch.get("message") or {}
+        return str(msg.get("content") or ch.get("text") or "")
+
+    return ask
