@@ -507,6 +507,62 @@ class DocsOverHttp(unittest.TestCase):
         self.assertEqual([d["path"] for d in files], ["a.txt"])
 
 
+class Sections(DocIndexStore):
+    """The paper-aware chunker (2026-11-02): a row lives inside ONE section."""
+
+    SECTIONS = ("FEDERALIST No. 10\n\nIt is a truth of faction that the sphere grows.\n\n"
+                "More of the tenth paper, on the same subject continued.\n\n"
+                "FEDERALIST No. 51\n\nConcentration in the department is the safeguard.\n\n"
+                "Ambition must be made to counteract ambition, at length.\n")
+
+    def test_a_row_is_tagged_with_the_section_it_sits_in(self):
+        from serve.docs import pack_sections
+        rows = pack_sections(self.SECTIONS, cap=200)
+        self.assertTrue(rows)
+        secs = [sec for _t, sec in rows]
+        self.assertIn("FEDERALIST No. 10", secs)
+        self.assertIn("FEDERALIST No. 51", secs)
+        first10 = rows[secs.index("FEDERALIST No. 10")][0]
+        self.assertTrue(first10.startswith("FEDERALIST No. 10"),
+                        "the heading opens its section, so the row that finds a paper names it")
+
+    def test_nothing_is_lost_between_the_heading_and_the_row(self):
+        from serve.docs import pack_sections
+        joined = norm_text(" ".join(t for t, _s in pack_sections(self.SECTIONS, cap=200)))
+        self.assertEqual(joined, norm_text(self.SECTIONS))
+
+    def test_a_file_with_no_headings_is_one_section_of_paragraphs(self):
+        from serve.docs import pack_chunks, pack_sections
+        rows = pack_sections("Alpha text.\n\nBeta text.\n\nGamma text.\n", cap=200)
+        self.assertTrue(all(sec == "" for _t, sec in rows), rows)
+        self.assertEqual([t for t, _s in rows], pack_chunks("Alpha text.\n\nBeta text.\n\n"
+                                                            "Gamma text.\n", cap=200))
+
+    def test_the_section_rides_in_the_provenance_of_every_row(self):
+        (self.docs_dir / "papers.txt").write_text(self.SECTIONS, encoding="utf-8")
+        r = self.mem.docs.index(self.docs_dir, corpus="founding", mode="sections", cap=200)
+        self.assertGreater(r["chunks"], 0)
+        rows = self._rows("doc-founding")
+        got = {p[4].get("section") for p in rows if p[0] > 0}
+        self.assertIn("FEDERALIST No. 10", got, got)
+        self.assertTrue(all(p[4]["file"] for p in rows), "the spine stays whole")
+
+    def test_the_mode_is_a_card_not_a_constant(self):
+        """index(mode=...) is the knob the A/B sweeps, so the same folder must
+        re-chunk under a different mode without losing the ledger."""
+        r1 = self.mem.docs.index(self.docs_dir, corpus="founding", mode="paragraphs", cap=400)
+        same = self.mem.docs.index(self.docs_dir, corpus="founding",
+                                   mode="sections", cap=400)
+        self.assertEqual((same["files"], same["unchanged"]), (0, 3),
+                         "a mode change on an untouched folder is a stat sweep - until --force")
+        r2 = self.mem.docs.index(self.docs_dir, corpus="founding", mode="sections", cap=400,
+                                 force=True)
+        self.assertEqual(r1["files"], r2["files"], "force re-chunks the same books")
+        self.assertEqual(len(self._rows("doc-founding")), r2["chunks"], "replaced, not appended")
+        self.assertTrue(any((p[4].get("section") or "") for p in self._rows("doc-founding")),
+                        "the sections mode landed in the provenance")
+
+
 class Cutters(DocIndexStore):
     """The doc shelf's cutters (2026-11-02): a drawer per book, one UPDATE."""
 

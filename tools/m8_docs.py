@@ -101,6 +101,9 @@ def main() -> int:
     ap.add_argument("--set-root", nargs=2, metavar=("CORPUS", "FOLDER"),
                     help="stamp the corpus's folder in the ledger without "
                          "re-chunking (a store indexed before the root column)")
+    ap.add_argument("--force", action="store_true",
+                    help="re-chunk every file even when the stat sweep says it is "
+                         "unchanged - the mode and cap knobs live outside the ledger key")
     ap.add_argument("--embed", action="store_true", help="embed each chunk at write time (slow arm)")
     ap.add_argument("--model", default=str(data_dir(ROOT) / "embeddings/embeddinggemma-2"),
                     help="embedder dir (default: the box's live model)")
@@ -150,8 +153,9 @@ def main() -> int:
             ap.error("name a FOLDER to index, or use --list / --remove / --set-root / --cut")
         t0 = time.time()
         r = svc.docs.index(a.folder, a.corpus, klass=a.klass, scope=a.scope, cap=a.cap,
-                           mode=a.mode, exts=tuple("." + x.strip().lstrip(".")
-                                                   for x in a.exts.split(",") if x.strip()))
+                           mode=a.mode, force=a.force,
+                           exts=tuple("." + x.strip().lstrip(".")
+                                      for x in a.exts.split(",") if x.strip()))
         print(json.dumps(r, indent=1))
         print(f"m8_docs: {r['files']} files -> {r['chunks']} chunk rows on {r['class']} "
               f"(scope {r['scope']}), {r['unchanged']} unchanged, {r['removed']} pruned, "
