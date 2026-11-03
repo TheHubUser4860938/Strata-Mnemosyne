@@ -133,6 +133,10 @@ def main() -> int:
     svc = MemoryService(a.dir)
     rows = facts(svc, a.klass, a.limit)
     by_id = {r[0]: r for r in rows}
+    out = Path(a.out or str(data_dir(ROOT) / "bench" /
+                            f"m4-junkyard-{time.strftime('%Y-%m-%d')}"
+                            + (".jsonl" if not a.resume else "-resume.jsonl")))
+    out.parent.mkdir(parents=True, exist_ok=True)
     if a.resume and out.exists():
         seen_ids = set()
         for line in out.read_text(encoding="utf-8").splitlines():
@@ -142,10 +146,6 @@ def main() -> int:
                 continue
         rows = [r for r in rows if r[0] not in seen_ids]
         print(f"resume: {len(seen_ids)} rows already in the log, {len(rows)} to go")
-    out = Path(a.out or str(data_dir(ROOT) / "bench" /
-                            f"m4-junkyard-{time.strftime('%Y-%m-%d')}"
-                            + (".jsonl" if not a.resume else "-resume.jsonl")))
-    out.parent.mkdir(parents=True, exist_ok=True)
     print(f"queue {len(rows)} fact rows; bar {a.bar}; dups={'on' if a.dups else 'off'}; "
           f"junk={'on' if a.junk else 'off'}; {'APPLY' if a.apply else 'dry run'}; log {out}")
     doomed: dict[int, str] = {}
