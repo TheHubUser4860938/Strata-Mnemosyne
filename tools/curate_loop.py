@@ -632,7 +632,14 @@ def clerk_class(fact: str, ask) -> str:
     if ask is None:
         return ""
     try:
-        ans = ask(SHELF_ONE.format(menu=SHELF_MENU, fact=fact[:400]), 64, kind="shelf")
+        # [0]: `ask` answers the 3-tuple (answer, ptok, geom_ok) - see its docstring at the
+        # top of main(). Wired into the store path on 2026-11-02 (698ba298) as a bare call,
+        # so the tuple went to the regex and raised on the FIRST fact the keywords left WILD.
+        # The window law marks after scoring, so an unmarked window is re-drained next tick
+        # and dies on the same fact: 13 ticks, turns 8654..8713, zero marks, queue 505 -> 1,303
+        # (tools/test_curate_clerk.py is the receipt; the ticks from 13:12 to 18:05 that day
+        # looked clean because the clerk runs only on the `or` branch of the class expression).
+        ans = ask(SHELF_ONE.format(menu=SHELF_MENU, fact=fact[:400]), 64, kind="shelf")[0]
     except Exception:                                   # a sweep must not stall on a label
         return ""
     codes = [c for c in SHELF_ANSWER.findall(ans or "") if c.split("/")[0] in SHELF_TOPS]
