@@ -191,6 +191,27 @@ class DocIndexStore(unittest.TestCase):
         self.assertTrue(rows)
         self.assertEqual({r[3] for r in rows}, {"DOC/CONV"})
 
+    def test_stats_separates_facts_from_doc_chunks(self):
+        """The Memory page's FACTS tile must not be inflated by the routing shelf: stats splits
+        the active rows by family - facts (what the server remembers) vs doc chunks (the map)."""
+        self.mem.remember("the owner ratified the boot etiquette on 2026-10-24")
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        s = self.mem.stats()
+        self.assertEqual(s["memories"], s["facts"] + s["doc_chunks"],
+                         "the total is the sum of the two families")
+        self.assertEqual(s["facts"], 1, "one remembered fact, no matter how many chunks")
+        self.assertGreaterEqual(s["doc_chunks"], 3, "the fixture's three files, one row each")
+
+    def test_block_header_counts_facts_not_the_shelf(self):
+        """"shown N of M active" is the model's sense of the store's size: M is the FACTS
+        count, so a 30k-chunk routing shelf does not make the memory feel like 30k notes."""
+        for i in range(3):
+            self.mem.remember(f"standing fact {i} about the venue night")
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        block, shown, _ = self.mem.block_for(
+            [{"role": "user", "content": "the venue night"}], scope="default")
+        self.assertIn('of 3 active', block.splitlines()[0], block.splitlines()[0])
+
     def test_fixed_mode_is_the_control_chunker(self):
         r = self.mem.docs.index(self.docs_dir, corpus="founding", mode="fixed", cap=1500)
         self.assertGreater(r["chunks"], 0)

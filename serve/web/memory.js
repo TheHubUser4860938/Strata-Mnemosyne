@@ -49,7 +49,7 @@ async function show(q, repeat) {
       const d = await api(`/memory?${p}`);
       render(d.hits || [], `${(d.hits || []).length} hit${(d.hits || []).length === 1 ? "" : "s"} for “${q}”`);
     } else {
-      const p = new URLSearchParams({ limit: "50" });
+      const p = new URLSearchParams({ limit: "50", docs: "1" });   // the ledger rides the stats card
       if ($("scope").value.trim()) p.set("scope", $("scope").value.trim());
       if ($("klass").value.trim()) p.set("class", $("klass").value.trim());
       const d = await api(`/memory?${p}`);
@@ -68,8 +68,15 @@ function render(list, title) {
 
 function cards(s) {
   STATS = s;
-  $("rows").textContent = s.memories ?? "—";
+  $("rows").textContent = s.facts ?? s.memories ?? "—";
   $("rowsub").textContent = s.max_memories ? `of ${s.max_memories} cap${s.pressure ? " · pressure" : ""}` : "no cap";
+  // the two families (2026-11-03): Facts is what the server remembers; Docs is the corpus
+  // routing map - chunks that route to files, not memories the sweep tends.
+  if ($("docs")) {
+    $("docs").textContent = s.doc_chunks ?? "—";
+    const cor = (s.docs || []).map(c => `${c.corpus}·${c.files}f`).join(" ");
+    $("docssub").textContent = cor || (s.doc_chunks ? "indexed folders" : "no corpus indexed yet");
+  }
   $("pending").textContent = s.turns_pending ?? "—";
   $("pendsub").textContent = "journaled turns awaiting the sweep";
   const rest = s.at_rest || {};
