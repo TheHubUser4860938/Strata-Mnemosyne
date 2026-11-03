@@ -74,8 +74,10 @@ def pack_chunks(text: str, cap: int = CHUNK_CAP, mode: str = "paragraphs") -> li
     than `cap` is cut, because remember() refuses a row over its own ceiling)."""
     if cap < 32:
         raise ValueError(f"chunk cap must be >= 32 (got {cap})")
-    if mode not in ("paragraphs", "fixed"):
-        raise ValueError(f"mode: one of \"paragraphs\", \"fixed\" (got {mode!r})")
+    if mode not in ("paragraphs", "fixed", "sections"):
+        raise ValueError(f"mode: one of \"paragraphs\", \"fixed\", \"sections\" (got {mode!r})")
+    if mode == "sections":
+        return [t for t, _sec in pack_sections(text, cap=cap)]
     units = [p for p in PARA_RE.split(text) if p.strip()] if mode == "paragraphs" \
         else _words_to_units(text, cap)
     out: list[str] = []
@@ -98,6 +100,47 @@ def pack_chunks(text: str, cap: int = CHUNK_CAP, mode: str = "paragraphs") -> li
                 else:
                     out.append(piece)
     return [c for c in ( " ".join(c.split()) for c in out) if c]
+
+
+#: A section heading, as the print editions write them: the Federalist papers carry
+#: `FEDERALIST No. 10`, the Farrand records carry `No. 10`, modern files carry markdown
+#: headings. A section is the unit a reader cites, so a row that lives inside ONE
+#: section can be answered by paper, not by book - the fix for a panel whose gold is a
+#: file+offset span while the corpus reprints the same papers in ten bindings.
+SECTION_RE = re.compile(
+    r"^(?:FEDERALIST\s+No\.\s*\d+|No\.\s*\d{1,3}(?:\s*[-\u2013]\s*\d{1,3})?|#{1,6}\s+.*)$",
+    re.M)
+
+
+def pack_sections(text: str, cap: int = CHUNK_CAP) -> list[tuple[str, str]]:
+    """Rows of at most `cap` characters, each tagged with the SECTION it belongs to.
+
+    Returns [(row, section)] in document order, every character surviving exactly once -
+    the contract `pack_chunks` keeps. A section starts at its heading and runs to the
+    next one, and the heading is the first thing in the segment, so the row that opens a
+    paper CONTAINS its title. Text before the first heading carries section "".
+
+    The section rides into the row's provenance, which is the point: a hit in
+    `DOC/FOUNDING/HAMILT` and a hit in `DOC/FOUNDING/FEDERAL` can then answer for the
+    SAME paper, and the binding stops being a property of the binding.
+    """
+    if cap < 32:
+        raise ValueError(f"chunk cap must be >= 32 (got {cap})")
+    heads = [(m.start(), m.group(0).strip()) for m in SECTION_RE.finditer(text)]
+    out: list[tuple[str, str]] = []
+    if not heads:
+        return [(row, "") for row in pack_chunks(text, cap=cap, mode="paragraphs")]
+    if heads[0][0] > 0:
+        for row in pack_chunks(text[:heads[0][0]], cap=cap, mode="paragraphs"):
+            out.append((row, ""))
+    starts = [h[0] for h in heads] + [len(text)]
+    for i, (at, head) in enumerate(heads):
+        seg = text[at:starts[i + 1]]
+        if not seg.strip():
+            continue
+        for row in pack_chunks(seg, cap=cap, mode="paragraphs"):
+            out.append((row, head))
+    return out
 
 
 def _words_to_units(text: str, cap: int) -> list[str]:
@@ -211,7 +254,7 @@ class Docs:
 
     def index(self, folder, corpus: str, *, klass: str | None = None, scope: str | None = None,
               cap: int = CHUNK_CAP, mode: str = "paragraphs", exts=DEFAULT_EXTS,
-              guard: bool = False) -> dict:
+              guard: bool = False, force: bool = False) -> dict:
         """Index `folder` into rows under `corpus`. Returns the honest tally:
         {files, chunks, skipped, unchanged, removed, seconds, scope, class, corpus}.
         files/chunks/skipped count the WORK this pass did; unchanged counts stat-swept files
@@ -271,12 +314,16 @@ class Docs:
                     row = self.svc.conn.execute(
                         "select size, mtime, sha256 from docs where corpus=%s and path=%s",
                         (corpus, rel)).fetchone()
+                # FORCE (2026-11-02): the chunker MODE is not in the stat key, so a
+                # paragraphs -> sections re-index of an untouched folder is a no-op
+                # sweep. A mode/cap sweep says so out loud.
                 digest = None
-                if row is not None and int(row[0]) == st.st_size and int(row[1]) == _mtime_us(st):
+                if row is not None and not force and int(row[0]) == st.st_size \
+                        and int(row[1]) == _mtime_us(st):
                     n_unchanged += 1
                     continue                            # the morning pass: stat, keep, move on
                 digest = _sha256(p)                     # the authority: cheap gate moved -> hash
-                if row is not None and row[2] == digest:
+                if row is not None and not force and row[2] == digest:
                     with self.svc.lock:                 # touched, not changed: the stamp rides
                         self.svc.conn.execute(
                             "update docs set mtime=%s where corpus=%s and path=%s",
@@ -285,7 +332,12 @@ class Docs:
                     n_unchanged += 1
                     continue
                 text = self._read(p)
-                chunks = pack_chunks(text, cap=cap, mode=mode)
+                # 2026-11-02, the paper-aware mode: 'sections' cuts at the headings the
+                # print editions write, so a row lives inside ONE paper and carries it in
+                # its provenance. 'paragraphs' and 'fixed' carry every row as section "".
+                pairs = (pack_sections(text, cap=cap) if mode == "sections"
+                         else [(c, "") for c in pack_chunks(text, cap=cap, mode=mode)])
+                chunks = [t for t, _s in pairs]
                 doc_sha = digest if digest is not None else _sha256(p)
                 with self.svc.lock:                     # replace, never append: the file's own
                     gone = [r[0] for r in self.svc.conn.execute(   # rows retire together, and the
@@ -298,15 +350,17 @@ class Docs:
                     self.svc._vdirty = True             # unpredicted stamp moves the rebuild
                 collapsed = " ".join(text.split())   # the body the spine's offsets count in -
                 cur = 0                              # the eval harness collapses the same way
-                for i, chunk in enumerate(chunks):
+                for i, (chunk, section) in enumerate(pairs):
                     pos = collapsed.find(chunk, cur)  # anchor it: a cut long word joins with no
                     off = pos if pos >= 0 else cur    # space and a packed paragraph with one, so
-                    self.svc.remember(chunk, scope=scope, source=source, guard=guard, exact=False,
-                                      klass=klass,
-                                      provenance={"file": rel, "corpus": corpus, "offset": off,
-                                                  "n": i, "sha256": doc_sha,
-                                                  "chunk_sha256": hashlib.sha256(
-                                                      chunk.encode("utf-8")).hexdigest()})
+                    prov = {"file": rel, "corpus": corpus, "offset": off,
+                            "n": i, "sha256": doc_sha,
+                            "chunk_sha256": hashlib.sha256(
+                                chunk.encode("utf-8")).hexdigest()}
+                    if section:                      # THE PAPER, not the binding (sections mode)
+                        prov["section"] = section[:80]
+                    self.svc.remember(chunk, scope=scope, source=source, guard=guard,
+                                      exact=False, klass=klass, provenance=prov)
                     cur = off + len(chunk)            # the next row starts here (a cut word) or
                                                       # one char later (the space between rows)
                 with self.svc.lock:
