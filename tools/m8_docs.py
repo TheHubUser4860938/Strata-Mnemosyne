@@ -124,8 +124,14 @@ def main() -> int:
             return 0
         if a.cut is not None:
             from serve.docs import _corpus_class
+            from serve.memory import CLASS_MAX
             pre = (a.cut or _corpus_class(a.corpus)).strip().rstrip("/")
-            got = svc.docs.cutters(a.corpus)
+            # the cutter shelf is "prefix/CODE". A prefix up to CLASS_MAX leaves no room for
+            # "/CODE", so set_class died mid-corpus and left it half-cut (audit D5). Reserve
+            # 1 for the slash and up to 6 for the code: the prefix is trimmed to fit.
+            width = min(6, max(1, CLASS_MAX - 1 - len(pre)))
+            pre = pre[:CLASS_MAX - 1 - width]
+            got = svc.docs.cutters(a.corpus, width=width)
             if not got:
                 print(json.dumps({"corpus": a.corpus, "files": 0,
                                   "error": "no ledger rows for this corpus"}))

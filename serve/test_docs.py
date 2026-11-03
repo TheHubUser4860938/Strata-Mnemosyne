@@ -908,5 +908,112 @@ class RerankArm(unittest.TestCase):
 
 
 
+class AuditFixes(unittest.TestCase):
+    """The 2026-11-03 RAG audit, docs side: each fix pinned by the failure it closes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mem = MemoryService(self.tmp.name)
+        self.root = Path(self.tmp.name) / "kb"
+        self.root.mkdir()
+        (self.root / "book.txt").write_text(
+            "First the title line.\n\nThe body paragraph with the sphere and faction words.\n",
+            encoding="utf-8")
+
+    def tearDown(self):
+        self.mem.close()
+        self.tmp.cleanup()
+
+    def test_d2_a_path_cannot_walk_out_of_the_corpus_root(self):
+        (self.root.parent / "outside.txt").write_text("THE OUTSIDE TEXT not in the corpus.",
+                                                       encoding="utf-8")
+        self.mem.docs.index(self.root, corpus="kb")
+        r = self.mem.docs.read("kb", "../outside.txt", 0, 40)
+        self.assertFalse(r["ok"], "a ../ path is contained, not opened")
+        self.assertIn("outside.txt", r["error"])
+
+    def test_d3_reconcile_fixes_the_ledger_after_a_fold(self):
+        # a second file sharing the first's exact body: the shelf dedups to fewer rows than the
+        # ledger's stamped per-file count; reconcile rewrites the count to the live truth.
+        self.mem.docs.index(self.root, corpus="kb")
+        (self.root / "twin.txt").write_text(
+            "First the title line.\n\nThe body paragraph with the sphere and faction words.\n",
+            encoding="utf-8")
+        self.mem.docs.index(self.root, corpus="kb")
+        led = sum(d["chunks"] for d in self.mem.docs.list("kb"))
+        live = self.mem.conn.execute(
+            "select count(*) from memories where invalid_at is null"
+            " and provenance->>'corpus'='kb'").fetchone()[0]
+        self.mem.conn.commit()
+        self.mem.docs.reconcile("kb")
+        led2 = sum(d["chunks"] for d in self.mem.docs.list("kb"))
+        self.assertEqual(led2, live, "after reconcile the ledger count is the live shelf count")
+
+    def test_d4_a_root_move_invalidates_the_cached_reader(self):
+        self.mem.docs.index(self.root, corpus="kb")
+        self.assertEqual(self.mem.docs.read("kb", "book.txt", 0, 5)["text"], "First")
+        alt = Path(self.tmp.name) / "kb2"
+        alt.mkdir()
+        (alt / "book.txt").write_text("Second root, same name, different bytes.\n", encoding="utf-8")
+        self.mem.docs.set_root("kb", alt)
+        self.assertEqual(self.mem.docs.read("kb", "book.txt", 0, 6)["text"], "Second",
+                         "the reader follows the moved root, not the cached one")
+
+    def test_d5_a_long_prefix_stays_within_the_class_ceiling(self):
+        from serve.memory import CLASS_MAX
+        self.mem.docs.index(self.root, corpus="kb")
+        pre = "DOC/" + "X" * (CLASS_MAX - 4)          # a prefix that fills the ceiling
+        # the tool's --cut logic: reserve 1 slash + up to 6 code, trim the prefix to fit
+        width = min(6, max(1, CLASS_MAX - 1 - len(pre)))
+        pre = pre[:CLASS_MAX - 1 - width]
+        code = next(iter(self.mem.docs.cutters("kb", width=width).values()))
+        shelf = f"{pre}/{code}"
+        self.assertLessEqual(len(shelf), CLASS_MAX, shelf)
+        self.mem.docs.set_class("kb", shelf)          # must not raise
+        self.assertEqual(self.mem.docs.list("kb")[0]["corpus"], "kb")
+
+
+class AuditStore(unittest.TestCase):
+    """The 2026-11-03 RAG audit, store side: F13 (tz offsets) and F15 (idle-in-transaction)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mem = MemoryService(self.tmp.name)
+
+    def tearDown(self):
+        self.mem.close()
+        self.tmp.cleanup()
+
+    def test_f13_a_date_bound_honours_its_timezone(self):
+        from serve.memory import time_bound
+        utc = time_bound("2026-11-03T00:00:00")
+        plus2 = time_bound("2026-11-03T00:00:00+02:00")
+        self.assertEqual(utc - plus2, 7200, "the +02:00 bound is two hours earlier in UTC")
+        self.assertEqual(time_bound("2026-11-03"), utc, "a bare date is still UTC midnight")
+
+    def test_f15_stats_leaves_the_connection_idle_clean(self):
+        self.mem.remember("a fact worth counting")
+        self.mem.stats()
+        # read the status IMMEDIATELY: stats() ends in version()/foreign_vectors()/meta reads
+        # that open a transaction, and the fix commits it. Without the commit the status is intrans.
+        self.assertIn(str(self.mem.conn.info.transaction_status),
+                      ("TransactionStatus.idle", "0"),
+                      "stats() must not leave a snapshot open on the shared connection")
+
+
+    def test_f3_the_map_shows_fact_shelves_before_the_corpus(self):
+        # 30k doc rows across book drawers must not bury the fact shelves in the top-24.
+        for i in range(30):
+            self.mem.remember(f"chunk {i} lorem ipsum dolor sit amet", scope="default",
+                              klass=f"DOC/BOOK{i}", source="doc-index-2026-11-03")
+        for shelf in ("POL", "TECH", "USR"):
+            self.mem.remember(f"a {shelf} fact", scope="user", klass=shelf)
+        m = self.mem.browse("default")
+        names = [d["shelf"] for d in m["shelves"]][:24]
+        self.assertTrue(names[:3] and all(not n.startswith("DOC/") for n in names[:3]),
+                        f"fact shelves lead the map: {names[:4]}")
+        self.assertIn("DOC/BOOK0", names, "the corpus still shows, after the facts")
+
+
 if __name__ == "__main__":
     unittest.main()

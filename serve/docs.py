@@ -41,10 +41,11 @@ CHUNK_CAP = 3900          # remember()'s 4,000-char ceiling minus the whitespace
 ROW_MAX = 4000            # remember()'s hard ceiling; Docs.index clamps a larger --cap here
 PARA_RE = re.compile(r"\n\s*\n+")
 
-# The ledger's DDL, byte-identical to the entry in serve/memory.py's _PG_DDL. The store creates
-# it at startup; an ATTACHING tool (m8_docs against a running server) creates it on first use,
-# so a store that predates the table - every store, until its server's next boot - answers
-# without a migration step. IF NOT EXISTS makes the two owners idempotent against each other.
+# The ledger's DDL. The store creates it at startup; an ATTACHING tool (m8_docs against a
+# running server) creates it on first use, so a store that predates the table - every store,
+# until its server's next boot - answers without a migration step. The two owners converge, not
+# byte-identically: this copy carries the newest column (root), and _ensure() ADD COLUMNs the
+# store's older copy up to it - IF NOT EXISTS makes either order idempotent.
 _DOCS_DDL = """create table if not exists docs(
      corpus text not null,
      path text not null,
@@ -290,6 +291,11 @@ class Docs:
             # read() reports instead of guessing a folder.
             self.svc.conn.execute("alter table docs add column if not exists"
                                   " root text not null default ''")
+            # the corpus-keyed index (audit F15, 2026-11-03) - same statement the store's
+            # _PG_DDL runs, so the attach lane and the server leave the ledger identically indexed.
+            self.svc.conn.execute(
+                "create index if not exists mem_doc_corpus on memories ((provenance->>'corpus'))"
+                " where source like 'doc-index%'")
             self.svc.conn.commit()
 
     def index(self, folder, corpus: str, *, klass: str | None = None, scope: str | None = None,
@@ -457,6 +463,30 @@ class Docs:
         return [{"corpus": r[0], "files": r[1], "chunks": r[2], "indexed_at": str(r[3]),
                  "scope": r[4]} for r in rows]
 
+    def reconcile(self, corpus: str | None = None) -> int:
+        """Rewrite the ledger's per-file `chunks` to the LIVE active-row count (audit D3,
+        2026-11-03). The exact-dup fold retires rows (invalidate, then purge) and the ledger's
+        stamped count does not move with them, so `corpora()`/`list()` and the Docs tile over-
+        report - on this store by 130 (the Gutenberg license tail, shared across books). The
+        ledger is a cache of the truth, not the truth; this re-derives it. Returns files moved."""
+        self._ensure()
+        where = "where invalid_at is null and provenance->>'corpus' is not null"
+        args: list = []
+        if corpus:
+            where += " and provenance->>'corpus'=%s"
+            args = [corpus]
+        with self.svc.lock:
+            live = self.svc.conn.execute(
+                f"select provenance->>'corpus', provenance->>'file', count(*)"
+                f" from memories {where} group by 1,2", args).fetchall()
+            moved = 0
+            for cp, fp, cnt in live:
+                moved += self.svc.conn.execute(
+                    "update docs set chunks=%s where corpus=%s and path=%s and chunks<>%s",
+                    (cnt, cp, fp, cnt)).rowcount
+            self.svc.conn.commit()
+        return int(moved)
+
     def remove(self, corpus: str) -> bool:
         """Retire a corpus: its chunk rows go, its ledger goes. The FILES on disk are the
         territory and stay untouched (the text-plus-routing law: rows are the map).
@@ -537,6 +567,10 @@ class Docs:
             n = self.svc.conn.execute("update docs set root=%s where corpus=%s",
                                       (str(r), corpus)).rowcount
             self.svc.conn.commit()
+        # Drop the cached reader (audit D4, 2026-11-03): reader() builds a DocReader once per
+        # corpus, so after a root move the next read cut the passage out of the OLD folder -
+        # a same-named file on the new mount returned plausible, wrong text with ok:true.
+        self._readers.pop(corpus, None)
         return int(n)
 
     def set_class(self, corpus: str, klass: str, path: str | None = None) -> int:
@@ -704,8 +738,16 @@ class DocReader:
         self.files: dict[str, tuple[int, str]] = {}      # path -> (mtime_us, collapsed)
 
     def body(self, rel: str) -> tuple[str, int]:
-        """The file's collapsed text, and the mtime stamp it was read at."""
-        st = (self.root / rel).stat()
+        """The file's collapsed text, and the mtime stamp it was read at.
+        Contained (audit D2, 2026-11-03): a caller-supplied path (op=docs action=read
+        carries `path` on the wire) resolves inside the corpus root - '../outside.txt'
+        walks the shelf back onto the filesystem, so a client that can POST /memory
+        reads any file the server can open. Resolved-then-compared, so symlinks count."""
+        p = (self.root / rel)
+        rp, rr = p.resolve(), self.root.resolve()
+        if rr not in rp.parents and rp != rr:
+            raise ValueError(f"path {rel!r} is not inside the corpus root {rr}")
+        st = p.stat()
         stamp = _mtime_us(st)
         hit = self.files.get(rel)
         if hit and hit[0] == stamp:
