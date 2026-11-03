@@ -108,8 +108,48 @@ def pack_chunks(text: str, cap: int = CHUNK_CAP, mode: str = "paragraphs") -> li
 #: section can be answered by paper, not by book - the fix for a panel whose gold is a
 #: file+offset span while the corpus reprints the same papers in ten bindings.
 SECTION_RE = re.compile(
-    r"^(?:FEDERALIST\s+No\.\s*\d+|No\.\s*\d{1,3}(?:\s*[-\u2013]\s*\d{1,3})?|#{1,6}\s+.*)$",
-    re.M)
+    r"^(?:"
+    r"THE\s+FEDERALIST\.?\s+No\.\s*[IVXLCDM]+\.?"      # Hamilton's Works: "THE   FEDERALIST.  No.  I."
+    r"|FEDERALIST\s+No\.\s*(?:\d{1,3}|[IVXLCDM]+)\.?"   # the Gutenberg text: "FEDERALIST No. 10"
+    r"|No\.\s*(?:\d{1,3}|[IVXLCDM]+)\.?(?:\s*[-\u2013]\s*\d{1,3}(?:\s*[-\u2013]\s*\d{1,3})?)?"
+    r"|#{1,6}\s+.*"
+    r")\s*$", re.M)        # \s*$ : a print line ends with trailing spaces, and a
+                            # heading that is not recognized is a section nobody finds
+
+ROMAN = re.compile(r"^(M{0,4})(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$")
+_ROMAN_VAL = (("M", 1000), ("CM", 900), ("D", 500), ("CD", 400), ("C", 100), ("XC", 90),
+              ("L", 50), ("XL", 40), ("X", 10), ("IX", 9), ("V", 5), ("IV", 4), ("I", 1))
+
+
+def section_paper(section: str) -> int | None:
+    """The paper NUMBER a section heading names - arabic or roman, from any book.
+
+    The point of tagging a row with its section is that the binding stops mattering:
+    a row in Hamilton's Works headed `THE FEDERALIST. No. X.` and a row in the
+    Gutenberg text headed `FEDERALIST No. 10` name the SAME paper, and a caller who
+    asks for paper 10 should be able to compare them. Returns None for a heading that
+    names no number (a markdown title, "Book II").
+    """
+    if not section:
+        return None
+    m = re.search(r"No\.?\s*([0-9]{1,3}|[IVXLCDM]+)\.?", section, re.I)
+    if not m:
+        return None
+    tok = m.group(1).upper()
+    if tok.isdigit():
+        return int(tok)
+    if not ROMAN.match(tok):
+        return None
+    n, i = 0, 0
+    while i < len(tok):
+        for sym, val in _ROMAN_VAL:
+            if tok.startswith(sym, i):
+                n += val
+                i += len(sym)
+                break
+        else:
+            return None
+    return n or None
 
 
 def pack_sections(text: str, cap: int = CHUNK_CAP) -> list[tuple[str, str]]:

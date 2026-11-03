@@ -507,6 +507,46 @@ class DocsOverHttp(unittest.TestCase):
         self.assertEqual([d["path"] for d in files], ["a.txt"])
 
 
+class SectionPaper(unittest.TestCase):
+    """The section names a PAPER, in any book's typography (2026-11-03)."""
+
+    def test_the_arabic_and_roman_forms_agree_on_the_number(self):
+        from serve.docs import section_paper
+        self.assertEqual(section_paper("FEDERALIST No. 10"), 10)
+        self.assertEqual(section_paper("THE   FEDERALIST.    No.  X."), 10)
+        self.assertEqual(section_paper("No. XIV."), 14)
+        self.assertEqual(section_paper("No. 84"), 84)
+
+    def test_the_print_line_with_trailing_spaces_still_counts(self):
+        """The rule that cost a re-index: Hamilton's Works ends its heading lines with
+        spaces, and `^...$` without trailing whitespace tagged 0 of 508 rows."""
+        from serve.docs import pack_sections
+        text = "THE   FEDERALIST.    No.  I. \n\nTo the people of the State of New York.\n"
+        rows = pack_sections(text, cap=200)
+        self.assertEqual([sec for _t, sec in rows], ["THE   FEDERALIST.    No.  I."], rows)
+
+    def test_a_heading_that_names_no_number_is_still_a_section(self):
+        from serve.docs import section_paper
+        self.assertIsNone(section_paper("# The Federalist"))
+        self.assertIsNone(section_paper("Book II"))
+        self.assertIsNone(section_paper(""))
+
+    def test_a_range_heading_names_its_first_paper(self):
+        from serve.docs import section_paper
+        self.assertEqual(section_paper("No. 22-23"), 22)
+
+    def test_roman_numerals_past_the_basics_parse(self):
+        from serve.docs import section_paper
+        for txt, want in (("No. XLIV.", 44), ("No. LXXVIII.", 78), ("No. XC.", 90),
+                          ("No. I.", 1)):
+            with self.subTest(txt=txt):
+                self.assertEqual(section_paper(txt), want)
+
+    def test_a_junk_roman_string_is_no_paper(self):
+        from serve.docs import section_paper
+        self.assertIsNone(section_paper("No. ABCXYZ"))
+
+
 class Sections(DocIndexStore):
     """The paper-aware chunker (2026-11-02): a row lives inside ONE section."""
 
