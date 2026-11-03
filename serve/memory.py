@@ -1120,9 +1120,10 @@ class MemoryService:
         self.embedder = embedder if embedder is not None else None
         self._vmeta = None                                  # cached (ids, mat, scope, class, ...) or None
         self._vdirty = True
-        self._bm25_n: tuple | None = None                   # cached (n, avgdl) for the lexical arm - the
-                                                            # key is the active set's (count, max id)
-        self._bm25_avgdl: float | None = None               # - _bm25_stats() recomputes when that key moves
+        self._bm25_n: dict = {}                              # cached (n, avgdl) per FAMILY (audit F2):
+                                                             # key "family:all" | "family:user,default[...]";
+                                                             # the value is that family's active (count, max id)
+        self._bm25_avgdl: dict = {}                          # - _bm25_stats() recomputes one family when its key moves
         self._ecount = -1
         self._qc: "OrderedDict[str, object]" = OrderedDict()  # normalized query -> vector, capped at 128
         self._svec: "OrderedDict[str, tuple]" = OrderedDict()  # scope -> (stamp, {row id: vector}), capped at 32
@@ -2353,7 +2354,8 @@ class MemoryService:
         return header + "\n" + "\n".join(lines), len(lines), left, gone
 
     @_heals
-    def _bm25_stats(self) -> tuple[float, float]:
+    def _bm25_stats(self, scopes: list[str] | None = None,
+                    shelf: str | None = None, prefixes: list[str] | None = None) -> tuple[float, float]:
         """(n, avgdl) for the lexical arm - FTS5 computed document stats over the whole table for
         every query; a bare Postgres tsvector column carries no hidden equivalent, so the store
         keeps its own: the active-row count is one cheap probe, and avgdl comes from ts_stat's
@@ -2366,19 +2368,51 @@ class MemoryService:
         that no longer existed, and avgdl is the length-normaliser every bm25 score divides by.
         max(id) moves with every insert (identity), so the pair sees every write this store makes;
         an outside editor that changed a text without inserting or re-stamping stays the accepted
-        caveat of _dedupe_tables' identical law."""
+        caveat of _dedupe_tables' identical law.
+
+        FAMILY-SCOPED (audit F2, 2026-11-03): pass scopes/shelf to measure the corpus the query
+        ADDRESSES, not the whole store. The doc shelf (34,531 chunks, avg 3,066 chars) dragged the
+        store-wide avgdl 15.6 -> 259.8, so every FACT query was length-normalised against book
+        passages: the b*dl/avgdl term for a 16-token fact fell 0.75 -> 0.045, flattening the tf
+        denominator ~3.4x. A fact ask scores facts against facts; a corpus ask scores chunks
+        against chunks. The cache keys per family (None = whole store = the old key, byte-identical
+        for the unfiltered default path). scopes/shelf carry validated names (scope_name, class_name)
+        so the literals below are injection-safe."""
+        fam = "family:all" if not scopes else (
+            "family:" + ",".join(scopes) + (("/" + ",".join(prefixes)) if prefixes else ""))
+        # Two quoting depths for the SAME predicate. The count probe runs inline, where a value
+        # is one quoted pair ('DOC/FOUNDING'); the ts_stat probe embeds the query in a SQL string
+        # literal, where the same value needs two pairs (''DOC/FOUNDING''), because PG's parse of
+        # the outer literal collapses each doubled quote back to one. Scope and class names carry
+        # no quote character (scope_name/class_name validated), so no escaping beyond the wrap.
+        # The shelf predicate is rebuilt from `prefixes` through shelf_sql (the ONE source of the
+        # subtree shape), its three placeholders per prefix (=X, like X.%, like X/%) filled in
+        # order - not search()'s %s-fragment with the placeholders blanked, which under-scopes.
+        def _lit(value: str, nested: bool) -> str:
+            q = "''" if nested else "'"
+            return q + value.replace("'", "''" if nested else "'") + q
+
+        def _where(nested: bool) -> str:
+            w = "invalid_at is null"
+            if scopes:
+                w += " and scope in (" + ",".join(_lit(s, nested) for s in scopes) + ")"
+                if shelf and prefixes:
+                    frag, params = shelf_sql("class", prefixes)
+                    parts = frag.split("%s")
+                    w += " and " + "".join(
+                        head + _lit(val, nested) for head, val in zip(parts, params)) + parts[-1]
+            return w
         with self.lock:
             n, top = self.conn.execute(
-                "select count(*), coalesce(max(id), 0) from memories"
-                " where invalid_at is null").fetchone()
-            if self._bm25_n != (n, top) or self._bm25_avgdl is None:
+                f"select count(*), coalesce(max(id), 0) from memories where {_where(False)}").fetchone()
+            if self._bm25_n.get(fam) != (n, top):
                 tot = self.conn.execute(
-                    "select coalesce(sum(st.nentry), 0) from ts_stat("
-                    "'select ts from memories where invalid_at is null', 'ts') st").fetchone()[0]
+                    f"select coalesce(sum(st.nentry), 0) from ts_stat("
+                    f"'select ts from memories where {_where(True)}', 'ts') st").fetchone()[0]
                 self.conn.commit()
-                self._bm25_avgdl = max(1.0, float(tot) / max(1, n))
-                self._bm25_n = (n, top)
-            return float(n), self._bm25_avgdl
+                self._bm25_n[fam] = (n, top)
+                self._bm25_avgdl[fam] = max(1.0, float(tot) / max(1, n))
+            return float(n), self._bm25_avgdl[fam]
 
     def _bm25(self, rows: list, qtoks: list, dfm: dict, n: float, avgdl: float,
               limit: int) -> list:
@@ -2484,13 +2518,20 @@ class MemoryService:
             # keeps the cap deterministic, and the cap is worst-case honesty: at this store's
             # scale it never binds; a query matching >4000 rows is a different design conversation.
             with self.lock, _rollback_on_error(self.conn):
+                # the cap keeps the best-ranked 4,000 candidates, not the 4,000 lowest ids
+                # (audit F6, 2026-11-03): "liberty" in the founding corpus matches 6,419 rows,
+                # and `order by m.id` showed bm25 only the first 16 of 141 books - a gold
+                # passage in Hume's volume was invisible to the lexical arm. ts_rank_cd is the
+                # cheap candidate FILTER (the law: _bm25 does the real ranking with IDF); with
+                # ties broken by id the set is deterministic, and under the cap a fact query
+                # (which never nears 4,000) is byte-identical to before.
                 cand = self.conn.execute(
                     f"select m.id, m.scope, m.text, m.confidence, m.updated_at, m.class, m.hits,"
                     f" m.ts::text"
                     f" from memories m, to_tsquery('{FTS_CFG}', %s) q"
                     " where m.ts @@ q and m.invalid_at is null and m.scope in ("
                     + ",".join(["%s"] * len(scopes)) + ")" + shelf + bounds
-                    + " order by m.id limit 4000",
+                    + " order by ts_rank_cd(m.ts, q) desc, m.id limit 4000",
                     [match] + scopes + prefixes + bparams).fetchall()
                 # the query's STEMMED tokens in one round trip: to_tsvector runs the SAME parser and
                 # english_stem as the to_tsquery that matched, so the token sets agree by
@@ -2508,12 +2549,28 @@ class MemoryService:
                 # (one @@ over all tokens, unnest, group): measured SLOWER at this store's scale
                 # (26.5 vs 20.7 ms full search, 2026-10-16) - targeted probes beat one union scan
                 # while the token count is small, and MAX_QUERY_WORDS bounds the worst case.
+                # Family-scoped df (audit F2, 2026-11-03): a fact query's idf measures facts, a
+                # corpus query's measures the corpus. Store-wide, 'strata' has df 1,318/35,849 (idf
+                # 5.14, near-unique) while the doc shelf alone says 3.6k/34.5k; 'state' and 'power'
+                # get flattened the other way. The correlated probe runs over the SAME scopes+shelf
+                # the candidates came from (alias mm, the shelf predicate re-bound from m.).
+                df_scope, df_params = "", []
+                if scopes:
+                    df_scope += " and mm.scope in (" + ",".join(["%s"] * len(scopes)) + ")"
+                    df_params += scopes
+                if prefixes:
+                    df_frag, df_shelf_params = shelf_sql("mm.class", prefixes)   # 3 params per prefix
+                    df_scope += " and " + df_frag
+                    df_params += df_shelf_params
+                # placeholder order follows the SQL TEXT: scope, shelf, then the unnest at the end
                 dfm = dict(self.conn.execute(
                     "select t.tok, (select count(*) from memories mm"
-                    " where mm.invalid_at is null and mm.ts @@ to_tsquery('simple', t.tok))"
-                    " from unnest(%s::text[]) t(tok)", (qtoks,)).fetchall()) if qtoks else {}
+                    " where mm.invalid_at is null" + df_scope +
+                    " and mm.ts @@ to_tsquery('simple', t.tok))"
+                    " from unnest(%s::text[]) t(tok)", (*df_params, qtoks)).fetchall()) if qtoks else {}
                 self.conn.commit()
-            rows = self._bm25(cand, qtoks, dfm, *self._bm25_stats(), limit)
+            rows = self._bm25(cand, qtoks, dfm,
+                              *self._bm25_stats(scopes, shelf, prefixes), limit)
         if not rows and self.embedder is None:
             return []
         k = len(rows)
@@ -2692,6 +2749,7 @@ class MemoryService:
         return self.conn.execute(
             "select count(*) from embeddings e where not (true" + cond + ")", args).fetchone()[0]
 
+    @_heals
     def _vec_matrix(self):
         """(ids, mat, scope, class, created, updated, conf) for every ACTIVE row that carries a
         vector, cached; rebuilt when a write dirtied it OR the embedded-count moved (a backfill ran
@@ -2713,8 +2771,11 @@ class MemoryService:
                 + compat + " order by m.id", cargs).fetchall()
             self.conn.commit()
         if not rows:
-            self._vmeta, self._vdirty, self._ecount = None, False, n
-            return None
+            with self.lock:
+                self._vmeta, self._ecount = None, n
+                if not self._vdirty:
+                    self._vdirty = False
+                return None
         mat = np.stack([np.frombuffer(r[1], dtype=np.float32) for r in rows])
         # FIXED-WIDTH COLUMNS ARE A LAW WITH A LENGTH: a numpy 'U24' silently cuts a longer string
         # in half, and the mask below compares the CUT value against the caller's full scope/class -
@@ -2730,7 +2791,19 @@ class MemoryService:
                 "created": np.array([r[4] for r in rows], dtype=np.float64),
                 "updated": np.array([r[5] for r in rows], dtype=np.float64),
                 "conf": np.array([r[6] for r in rows], dtype=np.float32)}
-        self._vmeta, self._vdirty, self._ecount = meta, False, n
+        # Publish under the lock, and only clear _vdirty if nothing dirtied it WHILE the numpy
+        # build ran outside the lock (audit F8b, 2026-11-03): the old unconditional publish
+        # clobbered a concurrent write's _vdirty=True, so a row committed during the ~50 ms build
+        # stayed invisible to the cosine arm until some later write. If the flag moved, keep it
+        # set: the next caller rebuilds and sees the row we did not fetch. The cache is still
+        # published (a caller can read these arrays); only the "fresh" bit is the loser's.
+        with self.lock:
+            self._vmeta = meta
+            self._ecount = n
+            if self._vdirty:
+                return meta                       # dirtied mid-build: next caller rebuilds
+            self._vdirty = False
+        return meta
         return meta
 
     @_heals
@@ -2948,7 +3021,12 @@ class MemoryService:
             return t
         lines += [f"[{i + 1}] ({h['scope']}) {show(h)}" for i, h in enumerate(hits)]
         lines.append("</server_memory>")
-        trimmed, used = [], len(lines[0]) + len(lines[-1]) + 120          # the header and the instruction line cost
+        # The fixed skeleton's cost, MEASURED not guessed (audit F9, 2026-11-03): the old
+        # constant 120 was "the header and the instruction line cost", but the instruction is
+        # 255 chars, so every block ran ~135 chars over max_block_chars - 7% of a 2,000-char
+        # tail budget. lines[0] is the header, lines[1] the instruction, lines[-1] the close
+        # tag; the +8 covers the three joiner newlines they will be joined with.
+        trimmed, used = [], len(lines[0]) + len(lines[1]) + len(lines[-1]) + 8
         shown = []
         for h, line in zip(hits, lines[2:-1]):
             sc = h.get("score")
