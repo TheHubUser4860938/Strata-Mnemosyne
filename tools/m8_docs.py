@@ -89,7 +89,7 @@ def main() -> int:
     ap.add_argument("--corpus", default="", help="the shelf family / scope name (required for index)")
     ap.add_argument("--class", dest="klass", default=None, help="shelf (default DOC/<CORPUS>)")
     ap.add_argument("--scope", default=None, help="store scope (default doc-<corpus>)")
-    ap.add_argument("--mode", choices=("paragraphs", "fixed"), default="paragraphs")
+    ap.add_argument("--mode", choices=("paragraphs", "fixed", "sections"), default="paragraphs")
     ap.add_argument("--cap", type=int, default=3900,
                     help="row ceiling in chars (32-4000; a larger value is clamped to 4000, "
                          "remember()'s ceiling)")
