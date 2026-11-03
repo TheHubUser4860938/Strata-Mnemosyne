@@ -61,15 +61,29 @@ VERDICT = re.compile(r"^\s*(\d+)\s*[.:=)\]]*\s*(JUNK|KEEP)\b[:\- ]*(.*)$", re.M)
 FILE_SECTION = re.compile(r"FILE\s*:", re.M | re.I)
 
 
-def ask_box(prompt, url, max_tokens=700, timeout=180.0):
-    body = json.dumps({"model": "strata", "temperature": 0.0, "max_tokens": max_tokens,
-                       "messages": [{"role": "user",
-                                     "content": "{REASON:off}\n\n" + prompt}]}).encode()
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:      # noqa: S310
-        data = json.loads(resp.read().decode())
-    msg = ((data.get("choices") or [{}])[0].get("message") or {})
-    return str(msg.get("content") or msg.get("reasoning_content") or "")
+def ask_box(prompt, url, max_tokens=700, timeout=180.0, tries=3):
+    """One clerk turn, with the retry the second junkyard pass asked for: a 180 s read
+    timed out at row 8 of 1,986 and took the whole run down. A box that is embedding
+    34k rows on four threads answers slowly; it does not stop answering."""
+    last = None
+    for attempt in range(tries):
+        try:
+            body = json.dumps({"model": "strata", "temperature": 0.0,
+                               "max_tokens": max_tokens,
+                               "messages": [{"role": "user",
+                                             "content": "{REASON:off}\n\n" + prompt}]}).encode()
+            req = urllib.request.Request(url, data=body,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:   # noqa: S310
+                data = json.loads(resp.read().decode())
+            msg = ((data.get("choices") or [{}])[0].get("message") or {})
+            return str(msg.get("content") or msg.get("reasoning_content") or "")
+        except (TimeoutError, OSError, json.JSONDecodeError) as exc:
+            last = exc
+            print(f"  clerk retry {attempt + 1}/{tries}: {type(exc).__name__}", flush=True)
+            time.sleep(5 * (attempt + 1))
+    print(f"  clerk gave up: {type(last).__name__}: {str(last)[:80]}", flush=True)
+    return ""
 
 
 def facts(svc, which: str, limit: int):
@@ -107,6 +121,9 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip rows the review log already carries (a pass that died "
+                         "mid-way continues where it stopped)")
     ap.add_argument("--url", default="http://127.0.0.1:8005/v1/chat/completions")
     ap.add_argument("--out", default="")
     a = ap.parse_args()
@@ -116,8 +133,18 @@ def main() -> int:
     svc = MemoryService(a.dir)
     rows = facts(svc, a.klass, a.limit)
     by_id = {r[0]: r for r in rows}
+    if a.resume and out.exists():
+        seen_ids = set()
+        for line in out.read_text(encoding="utf-8").splitlines():
+            try:
+                seen_ids.add(int(json.loads(line)["id"]))
+            except (ValueError, KeyError):
+                continue
+        rows = [r for r in rows if r[0] not in seen_ids]
+        print(f"resume: {len(seen_ids)} rows already in the log, {len(rows)} to go")
     out = Path(a.out or str(data_dir(ROOT) / "bench" /
-                            f"m4-junkyard-{time.strftime('%Y-%m-%d')}.jsonl"))
+                            f"m4-junkyard-{time.strftime('%Y-%m-%d')}"
+                            + (".jsonl" if not a.resume else "-resume.jsonl")))
     out.parent.mkdir(parents=True, exist_ok=True)
     print(f"queue {len(rows)} fact rows; bar {a.bar}; dups={'on' if a.dups else 'off'}; "
           f"junk={'on' if a.junk else 'off'}; {'APPLY' if a.apply else 'dry run'}; log {out}")
