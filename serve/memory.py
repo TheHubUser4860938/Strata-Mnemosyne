@@ -2930,7 +2930,8 @@ class MemoryService:
         one honest number in the header turns 'I recall' into 'I was shown this')."""
         with self.lock:
             n_active = self.conn.execute(
-                "select count(*) from memories where invalid_at is null").fetchone()[0]
+                "select count(*) from memories where invalid_at is null"
+                " and source not like 'doc-index%'").fetchone()[0]   # facts, not the routing map
             self.conn.commit()
         v, instruction = self.version(), (
             "Long-term memory of this user, kept by the inference server and shared by all their"
@@ -3242,6 +3243,13 @@ class MemoryService:
     def stats(self) -> dict:
         with self.lock:
             memories = self.conn.execute("select count(*) from memories where invalid_at is null").fetchone()[0]
+            # the two families of the RAG side (owner's ask, 2026-11-03, from the card reading
+            # FACTS 35,979): facts are what the server REMEMBERS, doc chunks are the corpus's
+            # ROUTING MAP - 34,661 map rows made 1,318 memories look like 36k. The Memory page
+            # and the block header count facts; the chunks get a tile of their own.
+            doc_chunks = self.conn.execute(
+                "select count(*) from memories where invalid_at is null"
+                " and source like 'doc-index%'").fetchone()[0]
             by_scope = dict(self.conn.execute(
                 "select scope, count(*) from memories where invalid_at is null group by scope").fetchall())
             by_class = {(r[0] or "unclassified"): r[1] for r in self.conn.execute(
@@ -3256,8 +3264,9 @@ class MemoryService:
             pending = self.conn.execute("select count(*) from turns where processed=0").fetchone()[0]
             turns = self.conn.execute("select count(*) from turns").fetchone()[0]
             self.conn.commit()
-        return {"version": self.version(), "memories": memories, "by_scope": by_scope,
-                "by_class": by_class,
+        return {"version": self.version(), "memories": memories,
+                "facts": memories - doc_chunks, "doc_chunks": doc_chunks,
+                "by_scope": by_scope, "by_class": by_class,
                 "turns": turns, "turns_pending": pending, "inject": self.inject,
                 "max_memories": self.max_memories, "invalid": invalid,
                 "dedup_recall": self.dedup_recall,
