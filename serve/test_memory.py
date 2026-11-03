@@ -414,6 +414,56 @@ class Store(unittest.TestCase):
         self.assertEqual({t["id"]: t["injected"] for t in self.mem.pending_turns()}[nid], [4])
 
 
+class RankingFamilies(unittest.TestCase):
+    """The audit batch of 2026-11-03: facts and document chunks are two families, and the
+    lexical arm now measures each against its own corpus (F2) and reaches the whole corpus
+    under the candidate cap (F6), not just its oldest files."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mem = MemoryService(self.tmp.name)
+        # two long doc rows and one short fact sharing a rare word; the docs are scope doc-x
+        long = "glimmery " + "lorem ipsum dolor sit amet " * 120      # ~3,000 chars
+        self.mem.remember(long, scope="doc-x", klass="DOC/X", source="doc-index-2026-11-03")
+        self.mem.remember(long + " tail", scope="doc-x", klass="DOC/X", source="doc-index-2026-11-03")
+        self.fact = self.mem.remember("glimmery short fact about strata", scope="user")["id"]
+
+    def tearDown(self):
+        self.mem.close()
+        self.tmp.cleanup()
+
+    def test_bm25_stats_are_family_scoped(self):
+        # F2: the fact family (short rows) has a small avgdl; the doc family (long rows) a big one.
+        n_all, avg_all = self.mem._bm25_stats()
+        n_f, avg_f = self.mem._bm25_stats(scopes=["user", "default"])
+        n_d, avg_d = self.mem._bm25_stats(scopes=["user", "doc-x"])
+        self.assertLess(avg_f, avg_d, "facts are measured against facts, chunks against chunks")
+        self.assertEqual(n_f, 1, "the fact family is the one short row")
+        self.assertEqual(n_all, n_f + n_d - 1, "the whole store counts the shared user row once")
+
+    def test_a_fact_query_is_not_length_flattened_by_the_doc_shelf(self):
+        # F2 end to end: a fact ask returns the fact; store-wide avgdl used to flatten its tf.
+        hits = self.mem.search("glimmery strata", scope="default", limit=3, semantic=False)
+        self.assertIn(self.fact, [h["id"] for h in hits], "the short fact survives the long shelf")
+
+    def test_the_candidate_cap_keeps_the_best_rows_not_the_oldest(self):
+        # F6: with more than the 4,000-row cap matching, the set kept is the best-ranked, not the
+        # lowest ids. Bulk-insert 4,100 filler rows that all match 'commonword' (low ids, weak
+        # one-term match), then a strong needle at a HIGH id; under `order by m.id` the needle
+        # falls past the cap, under `order by ts_rank_cd desc` it survives and wins.
+        with self.mem.lock:
+            self.mem.conn.execute(
+                "insert into memories(scope,text,source,confidence,created_at,updated_at,class)"
+                " select 'user', 'commonword filler ' || g, 'manual', 0.8,"
+                " now(), now(), '' from generate_series(1, 4100) g")
+            self.mem.conn.commit()
+        self.mem.remember("commonword zzzthebest unique needle", scope="user")
+        hits = self.mem.search("commonword zzzthebest unique needle", scope="default",
+                               limit=3, semantic=False)
+        self.assertTrue(hits and "zzzthebest" in hits[0]["text"],
+                        "the rank-ordered cap surfaces the best match, not the lowest id")
+
+
 class PerTurnRecall(unittest.TestCase):
     """Gate-1's fix (docs/MEMORY_CORE.md "Phase 2"): recall must FOLLOW the conversation, but the
     pinned head cannot move - at 184k tokens with 99.9% prefix reuse, one changed head byte costs a
@@ -481,14 +531,18 @@ class PerTurnRecall(unittest.TestCase):
         self.assertEqual(c1["hits"], c2["hits"])
 
     def test_tail_budget(self):
-        small = MemoryService(self.tmp.name + "/small", turn_block_chars=600)
+        # 750 fits exactly ONE ~333-char fact over the ~336-char skeleton (header+instruction+
+        # close), not two - the budget is now spent against the MEASURED skeleton (F9, 2026-11-03),
+        # not the guessed 120 that let a 600-char tail run ~735. Intent unchanged: keep the
+        # ranked-first fact, drop the rest, stay under budget.
+        small = MemoryService(self.tmp.name + "/small", turn_block_chars=750)
         small.remember("alpha zebraquartz fact " + "word " * 60, scope="user")
         small.remember("beta zebraquartz fact " + "word " * 60, scope="user")
         m = [{"role": "user", "content": "alpha zebraquartz?"}, {"role": "assistant", "content": "x"},
              {"role": "user", "content": "beta zebraquartz now?"}]
         tb, tsh = small.turn_block_for(m, "default", [])
         self.assertEqual(len(tsh), 1, "the budget keeps the ranked-first fact and drops the rest")
-        self.assertLess(len(tb), 700, "the tail block stays small")
+        self.assertLess(len(tb), 800, "the tail block stays small")
         tiny = MemoryService(self.tmp.name + "/tiny", turn_block_chars=200)
         tiny.remember("gamma zebraquartz fact " + "word " * 60, scope="user")
         tb2, tsh2 = tiny.turn_block_for(m, "default", [])
