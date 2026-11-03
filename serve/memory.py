@@ -714,6 +714,18 @@ def time_bound(value) -> float | None:
         return float(s)
     except ValueError:
         pass
+    # ISO with an offset (audit F13, 2026-11-03): the old `s[:19]` slice dropped the zone, so
+    # `?since=2026-11-03T00:00:00+02:00` was read as UTC midnight - a two-hour shift that moved
+    # a day's rows in and out of a bounded browse. fromisoformat (3.11+) honors the offset; a
+    # naive string is still UTC midnight, so the common path is byte-identical.
+    try:
+        dt = datetime.datetime.fromisoformat(s)
+    except ValueError:
+        dt = None
+    if dt is not None:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.timestamp()
     for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
         try:
             return datetime.datetime.strptime(s[:19], fmt).replace(
@@ -862,6 +874,12 @@ _PG_DDL: tuple[str, ...] = (
          chunks integer not null default 0,
          indexed_at timestamptz,
          primary key (corpus, path))""",
+    # The chunk rows are keyed to their corpus inside provenance, and the two verbs that move a
+    # whole corpus (remove(), the per-file replace) filter on provenance->>'corpus'. Over 34k
+    # rows that was a full scan (audit F15, 2026-11-03); this partial expression index covers
+    # only the doc rows, so facts keep their lean heap.
+    "create index if not exists mem_doc_corpus on memories ((provenance->>'corpus'))"
+    " where source like 'doc-index%'",
     """create table if not exists carts(
          name text primary key,
          file text not null,
@@ -1650,7 +1668,13 @@ class MemoryService:
             return None                     # ingest quadratic (see _scope_vecs)
         tab = self._dedupe_tables()
         df = tab["df"]
-        bar = max(3, len(tab["toks"]) // 50)
+        # Capped (audit F5, 2026-11-03): the bar was max(3, rows//50), so the doc shelf drove it
+        # 3 -> 716. A payload of "every token with df <= 716" is nearly the whole token set, so
+        # two distinct chunks sharing the Gutenberg boilerplate collapse on write. The read path
+        # caps at 5; the write path stays stricter (the docstring's law: a missed merge costs a
+        # slot, a false one hides a fact) but bounded - 8 is the ceiling, and small stores are
+        # byte-identical (rows//50 < 8 until 400 rows).
+        bar = min(8, max(3, len(tab["toks"]) // 50))
         cand = []
         for rid, rtext, _rclass in same:
             v = vecs.get(rid)
@@ -2672,9 +2696,14 @@ class MemoryService:
             where += " and m.created_at <= to_timestamp(%s)"
             params.append(float(until))
         with self.lock:
+            # Facts first on the map (audit F3, 2026-11-03): ordering by row-count alone let the
+            # DOC/* drawers (34k chunks across 141 book cutters) crowd the top-24 and bury the
+            # fact shelves a reader came to read. A doc shelf sorts after the fact shelves, each
+            # group still biggest-first; the top-24 window now shows the library, not one corpus.
             shelves = self.conn.execute(
                 f"select coalesce(m.class, ''), count(*), max(m.created_at) from memories m"
-                f" where {where} group by 1 order by 2 desc, 1", params).fetchall()
+                f" where {where} group by 1"
+                f" order by (coalesce(m.class, '') like 'DOC/%%') asc, 2 desc, 1", params).fetchall()
             rows = self.conn.execute(
                 f"select m.id, coalesce(m.class, ''), m.text, m.confidence, coalesce(m.hits, 0),"
                 f" m.created_at from memories m where {where}"
@@ -3342,7 +3371,7 @@ class MemoryService:
             pending = self.conn.execute("select count(*) from turns where processed=0").fetchone()[0]
             turns = self.conn.execute("select count(*) from turns").fetchone()[0]
             self.conn.commit()
-        return {"version": self.version(), "memories": memories,
+        out = {"version": self.version(), "memories": memories,
                 "facts": memories - doc_chunks, "doc_chunks": doc_chunks,
                 "by_scope": by_scope, "by_class": by_class,
                 "turns": turns, "turns_pending": pending, "inject": self.inject,
@@ -3396,6 +3425,13 @@ class MemoryService:
                 "db": self.db_path,
                 "dir": self.directory}    # the store dir - what tools/attach() needs (the tools'
                                           # native twin of the old stats.db file path)
+        # Close the read transaction the trailing version()/foreign_vectors()/meta reads opened
+        # (audit F15, 2026-11-03): stats() built the dict OUTSIDE the lock's commit and left the
+        # shared connection idle-in-transaction until the next caller committed - a long-lived
+        # snapshot between requests. One commit returns it to idle-clean, then hand back the dict.
+        with self.lock:
+            self.conn.commit()
+        return out
 
     @property
     def docs(self):

@@ -463,6 +463,29 @@ class RankingFamilies(unittest.TestCase):
         self.assertTrue(hits and "zzzthebest" in hits[0]["text"],
                         "the rank-ordered cap surfaces the best match, not the lowest id")
 
+    def test_the_write_dupe_bar_stays_capped_on_a_big_store(self):
+        """F5: the bar was max(3, rows//50); past 400 rows it grows, so a shared token of
+        medium frequency joins the payload and two distinct-subject rows collapse. Capped at
+        8, a token of df 10 is NOT payload, the subjects decide it, and both survive."""
+        v = [1.0, 0.0, 0.0, 0.0]
+        self.mem.embedder = StubEmbedder({
+            "KZKX midfreq alpha broadcast": v, "KCMI midfreq alpha broadcast": v})
+        with self.mem.lock:
+            self.mem.conn.execute(
+                "insert into memories(scope,text,source,confidence,created_at,updated_at,class)"
+                " select 'user', 'filler prose ' || g, 'manual', 0.8, now(), now(), ''"
+                " from generate_series(1, 600) g")          # rows//50 = 12 > 8 (the old bar)
+            # ten rows carry 'midfreq' -> df 10: payload under the old bar (<=12), not under 8
+            self.mem.conn.execute(
+                "insert into memories(scope,text,source,confidence,created_at,updated_at,class)"
+                " select 'user', 'midfreq note ' || g, 'manual', 0.8, now(), now(), ''"
+                " from generate_series(1, 10) g")
+            self.mem.conn.commit()
+        self.mem._dcache = None                              # force the token table to rebuild
+        a = self.mem.remember("KZKX midfreq alpha broadcast", scope="user", guard=True)["id"]
+        b = self.mem.remember("KCMI midfreq alpha broadcast", scope="user", guard=True)["id"]
+        self.assertNotEqual(a, b, "distinct subjects survive the write-dupe guard at scale")
+
 
 class PerTurnRecall(unittest.TestCase):
     """Gate-1's fix (docs/MEMORY_CORE.md "Phase 2"): recall must FOLLOW the conversation, but the
