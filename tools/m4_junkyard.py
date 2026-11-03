@@ -133,9 +133,9 @@ def main() -> int:
     svc = MemoryService(a.dir)
     rows = facts(svc, a.klass, a.limit)
     by_id = {r[0]: r for r in rows}
-    out = Path(a.out or str(data_dir(ROOT) / "bench" /
-                            f"m4-junkyard-{time.strftime('%Y-%m-%d')}"
-                            + (".jsonl" if not a.resume else "-resume.jsonl")))
+    suffix = "-resume.jsonl" if a.resume else ".jsonl"
+    out = Path(a.out or str(data_dir(ROOT) / "bench"
+                            / f"m4-junkyard-{time.strftime('%Y-%m-%d')}{suffix}"))
     out.parent.mkdir(parents=True, exist_ok=True)
     if a.resume and out.exists():
         seen_ids = set()
