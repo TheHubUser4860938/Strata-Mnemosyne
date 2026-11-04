@@ -61,6 +61,8 @@ from gate1_driver import hit, norm                                    # the stri
 COLD_PREAMBLE = ("Answer the question with the shortest exact answer - a name, number, date, "
                  "or short phrase. If you do not know, answer exactly: idk. No guessing, no "
                  "sentences, no explanation.\n\nQuestion:")
+COLD_PROBE = f"{COLD_PREAMBLE}\nWhat is the capital of France?"   # the geometry probe's shape:
+# exactly what score_batch renders for a cold ask, so the measured delta is the delta it spends
 _EXTRACT_HEAD = (
     "You are scanning one work conversation for durable facts worth remembering. List up to "
     "{k} facts that a fresh assistant session could NOT already know: personal details about "
@@ -686,6 +688,69 @@ def fact_class(fact: str, scope: str, lane: str = "fact") -> str:
     return "USR" if scores["USR"] >= 2 else ""
 
 
+# ---- the geometry bank (instrument fix 2026-11-04) -------------------------------------------
+# The cold scorer asks with `want = local render + delta` and VOIDs any ask whose prompt_tokens
+# is not exactly that. The delta is what THIS boot charges on top of a template render, and it
+# moves between boots: +7 for the reason-modes directive (2026-10-17), +42 for the boot's own
+# head (the 2026-10-30 scar), +49 on the heretic boot (2026-11-01, measured per tick all week).
+# The probe was ONE 1-token completion with a 30 s timeout, and its failure path returned 0 -
+# the comment said "want stays banked" and there was no bank. Measured: every void of the
+# 2026-11-03 18:46 tick was `ptok - expect == 49` (234 of 234), so 78 candidates came back
+# UNSCORED, the blind-gate law left the window unmarked, and the tick spent 60 extracts and
+# 234 cold asks to mark nothing. On 2026-10-31, 15 of 19 runs lost the probe and the day
+# drained 59 turns. A transport hiccup should cost a probe, not a window.
+def geom_bank_path(state_dir, model: str) -> Path:
+    """The bank for ONE model id's prompt overhead: the number belongs to the boot that
+    measured it, so a foreign boot's constant is not spent here (the instrument-freeze law)."""
+    return Path(state_dir) / f"geom_{re.sub(r'[^A-Za-z0-9_.-]', '_', model)}.json"
+
+
+def probe_delta(ptok_of, render_of, probe, state_dir, model: str, *, retries: int = 2,
+                pause: float = 2.0, log=None) -> tuple[int, str]:
+    """(delta, source): what the boot charges over a local render, on the cold shape the gate
+    scores. `ptok_of(content)` is one 1-token completion (None = transport failure);
+    `render_of(probe)` is the local chat-template render (token ids). source is
+    "measured" (and banked for the next blind tick), "banked" (the probe could not reach the
+    engine, so the last honest constant for THIS model id carries the window), or "none"
+    (nothing measured and nothing banked - the old 0). Never raises: a sweep must not stall on
+    its own instrument, and a blind window is recoverable, a dead tick is not."""
+    def note(msg):
+        if log:
+            log(msg, flush=True)
+
+    ids: list = []
+    try:
+        ids = list(render_of(probe) or [])
+    except Exception as e:                                  # a missing tokenizer is a blind probe
+        note(f"[geom] local render failed ({e!r}) - no delta to subtract")
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            boot = ptok_of("{REASON:off}\n\n" + probe)      # the channel ask() uses
+        except Exception as e:
+            boot = None
+            note(f"[geom] probe attempt {attempt} raised {e!r}")
+        if boot is not None and ids:
+            delta = int(boot) - len(ids)
+            try:                                            # bank it: this is the whole point
+                p = geom_bank_path(state_dir, model)
+                tmp = p.with_name(p.name + ".tmp")          # NOT with_suffix: model ids carry dots
+                tmp.write_text(json.dumps({"model": model, "delta": delta, "at": time.strftime("%F %T"),
+                                           "probe_tokens": len(ids)}), encoding="utf-8")
+                os.replace(tmp, p)
+            except OSError as e:                            # an unwritten bank loses a retry, not a window
+                note(f"[geom] bank unwritten ({e!r}) - measurement still spent this tick")
+            return delta, "measured"
+        if attempt < max(1, retries) and pause:
+            time.sleep(pause)                               # the engine is busy; give it a moment
+    try:
+        bank = json.loads(geom_bank_path(state_dir, model).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0, "none"
+    if bank.get("model") == model and isinstance(bank.get("delta"), int):
+        return int(bank["delta"]), "banked"
+    return 0, "none"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8005")
@@ -846,24 +911,25 @@ def main():
     # WHOLE gap - boot count minus local render, on the cold shape the gate actually scores - which
     # is the quantity `want` needs, not merely the directive's share of it.
     def boot_delta():
+        """The live adapter: the two instruments the probe needs are main()'s, the policy -
+        retry, bank, spend the bank - is probe_delta's, where the tests can reach it."""
         def ptok_of(content):
             body = {"model": model, "messages": [{"role": "user", "content": content}],
                     "temperature": 0.8, "reasoning_effort": "off", "max_tokens": 1, "stream": False}
             st, r = http(url + "/v1/chat/completions", body,
                          headers={"X-Strata-Memory": "off"}, timeout=30)
             return (r.get("usage") or {}).get("prompt_tokens") if st == 200 else None
-        probe = f"{COLD_PREAMBLE}\nWhat is the capital of France?"     # the shape score_batch sends
-        ids, _ = live_render(tok, tpl, [{"role": "user", "content": probe}], "off")
-        boot = ptok_of("{REASON:off}\n\n" + probe)                     # the channel ask() uses
-        if boot is None or not ids:
-            print("[geom] overhead probe failed (transport) - want stays banked", flush=True)
-            return 0
-        return boot - len(ids)
+
+        def render_of(p):
+            ids, _ = live_render(tok, tpl, [{"role": "user", "content": p}], "off")
+            return ids
+
+        return probe_delta(ptok_of, render_of, COLD_PROBE, state, model, log=print)
 
     stored = {"FILL": 0, "STABILIZE": 0, "CORRECT": 0, "DONT-STORE": 0}
     unscored = 0
-    ddelta = 0 if (a.dry_run or a.extract_only) else boot_delta()
-    print(f"[geom] prompt overhead measured this boot (boot count - local render): {ddelta:+d} tok",
+    ddelta, dsrc = (0, "none") if (a.dry_run or a.extract_only) else boot_delta()
+    print(f"[geom] prompt overhead {dsrc} this boot (boot count - local render): {ddelta:+d} tok",
           flush=True)
     review: list[str] = []
     store_dir = stats.get("dir") or (os.path.dirname(db_path) if db_path else "")
