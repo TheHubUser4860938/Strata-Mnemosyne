@@ -42,7 +42,7 @@ def ask(q, graft=None, max_tokens=24):
     ms = (time.perf_counter() - t0) * 1000
     u = out.get("usage") or {}
     return {"prompt_tokens": u.get("prompt_tokens"), "completion_tokens": u.get("completion_tokens"),
-            "ms": round(ms), "answer": (out.get("choices") or [{}])[0].get("message", {}).get("content", "")[:120]}
+            "ms": round(ms), "answer": ((out.get("choices") or [{}])[0].get("message") or {}).get("content") or ""}
 
 
 def main():
@@ -57,6 +57,7 @@ def main():
             for arm, graft in (("fresh", None), ("graft", a.graft)):
                 for qi, q in enumerate(PANEL):
                     r = ask(q, graft=graft)
+                    r["answer"] = r["answer"][:120]
                     r.update(arm=arm, rep=rep, q=qi, graft_name=graft or "")
                     fh.write(json.dumps(r) + "\n")
                     fh.flush()
