@@ -57,6 +57,7 @@ sys.path.insert(0, str(ROOT / "spikes" / "window"))
 sys.path.insert(0, str(ROOT / "spikes" / "d2_dissect"))
 from venue_render import load_tokenizer, load_template, live_render   # server-exact render
 from gate1_driver import hit, norm                                    # the strict scorer
+from idle_queue import IdleQueue, POLL_S                               # coalescing idle-queue (--queue)
 
 COLD_PREAMBLE = ("Answer the question with the shortest exact answer - a name, number, date, "
                  "or short phrase. If you do not know, answer exactly: idk. No guessing, no "
@@ -767,6 +768,15 @@ def main():
                          "not quiet-at-the-instant (2026-10-16: the instant version fired into "
                          "every conversational gap and cost the real turns their KV reuse)")
     ap.add_argument("--batches", type=int, default=0, help="--sweep: stop after N batches (0 = forever)")
+    ap.add_argument("--queue", action="store_true",
+                    help="--sweep: coalesce drain requests into ONE slot per key (newest snapshot "
+                         "wins) and gate on a settle window instead of the full --idle-window, with "
+                         "an age ceiling that dispatches anyway. Off = today's behaviour exactly.")
+    ap.add_argument("--settle", type=float, default=15.0,
+                    help="--queue: seconds of engine quiet that counts as settled "
+                         "(two back-to-back prompts must not look idle; a coffee break must)")
+    ap.add_argument("--queue-max-age", type=float, default=1800.0,
+                    help="--queue: dispatch a held request past this age even while the engine is busy")
     ap.add_argument("--extract-only", action="store_true", help="smoke the extractor, skip cold-score")
     ap.add_argument("--no-date", action="store_true",
                     help="the CONTROL arm: extract with the pre-grounding prompt, byte-identical to the "
@@ -1103,6 +1113,10 @@ def main():
     drained = fails = 0
     batch = 0
     marked_total = 0
+    iqueue = IdleQueue(state / "idle_queue.json", settle=a.settle, max_age=a.queue_max_age) if a.queue else None
+    if iqueue is not None:
+        print(f"idle-queue on: settle {a.settle:.0f}s, max age {a.queue_max_age:.0f}s, "
+              f"{iqueue.pending()} slot(s) restored", flush=True)
     wmark_c = wmark_t = 0          # window watermarks into candidates / processed_ids
     batch_start = time.time()     # sibling protection for supersede: a correction's target must
     while True:                   # predate this batch - candidates from one sweep must not eat
@@ -1123,7 +1137,20 @@ def main():
             busy = ((act.get("in_flight") or 0) > 0 or bool(svc.get("busy"))
                     or (svc.get("queued") or 0) > 0)
             quiet = time.time() - (act.get("last_request_at") or 0)
-            if busy or quiet < a.idle_window:
+            if iqueue is not None:
+                # One slot per key, newest snapshot wins (the shape is Hermes'
+                # agent/review_idle_queue.py:1-13): ten timer ticks that all want
+                # a drain cost ONE drain, and a slot aged past --queue-max-age
+                # dispatches through a busy spell so a working day cannot starve
+                # the shelf. The 240 s gate stays the law when the flag is off.
+                iqueue.submit("drain", {"requested_at": time.time(), "quiet": round(quiet, 1)})
+                if not iqueue.due(quiet_for=None if not busy else quiet):
+                    print(f"idle-queue holding: {quiet:.0f}s quiet (wants settle {a.settle:.0f}) "
+                          f"- sweep waits", flush=True)
+                    time.sleep(min(a.interval, POLL_S))
+                    continue
+                iqueue.take("drain")
+            elif busy or quiet < a.idle_window:
                 print(f"engine busy or only {quiet:.0f}s quiet (wants {a.idle_window}) "
                       f"- sweep waits", flush=True)
                 time.sleep(a.interval)
