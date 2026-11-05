@@ -8576,6 +8576,18 @@ def graft_mark(svc, headers, req):
     except Exception:                                    # the ledger is a pointer: it never kills a request
         rows = []
     gfile = str((rows[0] if rows else {}).get("file") or "")
+    if not gfile:
+        # B4 (2026-11-05), the cache-parity fork: a background turn may graft a SAVED
+        # CONVERSATION by its vault name, not only a minted cart. Save slot 0 once
+        # (POST /slots/0?action=save {"filename": NAME}); every fork request that carries
+        # that name begins on the parent's cached prefix bytes - the engine reads and
+        # validates the file and writes no device byte, so the parent's conversation in
+        # flight is untouched (stage_graft's own claim). Hermes measured ~26% end-to-end
+        # on this shape (background_review.py:979, issue #25322 / PR #17276). The cart
+        # rule applies one floor wider: an unknown name marks nothing - additive, never
+        # a silent substitution.
+        if not slot_filename_problem(graft_name) and os.path.exists(os.path.join(svc.slot_save_path, graft_name)):
+            gfile = graft_name
     if gfile:
         req["strata_graft"] = os.path.join(svc.slot_save_path, gfile)
 
