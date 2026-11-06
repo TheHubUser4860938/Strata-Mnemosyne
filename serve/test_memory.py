@@ -2133,19 +2133,23 @@ class WriteCacheFastPaths(unittest.TestCase):
         finally:
             m.close()
 
-    def test_the_guard_still_sees_every_row_of_its_own_scope(self):
-        """Scope-local vectors must not narrow the guard: a row in the SAME scope is a candidate even
-        when the store holds other scopes, and a row in ANOTHER scope never is."""
+    def test_the_guard_sees_every_row_of_the_store(self):
+        """Cross-scope law (2026-11-06): a row in ANY scope is a candidate - the census found
+        nine exact-text pairs riding `user` beside `default`, and the block serves both."""
         m = self.mem_with("station kzq1 is licensed to Terrytown",
                           "station kzq1 is licensed",
                           "station kzq7 is licensed to Terrytown")
         try:
-            m.remember("station kzq1 is licensed to Terrytown", scope="alpha")
+            a = m.remember("station kzq1 is licensed to Terrytown", scope="alpha")
             m.remember("station kzq7 is licensed to Terrytown", scope="beta")
             got = m.remember("station kzq1 is licensed", scope="alpha")
             self.assertEqual(got["deduped"], "semantic", "same scope: the guard still fires")
             other = m.remember("station kzq1 is licensed", scope="beta")
-            self.assertFalse(other["deduped"], "the other scope's row is not this scope's business")
+            self.assertEqual(other["deduped"], "semantic",
+                             "the other scope's row is this scope's business: the weaker "
+                             "phrasing folds into the alpha carrier, not into a beta slot")
+            self.assertEqual(other["id"], got["id"], "and it folds into the SAME carrier - "
+                                                     "one fact, one row, whatever the scopes")
             self.assert_cache_equals_rebuild(m, scopes=("alpha", "beta"))
         finally:
             m.close()
@@ -4342,5 +4346,58 @@ class TestStaleBootState(unittest.TestCase):
         self.assertIsNone(_memory_mod.prune_dead_handles(self.dir))
         self.assertEqual(Path(self.handles).read_text(encoding="utf-8"), "not json")
 
+
+
+class CrossScopeDedupe(unittest.TestCase):
+    """The 2026-11-06 census: nine exact-text pairs rode the store as two rows each - one
+    in `user` (the Odysseus import), one in `default` (the harvest) - because the write
+    guard's candidate set was one scope. The recall block renders the scopes side by side,
+    so a fact that lives in two scopes is served twice. Dedup crossed the wall the same
+    day; these tests keep it down."""
+
+    V = [1.0, 0.0, 0.0, 0.0]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def mem_with(self, *texts):
+        stub = StubEmbedder({t: self.V for t in texts})
+        return MemoryService(self.tmp.name + str(len(texts)) + str(hash(texts)), embedder=stub)
+
+    def test_exact_text_in_a_second_scope_folds_into_the_first(self):
+        m = self.mem_with("the user manages their own linux kernel updates")
+        try:
+            a = m.remember("the user manages their own linux kernel updates", scope="user")
+            b = m.remember("the user manages their own linux kernel updates", scope="default")
+            self.assertTrue(b.get("deduped"), "a scope change is not a new fact")
+            self.assertEqual(b["id"], a["id"], "the carrier keeps the slot")
+            self.assertEqual(m.stats()["memories"], 1)
+        finally:
+            m.close()
+
+    def test_near_dupe_in_a_second_scope_suppresses(self):
+        m = self.mem_with("the flibber gauge reads torque at the works",
+                          "the flibber gauge reads torque")
+        try:
+            a = m.remember("the flibber gauge reads torque at the works", scope="user")
+            b = m.remember("the flibber gauge reads torque", scope="default")
+            self.assertEqual(b["deduped"], "semantic", "the payload law decides across scopes too")
+            self.assertEqual(b["id"], a["id"])
+        finally:
+            m.close()
+
+    def test_distinct_subjects_still_land_in_both_scopes(self):
+        m = self.mem_with("station kzq1 is licensed to Terrytown",
+                          "station kzq2 is licensed to Seward")
+        try:
+            a = m.remember("station kzq1 is licensed to Terrytown", scope="user")
+            b = m.remember("station kzq2 is licensed to Seward", scope="default")
+            self.assertNotEqual(a["id"], b["id"], "cross-scope is not cross-the-board merging")
+            self.assertEqual(m.stats()["memories"], 2)
+        finally:
+            m.close()
 if __name__ == "__main__":
     unittest.main(verbosity=2)

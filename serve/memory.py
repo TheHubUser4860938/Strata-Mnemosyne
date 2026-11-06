@@ -1145,10 +1145,12 @@ class MemoryService:
         self._ecount = -1
         self._qc: "OrderedDict[str, object]" = OrderedDict()  # normalized query -> vector, capped at 128
         self._svec: "OrderedDict[str, tuple]" = OrderedDict()  # scope -> (stamp, {row id: vector}), capped at 32
-        #   ^ the write guard's candidate set is ONE scope (the same boundary exact-text dedup uses), so
-        #   it reads its scope's vectors instead of the whole-store matrix: rebuilding the matrix per
-        #   write is what made ingest quadratic - measured 2026-10-14, 7 ms per write at 2,589 rows and
-        #   ~180 ms at ~10k. Search still uses the whole-store matrix: a query spans every scope.
+        #   ^ the per-scope vector cache the offline cutters (m4_shelfcut) read. The WRITE GUARD
+        #   left it on 2026-11-06: its candidate set is now every active non-doc row, because the
+        #   census found the same sentences shelved twice - once in `user` (the Odysseus import),
+        #   once in `default` (the harvest) - and the scope wall let nine exact-text pairs ride.
+        #   It reads the read path's cached matrix (one build, shared by search); the 2026-10-14
+        #   quadratic note stands for the token table, which still folds per write.
         self._dcache: dict | None = None                    # _dedupe's (toks, df, bar, payload memo)
         self._dkey: tuple | None = None                     # active-row stamp the table was built at
         # near-dupe suppression at recall (measured on the live store 2026-10-12: the web venue watched
@@ -1485,8 +1487,8 @@ class MemoryService:
         with self.lock:
             if exact:
                 same = self.conn.execute(
-                    "select id, text, class from memories where scope=%s and invalid_at is null",
-                    (scope,)).fetchall()
+                    "select id, text, class from memories where invalid_at is null"
+                    " and coalesce(scope,'') not like 'doc%'").fetchall()   # every scope:
                 hit = next((r for r in same if norm_text(r[1]) == norm_text(text)), None)
             else:
                 same, hit = [], None      # the document index: every chunk keeps its own row
@@ -1656,16 +1658,19 @@ class MemoryService:
         plain insert plus a link, never as a verdict about the text.
         The subject rule is checked FIRST, above every bar: it is what keeps "KCMI is licensed
         to Terrytown" from folding into "KZKX is licensed to Seward" (Jaccard 7/11 = 0.64, and the
-        distinct-facts control both laws are measured against). Candidates are limited to the
-        WRITING SCOPE, exactly as the exact-text dedup does; the floor is 0.85 (the family's measured
+        distinct-facts control both laws are measured against). Candidates are every active
+        NON-DOC row, in every scope (the wall came down 2026-11-06: the census found nine
+        exact-text pairs riding `user` beside `default` - one fact, two rows, both served in
+        the same block); the floor is 0.85 (the family's measured
         25th percentile) and at most the best 8 are
         tested, so a write costs one cached matrix read plus a handful of payload computations - it
         never scans every text in the store. The bar is the merge tool's UNCAPPED relative one
         (stricter than the read path's capped 5, and stricter is the safe direction: a missed merge
         costs one slot, a false one hides a fact)."""
-        vecs = self._scope_vecs(scope)     # the candidate set is THIS scope, so the vectors are too -
-        if not vecs:                        # a store-wide matrix rebuild per write is what made
-            return None                     # ingest quadratic (see _scope_vecs)
+        meta = self._vec_matrix()     # the read path's cached whole-store matrix (2026-11-06:
+        if meta is None:              # the candidate set crossed the scope wall - the census
+            return None               # found one fact riding two scopes as two rows, and the
+        sims = meta["mat"] @ vec      # block shows them side by side, so the guard must see both
         tab = self._dedupe_tables()
         df = tab["df"]
         # Capped (audit F5, 2026-11-03): the bar was max(3, rows//50), so the doc shelf drove it
@@ -1677,10 +1682,10 @@ class MemoryService:
         bar = min(8, max(3, len(tab["toks"]) // 50))
         cand = []
         for rid, rtext, _rclass in same:
-            v = vecs.get(rid)
-            if v is None:
+            n = meta["ix"].get(rid)
+            if n is None:
                 continue                                # a row predating the embedder: no vector to compare
-            c = float(v @ vec)
+            c = float(sims[n])
             if c >= 0.85:
                 cand.append((c, rid, rtext))
         if not cand:
@@ -2838,9 +2843,9 @@ class MemoryService:
     @_heals
     def _scope_vecs(self, scope: str) -> dict:
         """{row id: vector} for the ACTIVE rows of ONE scope, cached against that scope's own stamp
-        (count, max id, max updated_at). The write-time near-dupe guard compares a new fact only
-        with its own scope - the same boundary exact-text dedup uses - so that is all it needs, and
-        taking the whole-store matrix for the job made every write pay a store-sized rebuild:
+        (count, max id, max updated_at). Kept for the offline cutters (m4_shelfcut); the write-time
+        near-dupe guard moved to the shared whole-store matrix on 2026-11-06 (cross-scope dedup).
+        Taking the whole-store matrix for the job made every write pay a store-sized rebuild:
         measured 2026-10-14, ingest ran 5.5 rows/s at ~10k rows (180 ms per write) against 7 ms at
         2,589, and the profile said the matrix was ~5% of that while the token table was 86% - both
         rebuilt once per write, both linear in the store, so the pair was quadratic. The read path
