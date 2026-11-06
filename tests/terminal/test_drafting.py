@@ -440,7 +440,7 @@ class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
         self.assertTrue(drafting.supported_model(None, "unsloth"))
         for family in ("swift", "coder", "nvfp4", "qwen36", "deepseek41"):
             self.assertFalse(drafting.supported_model(None, family), family)
-        self.assertEqual(drafting.SUPPORTED_FAMILIES, ("qwen", "gyro", "unsloth"))
+        self.assertEqual(drafting.SUPPORTED_FAMILIES, ("qwen", "gyro", "unsloth", "heretic"))
 
     def test_the_names_are_the_ones_setup_writes(self):
         """Read from the code, not from memory: the family names and the way setup.py and metal/setup_mac.py make the run config's model_name."""
@@ -505,7 +505,7 @@ class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
         # the app's own copies of the rule (the host and the page) name the same families and the same names
         host = (ROOT / "apps" / "host" / "server" / "native-settings.mjs").read_text(encoding="utf-8")
         page = (ROOT / "apps" / "host" / "src" / "lib" / "drafting.ts").read_text(encoding="utf-8")
-        self.assertIn("DRAFTING_FAMILIES=['qwen','gyro','unsloth']", host)
+        self.assertIn("DRAFTING_FAMILIES=['qwen','gyro','unsloth','heretic']", host)
         self.assertIn("DRAFTING_FAMILIES = ['qwen', 'gyro', 'unsloth']", page)
         self.assertIn(r"-unsloth-[a-z0-9._-]+", host)
 
