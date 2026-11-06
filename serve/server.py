@@ -320,10 +320,15 @@ GRAFT_WAIT_FLOOR_S = 120.0     # memory-core: the floor on a GRAFT answer (see s
 # #4271: a streaming client that stops reading (a hung process, a network that dropped) leaves the thread that writes to
 # it blocked once the socket buffers are full - and that thread holds the engine's turn.  A write that makes no progress
 # for this long ends the request as a disconnect (the engine is stopped, the turn given back).  0: no limit, as before.
-try:
-    STREAM_WRITE_TIMEOUT_S = float(os.environ.get("STRATA_STREAM_WRITE_TIMEOUT_S", "60") or 0)
-except ValueError:            # a stray "60s" is a streaming timeout, not a reason to lose every route
-    STREAM_WRITE_TIMEOUT_S = 60.0
+def _stream_write_timeout() -> float:
+    """#4271's knob, read once: a stray unit in the value is a streaming timeout, not a reason to lose every route."""
+    try:
+        return float(os.environ.get("STRATA_STREAM_WRITE_TIMEOUT_S", "60") or 0)
+    except ValueError:
+        return 60.0
+
+
+STREAM_WRITE_TIMEOUT_S = _stream_write_timeout()
 # Disk sessions: the longest allowance an engine may announce (`SWAIT <phase> <s>`) for one step that blocks in a
 # single call (a file flush, the host->device transfer); the engine's own bound is the same (session_phase_limit_s).
 SESSION_WAIT_MAX_S = 3600
