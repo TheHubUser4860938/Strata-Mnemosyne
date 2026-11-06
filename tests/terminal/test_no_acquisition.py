@@ -44,6 +44,8 @@ INSTALL_WORDS = {"pip", "pip3", "git", "cmake", "ninja", "npm", "npx", "pnpm", "
 NETWORK_ALLOWED = {
     ("serve/server.py", "urlopen"): "an image_url a client sends in a chat request is fetched at request time",
     ("serve/mcp.py", "urlopen"): "the MCP servers the user configured, at request time",
+    ("serve/docs.py", "urlopen"): "memory-core: the listwise document reranker the owner turned on (memory.rerank) - "
+                                  "one chat-completions call to this machine's own engine, at request time",
     ("strata_control/tune_api.py", "urlopen"): "the loopback engine/server of a tuning job the user started",
     ("strata_control/tune_session.py", "urlopen"): "the loopback engine (127.0.0.1) the auto-tuner a user started measures",
     ("strata_control/loopback.py", "urlopen"): "the one opener for this computer's own servers (no proxy); any other address is passed on unchanged",
@@ -88,7 +90,9 @@ class ImportGraphTests(unittest.TestCase):
         self.assertEqual(sorted(loaded & INSTALLER_MODULES), [])
         for name, rel in got["mods"].items():
             top = rel.split("/")[0]
-            self.assertIn(top, ("serve", "strata_cli", "strata_control"),
+            # memory-core dev box: the venv lives inside the checkout, so a third-party package (jinja2, the web
+            # front end's template engine) resolves under .venv/ - a package folder, not installer code
+            self.assertIn(top, ("serve", "strata_cli", "strata_control", ".venv"),
                           f"{name} ({rel}) is loaded by starting/serving but is not part of it")
         self.assertNotIn("strata_control.calibration", got["mods"])
         self.assertNotIn("strata_control.components", got["mods"])
