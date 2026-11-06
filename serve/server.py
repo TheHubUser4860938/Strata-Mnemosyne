@@ -320,7 +320,10 @@ GRAFT_WAIT_FLOOR_S = 120.0     # memory-core: the floor on a GRAFT answer (see s
 # #4271: a streaming client that stops reading (a hung process, a network that dropped) leaves the thread that writes to
 # it blocked once the socket buffers are full - and that thread holds the engine's turn.  A write that makes no progress
 # for this long ends the request as a disconnect (the engine is stopped, the turn given back).  0: no limit, as before.
-STREAM_WRITE_TIMEOUT_S = float(os.environ.get("STRATA_STREAM_WRITE_TIMEOUT_S", "60") or 0)
+try:
+    STREAM_WRITE_TIMEOUT_S = float(os.environ.get("STRATA_STREAM_WRITE_TIMEOUT_S", "60") or 0)
+except ValueError:            # a stray "60s" is a streaming timeout, not a reason to lose every route
+    STREAM_WRITE_TIMEOUT_S = 60.0
 # Disk sessions: the longest allowance an engine may announce (`SWAIT <phase> <s>`) for one step that blocks in a
 # single call (a file flush, the host->device transfer); the engine's own bound is the same (session_phase_limit_s).
 SESSION_WAIT_MAX_S = 3600
@@ -2395,6 +2398,19 @@ class StrataEngine:
         on = sampling.get("experimental_speed_projection")
         return f" cvec={int(on)}" if isinstance(on, bool) else ""
 
+    def _send_lines(self, *texts: str):
+        """Write several lines to the engine in ONE lock acquisition: the engine's GRAFT stages a file for
+        the NEXT request, so a graft-marked admission sends `GRAFT` and its `BGEN` as a pair - no other
+        request's line may land between them."""
+        btrace("send>", texts[0][:60] + (" ...pair" if len(texts) > 1 else ""))
+        try:
+            with self.wlock:
+                for t in texts:
+                    self.proc.stdin.write(t + "\n")
+                self.proc.stdin.flush()
+        except (OSError, AttributeError):                # the pipe is gone: same note as _send
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+
     def _send(self, text: str):
         btrace("send>", text[:60])
         try:
@@ -3067,7 +3083,11 @@ class StrataEngine:
                     self._last_done = None                  # (#879: this admission's DONE decides below)
                     if COALESCE_PREFILL > 1 and not embeddings:
                         self._coalesce(cancel, prompt)
-                    self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
+                    if (sampling or {}).get("strata_graft"):     # memory-core: stage THIS admission's graft in
+                        self._send_lines(f"GRAFT {sampling['strata_graft']}",      # the same lock acquisition as
+                                         f"{head} {','.join(str(int(t)) for t in prompt)}")   # the BGEN that
+                    else:                                                            # consumes it (the engine
+                        self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")          # stages one file)
                     if deadline is not None:
                         cancel._strata_queue_deadline = None
                     started = getattr(cancel, "_strata_queue_started", None)
@@ -3224,6 +3244,12 @@ class StrataEngine:
                 # by the next one.  The control lines (and the admission's slot) stay quarantined until it does.
                 self._quarantine_control(undrained, born, lines_q, slot if undrained == "BADM" else None, holding)
                 holding, handed = False, True
+                if slot is not None and undrained == "DONE" and same:
+                    # #4451 bookkeeping: the DONE quarantine hands off the control lines but not the slot - its
+                    # busy is freed at BDONE - so clear the slot's own record here: the Monitor shows the slot
+                    # empty and the LRU sees this request as the one that used it last.
+                    self.slot_live[slot] = None
+                    self.slot_used[slot] = time.time()
             bdone_in = False
             if phase == "slot" and slot is not None and out and out[-1] in EOS_IDS and same:
                 bd = self._bdone_after_eos(slot, q=sq[slot])    # (#1869) the slot's figures, not the admission's
@@ -3398,9 +3424,10 @@ class StrataEngine:
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key}"
         if prefill_only:                                 # split serving (serve/split.py): read the prompt, make no token
-            if embeddings or int(max_new) != 0:
+            if int(max_new) != 0:
                 raise ValueError("prefill_only is a text prompt and max_new 0")
-            head = f"GEN 0 prefill=1{rid_key}"
+            head = (f"GENI 0 prefill=1{self.sampling_keys(sampling or {})}{rid_key} {embeddings}" if embeddings
+                    else f"GEN 0 prefill=1{self.sampling_keys(sampling or {})}{rid_key}")
         try:
             if (sampling or {}).get("strata_graft"):
                 # stage and generate in ONE turn of the pipe: the FIFO is held here, so no other request can
@@ -3743,11 +3770,7 @@ class StrataEngine:
         # generous; past it the engine is reaped by _silent() and the next request starts a fresh one.
         silence = max(float(self.silence_s or 0), GRAFT_WAIT_FLOOR_S)
         heard = time.monotonic()
-        try:
-            self.proc.stdin.write(f"GRAFT {name}\n")
-            self.proc.stdin.flush()
-        except OSError:
-            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        self._send(f"GRAFT {name}")
         while True:
             left = max(silence, 1.0) - (time.monotonic() - heard) if silence > 0 else None
             try:
@@ -7344,7 +7367,8 @@ class Service:
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
-                        gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
+                        gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb,
+                                                   prefill_only=prefill_only) if emb \
                             else self.engine.generate(prompt, max_new - n, sampling, cancel,
                                                       prefill_only=prefill_only)
                         recover_prompt = None
@@ -9386,9 +9410,11 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
         return ("content_block_stop", {"type": "content_block_stop", "index": index})
 
     streamed, finished = set(), set()              # calls sent piece by piece; those whose final tool_call came (#211)
+    answered_done, born = False, getattr(svc.engine, "gen", None)     # #3961: the same end-event guard as the OpenAI route
     for kind, x in (run if run is not None else
                     svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True,
                             deferred=deferred)):
+        born = getattr(svc.engine, "gen", born)     # the process THIS request ran on (a restart re-gens it)
         if kind == "ping":
             yield None
             continue
@@ -9432,6 +9458,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
                 yield "content_block_delta", {"type": "content_block_delta", "index": index, "delta": {
                     "type": "input_json_delta", "partial_json": json.dumps(ev.call.arguments, ensure_ascii=False)}}
         else:
+            answered_done = True
             if open_kind is not None:
                 yield close()
             stop = "stop_sequence" if x.get("stop_sequence") is not None else \
@@ -9449,6 +9476,15 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
                 delta_event["strata_rejected_tool_calls"] = x["rejected_tool_calls"]     # #3796
             yield "message_delta", delta_event
             yield "message_stop", {"type": "message_stop"}
+    if not answered_done and not cancel.is_set():
+        # #3961 on this dialect too: a run that stopped without its end event used to read as a short message
+        # that worked. It is an error now, and the engine is ended so "the next request restarts it" is true.
+        print("[strata] an Anthropic request ended without an answer and without a stop reason; it is answered as an error",
+              flush=True)
+        ended = svc.end_engine_if_unchanged(born)
+        lost = EngineDied("the engine ended the request without an answer")
+        lost.restarts = bool(ended)
+        raise lost
 
 
 def anthropic_collect(events) -> dict:
@@ -11209,14 +11245,21 @@ def make_handler(svc: Service):
 
             def events():
                 yield from asm.start()
-                done = None
+                done, born = None, getattr(svc.engine, "gen", None)     # #3961: the end-event guard, this dialect
                 for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel):
+                    born = getattr(svc.engine, "gen", born)
                     if kind == "ping":
                         yield None
                     elif kind == "event":
                         yield from asm.feed(x)
                     elif kind == "done":
                         done = x
+                if done is None and not cancel.is_set():
+                    print("[strata] a responses request ended without an answer; it is answered as an error", flush=True)
+                    ended = svc.end_engine_if_unchanged(born)
+                    lost = EngineDied("the engine ended the request without an answer")
+                    lost.restarts = bool(ended)
+                    raise lost
                 if done is not None and done["finish"] != "cancel" and not cancel.is_set():
                     yield from asm.finish(done, check)
             items = self._capture(events(), "responses")
