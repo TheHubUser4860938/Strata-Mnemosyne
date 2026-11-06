@@ -17,7 +17,6 @@ F13 the #3961 end-event guard lived only on the OpenAI route - the Anthropic and
     Responses routes kept the silent-200-with-no-finish-reason;
 F14 one unparseable STRATA_STREAM_WRITE_TIMEOUT_S made every route unimportable.
 """
-import importlib
 import os
 import queue
 import sys
@@ -173,17 +172,14 @@ class ImportRobustness(unittest.TestCase):
     """F14: one unparseable env value is a streaming timeout, not a dead server."""
 
     def test_a_stray_unit_still_leaves_a_timeout(self):
-        old = os.environ.get("STRATA_STREAM_WRITE_TIMEOUT_S")
-        os.environ["STRATA_STREAM_WRITE_TIMEOUT_S"] = "60s"
-        try:
-            importlib.reload(server)
-            self.assertEqual(server.STREAM_WRITE_TIMEOUT_S, 60.0)
-        finally:
-            if old is None:
-                del os.environ["STRATA_STREAM_WRITE_TIMEOUT_S"]
-            else:
-                os.environ["STRATA_STREAM_WRITE_TIMEOUT_S"] = old
-            importlib.reload(server)
+        # read through the function, not a module reload: the suite shares this module's classes
+        import unittest.mock as mock
+        with mock.patch.dict(os.environ, {"STRATA_STREAM_WRITE_TIMEOUT_S": "60s"}):
+            self.assertEqual(server._stream_write_timeout(), 60.0)
+        with mock.patch.dict(os.environ, {"STRATA_STREAM_WRITE_TIMEOUT_S": "30"}):
+            self.assertEqual(server._stream_write_timeout(), 30.0)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(server._stream_write_timeout(), 60.0)
 
 
 class QuarantineBookkeeping(unittest.TestCase):
