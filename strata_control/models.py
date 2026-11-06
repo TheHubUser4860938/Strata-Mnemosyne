@@ -39,6 +39,8 @@ SUPPORTED_SELECTIONS = frozenset({"qwen/Q2_0", "qwen/IQ2_XS", "qwen/IQ3_XXS", "q
                                    "swift/IQ2_XS", "swift/IQ3_XXS", "swift/IQ3_S", "coder/IQ1_M",
                                    "unsloth/UD-IQ4_XS", "unsloth/UD-Q4_K_XL", "unsloth/UD-Q5_K_XL", "unsloth/UD-Q6_K_XL",
                                    "unsloth/Q8_0", "gyro/Gyro-S", "gyro/Gyro-M",
+                                   # memory-core fork: trubisky's heretic v2 quants (the family's own folders)
+                                   "heretic/IQ4_NL", "heretic/IQ4_XS-plus", "heretic/IQ3_S-85G",
                                    # round 0214: Unsloth's v3.1 sets (revision d9620119); the v3.1 UD-IQ4_XS has its own name, its Hub file names are UD-IQ4_XS's with four shards
                                    "unsloth/UD-IQ1_M", "unsloth/UD-Q2_0", "unsloth/UD-IQ2_XS", "unsloth/UD-Q2_K_XL", "unsloth/UD-IQ3_XXS",
                                    "unsloth/UD-Q3_K_XL", "unsloth/UD-IQ4_XS-v31",

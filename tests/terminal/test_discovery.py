@@ -78,6 +78,17 @@ class GuiLayout(unittest.TestCase):
         self.terminal = base / "terminal"
         (self.terminal / "data").mkdir(parents=True)
         shutil.copy(Path(models.__file__).resolve().parents[1] / "data" / "gguf_fingerprints.json", self.terminal / "data")
+        # memory-core: the dev box keeps its live run configs (strata-*.json) at the checkout root, where an
+        # upstream checkout has none - the launch Catalog resolves src from __file__ (the real checkout), so it
+        # would rank the checkout first while the wizard reads the patched models.ROOT below.  Make the fixture's
+        # Terminal a complete installer folder and point the Catalog at it, so both read the same layout.
+        shutil.copy(Path(models.__file__).resolve().parents[1] / "setup.py", self.terminal)
+        (self.terminal / "tools").mkdir()
+        shutil.copy(Path(models.__file__).resolve().parents[1] / "tools" / "strata_mcp.py", self.terminal / "tools")
+        from strata_cli.launch import catalog as launch_catalog
+        p2 = mock.patch.object(launch_catalog, "installer_folder", lambda explicit=None: self.terminal)
+        p2.start()
+        self.addCleanup(p2.stop)
         p = mock.patch.object(models, "ROOT", self.terminal)
         p.start()
         self.addCleanup(p.stop)

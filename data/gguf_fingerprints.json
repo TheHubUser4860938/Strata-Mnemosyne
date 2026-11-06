@@ -443,6 +443,7 @@
  },
  "_roles": {
   "blk.N.attn_gate.weight": [
+   "BF16",
    "IQ3_S",
    "IQ4_XS",
    "Q2_0",
@@ -583,6 +584,8 @@
   "blk.N.hc_attn_inject.weight": [
    "BF16",
    "F32",
+   "IQ3_S",
+   "IQ4_NL",
    "Q6_K"
   ],
   "blk.N.hc_attn_norm.weight": [
@@ -600,6 +603,8 @@
   "blk.N.hc_ffn_inject.weight": [
    "BF16",
    "F32",
+   "IQ3_S",
+   "IQ4_NL",
    "Q6_K"
   ],
   "blk.N.hc_ffn_norm.weight": [
@@ -613,13 +618,15 @@
    "F32"
   ],
   "blk.N.indexer.k_proj.weight": [
-   "BF16"
+   "BF16",
+   "F16"
   ],
   "blk.N.indexer.q_norm.weight": [
    "F32"
   ],
   "blk.N.indexer.q_proj.weight": [
-   "BF16"
+   "BF16",
+   "F16"
   ],
   "blk.N.ple_conv1d.weight": [
    "BF16",
@@ -652,11 +659,15 @@
   "blk.N.ssm_alpha.weight": [
    "BF16",
    "F32",
+   "IQ3_S",
+   "IQ4_NL",
    "Q5_K"
   ],
   "blk.N.ssm_beta.weight": [
    "BF16",
    "F32",
+   "IQ3_S",
+   "IQ4_NL",
    "Q5_K"
   ],
   "blk.N.ssm_conv1d.weight": [
@@ -845,5 +856,80 @@
    "unsloth-Q8_0/Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf"
   ],
   "repo": "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF"
+ },
+ "heretic/IQ4_NL": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 108882639360,
+  "expert_bytes": {
+   "IQ3_S": 5767168000,
+   "IQ4_NL": 15099494400,
+   "IQ4_XS": 20499660800,
+   "Q4_K": 2831155200,
+   "Q5_K": 16148070400,
+   "Q8_0": 14260633600
+  },
+  "experts_bpw": 4.941,
+  "bpw": 4.923,
+  "files": [
+   "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00001-of-00008.gguf",
+   "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00002-of-00008.gguf",
+   "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00003-of-00008.gguf",
+   "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00004-of-00008.gguf",
+   "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00005-of-00008.gguf",
+   "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00006-of-00008.gguf",
+   "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00007-of-00008.gguf",
+   "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00008-of-00008.gguf"
+  ],
+  "repo": "trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer"
+ },
+ "heretic/IQ4_XS-plus": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 94693921280,
+  "expert_bytes": {
+   "IQ3_S": 29556736000,
+   "IQ4_NL": 20289945600,
+   "IQ4_XS": 6239027200,
+   "Q8_0": 4456448000
+  },
+  "experts_bpw": 4.01,
+  "bpw": 4.281,
+  "files": [
+   "IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00001-of-00006.gguf",
+   "IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00002-of-00006.gguf",
+   "IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00003-of-00006.gguf",
+   "IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00004-of-00006.gguf",
+   "IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00005-of-00006.gguf",
+   "IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00006-of-00006.gguf"
+  ],
+  "repo": "trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer"
+ },
+ "heretic/IQ3_S-85G": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 84580193280,
+  "expert_bytes": {
+   "IQ2_XXS": 12111052800,
+   "IQ3_XXS": 1284505600,
+   "IQ4_NL": 471859200,
+   "Q2_0": 8493465600,
+   "Q5_1": 6291456000,
+   "Q5_K": 20761804800,
+   "Q8_0": 891289600
+  },
+  "experts_bpw": 3.332,
+  "bpw": 3.824,
+  "files": [
+   "IQ3_S-85G/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00001-of-00008.gguf",
+   "IQ3_S-85G/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00002-of-00008.gguf",
+   "IQ3_S-85G/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00003-of-00008.gguf",
+   "IQ3_S-85G/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00004-of-00008.gguf",
+   "IQ3_S-85G/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00005-of-00008.gguf",
+   "IQ3_S-85G/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00006-of-00008.gguf",
+   "IQ3_S-85G/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00007-of-00008.gguf",
+   "IQ3_S-85G/Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00008-of-00008.gguf"
+  ],
+  "repo": "trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer"
  }
 }
