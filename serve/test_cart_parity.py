@@ -18,6 +18,7 @@ import os
 import sys
 import queue
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -123,7 +124,7 @@ class GraftForkTests(unittest.TestCase):
 
         e = StrataEngine.__new__(StrataEngine)
         e.proc, e.silence_s, e.lines, e.ended = Proc(), 0.0, queue.Queue(), False
-        e.silent_note = None
+        e.silent_note, e.wlock = None, threading.Lock()      # F5: the GRAFT line goes through _send
         e.lines.put("GRAFTED 41061 780000000 91.4")            # a parent's real shape: ~41k tokens of standing prefix
         got = e.stage_graft(path)
         self.assertEqual(e.proc.stdin.written, [f"GRAFT {path}\n"], "the fork's path rides the wire verbatim")
