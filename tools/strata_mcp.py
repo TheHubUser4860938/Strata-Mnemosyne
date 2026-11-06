@@ -69,6 +69,20 @@ FALLBACK_MODELS = {
     "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic): K-quant experts, between UD-IQ4_XS and UD-Q5_K_XL in quality",
                    "download_gb": 111.3, "ram_gb": 48, "arena_gb": 77.0, "families": ("unsloth", "huihui"), "budget": True,
                    "vision": True},                       # #967: images allowed (setup warns: untested with this file)
+    # memory-core fork: the heretic family's sizes (trubisky's quants of jeffpeng3's heretic v2 of Swift 1.5);
+    # the figures mirror setup.py's MODELS, measured from the GGUF headers 2026-10-30
+    "IQ4_NL": {"about": "4-bit i-quant (trubisky's energy-stepped recipe): the better of the two heretic sizes "
+                        "and 2.4 GB less model than huihui's UD-Q4_K_XL",
+               "download_gb": 108.9, "ram_gb": 48, "arena_gb": 74.6, "families": ("heretic",), "budget": True,
+               "vision": True},
+    "IQ4_XS-plus": {"about": "about 4-bit (Unsloth's UD-IQ4_XS recipe plus KL-guided step-ups on the six hottest "
+                             "expert groups): the heretic size that fits a 64 GB PC's RAM budget",
+                    "download_gb": 94.7, "ram_gb": 48, "arena_gb": 60.5, "families": ("heretic",), "budget": True,
+                    "vision": True},
+    "IQ3_S-85G": {"about": "about 3.5-bit (the heretic's leanest set): 24 GB less model than IQ4_NL and every "
+                            "expert inside a 64 GB PC",
+                  "download_gb": 84.6, "ram_gb": 48, "arena_gb": 50.3, "families": ("heretic",), "budget": True,
+                  "vision": True},
     "UD-Q5_K_XL": {"about": "5-bit (Unsloth Dynamic): Q5_K experts with Q8_0 downs, close to Q8_0 in quality",
                    "download_gb": 158.3, "ram_gb": 108, "arena_gb": 98.4, "families": ("unsloth", "huihui"), "budget": True,
                    "vision": True},
@@ -137,6 +151,11 @@ FALLBACK_FAMILIES = {
                                                                              "where the original declines; the reason "
                                                                              "modes do not ride it (stock template)",
                "tag": "huihui-", "vision": True},
+    "heretic": {"title": "Swift 1.5 Heretic v2", "about": "the reasoning-efficient Swift 1.5 base with the "
+                                                          "refusals ablated (it answers plainly and thinks far "
+                                                          "shorter than the original), bits allocated by measured "
+                                                          "activation energy",
+                "tag": "heretic-"},
     "gyro": {"title": "Qwen3.8-Flash-Next (Gyro)", "about": "Gyro-S (27.6 GB of memory) and Gyro-M (35 GB): the smallest "
                                                               "sizes, for PCs with little memory; 58 and 92 GB "
                                                               "downloads (the files include the n-gram table)",

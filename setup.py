@@ -10368,7 +10368,7 @@ def mac_control_setup(a) -> int:
             if s.exists() and done(s):
                 ok(f"{s.name} already downloaded")
                 continue
-            download(hf_shard(fam, model) + s.name, s)
+            download(model_hf(fam, model) + s.name, s)
     check_shards(files)
     ok("model files present")
     mmproj = None
@@ -11483,7 +11483,7 @@ def main() -> int:
                 except OSError:
                     pass
             download(hf(PLE_Q8["ista"][0]) + PLE_Q8["ista"][1] if ple_swap and s.name.endswith("-00002-of-00002.gguf")
-                     else hf_shard(fam, model) + s.name, s)
+                     else model_hf(fam, model) + s.name, s)
     if not ready:
         check_shards(shards)
     for s in ([] if ready else shards):                # the Unsloth files: pinned sizes and SHA-256
@@ -11493,8 +11493,6 @@ def main() -> int:
             # dev box's since 2026-10-09): checked against the table's pin, not the IQ4_NL pin the family dict
             # carries, so the swap survives every later setup run in both directions, by these bytes
             verify_sha256(s, *PLE_Q8["ista"][2:], own=bool(a.gguf_dir))
-        elif s.name in fam.get("sha256", {}):
-            verify_sha256(s, *fam["sha256"][s.name], own=bool(a.gguf_dir))
         elif s.name in fam.get("sha256", {}):
             verify_sha256(s, *fam_pin(fam, s), own=bool(a.gguf_dir))
     ok("model files present")
