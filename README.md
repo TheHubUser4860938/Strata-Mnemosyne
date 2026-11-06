@@ -6,44 +6,29 @@ itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one s
 harness ever has to re-send history. The server remembers, and it remembers the same way no
 matter which app is knocking.
 
-This fork is based on upstream Strata 0.2.9 — app and Terminal at 0.2.9, Control and every
-engine package at 0.1.55. Upstream's own headline list for this round: **prompts 2 to 6% faster on
-Linux with NVIDIA cards, by default** (the Gated DeltaNet prompt kernels now run on the tensor
-cores: +4.4% at 4K and +5.5 to 5.7% on longer prompts on an RTX PRO 5000, +2.6% at 16K and +3.2% at
-32K on an RTX A4000, decode unchanged; the KL check, the 61-task suite at 55 against 54 to 56, and a
-30-minute soak all passed), **parallel requests 1.45 times as fast at eight at once on Linux
-NVIDIA** (one RTX PRO 5000, Qwen3.8 IQ3_S, 1,000-token prompts, 128 tokens out, three paired blocks,
-range 1.451 to 1.459; one request alone is 5.3% faster and its greedy answers matched in 12 of 12 —
-with `--parallel` or `--batch` of 2 or more the server now sets the nine qualified settings
-itself), **Strix Halo on Windows reads Qwen3.8 IQ3_S prompts 1.8 times as fast** (an 8K prompt goes
-from 791 to 1,424 tokens per second and a 32K prompt from 778 to 1,460, decode inside normal spread
-at 57.4 to 58.9, the greedy answers the same), and **Unsloth's 1-bit DeepSeek sets UD-IQ1_S and
-UD-IQ1_M are a choice** (241 GB and 258 GB downloads, about 111 GB less with the ISTA Engram file
-already on hand; against Unsloth's own Q8_K_XL reference, one run each: KL 0.114 and 0.087 against
-ISTA-DAS 2.25's 0.110, top-1 agreement 87.2% and 88.8% against 87.4%, the 61-task suite 53 and 53
-against 56). Two fixes matter to a server that serves a coding agent: calls written inside a code
-fence or an indented block are no longer run as tool calls (#4702, #4703), and a tool the
-conversation already used counts as declared, so a later call to it comes back as a tool call and
-not as raw text (#4663, not covered on the Anthropic and Responses routes). The chat page stops
-redrawing the whole transcript for every streamed token — a 40,000-token answer costs 9.0 seconds
-of main-thread time against 15.7, peak heap 114 MB down to 62-75 MB, measured in the app on a
-synthetic long answer. The new defaults are Linux-only (NVIDIA tensor-core GDN, and the parallel
-stack at `--parallel`/`--batch` of 2 or more; `serve/server.py`'s `gdn_stack_env` and
-`parallel_stack_env` write them, so any value you set yourself still wins) and each keeps its own
-off switch: `STRATA_GDN_TC=0`, `STRATA_GDN_CONVL2=0`, `STRATA_GDN_CHUNKED=0` on Radeon gfx12, and
-the nine `STRATA_CKPT_POOL`-family names. Going back to 0.2.8 is one step: `strata components
-rollback` returns the 0.1.54 engine, and Control stays 0.1.55. Two known problems, from upstream's
-own list: DeepSeek at temperature 0 is not repeatable across requests (the expert cache moves
-experts between the CPU and the GPU, so five identical asks can give five answers;
-`--set=--no-expert-cache=on` repeats, at the cost of 8% to 10% of decode on four cards and 58% on
-one), and on a PC with both NVIDIA and Intel cards `strata launch` takes the NVIDIA card and offers
-no way to name the Intel ones. The earlier rounds' gains — the Arc B65 pair, the four-R9700
-concurrency, the Mac DeepSeek buffer fix, tool-call recovery on by default, the Strix Halo and
-Intel Arc packages, the DFlash2 drafter, full-context agent chat, one installer per system, the
-DeepSeek RAM store and speed-ups — all still stand. Every number in this paragraph is upstream's,
-from the [0.2.9 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.9),
-`docs/GDN_CONTRACT.md` (new this round) and `src/core/arch_defaults.cpp`. This fork adds the memory
-system and the reason-mode steering described below.
+This fork is based on upstream Strata 0.2.11 — app and Terminal at 0.2.11, Control and every
+engine package at 0.1.57. Upstream's own headline list for this round: **Unsloth's Dynamic v3.1
+Qwen3.8-Flash-Next files** — seven new sets from 68 GB (UD-IQ1_M) to 93.7 GB (UD-IQ4_XS-v31), each
+checked by size and SHA-256 against Unsloth's revision d9620119, with a new Q5_0 expert format whose
+dot math Strata computes closer to exact than llama.cpp's (the difference from the exact result fell
+from 2.6-3.0% to 1.2-1.3%); **prompts 22 to 38% faster on NVIDIA cards of compute capability 8.0 and
+up** (the K-quant prompt kernels are the default for the UD-Q4/Q5/Q6_K_XL files: RTX PRO 6000 +32.6%
+at a 32K prompt, decode unchanged, first-token KL 0.024), and a bare `--prefill auto` now reads in
+chunks of up to 32768 tokens (+21 to +43% on a streamed A6000); **the all-cards split engine +32.7%
+at eight users on four Radeon R9700 cards** (1 user +6.9%, a 103K prompt 8.1% sooner, 8 request slots
+by default, no `librccl` needed); **the FP16 weight cache for parallel requests** (+6.6% at eight
+users on an RTX PRO 5000, output bit-for-bit the same — 100 of 100 test combinations equal);
+**small multi-card starts walk down a list** (trim, step the KV window, spill the output head:
+2 x 8 GB now starts where 0.2.10 stopped after 71 s) **and chats are files** — each chat a
+`chats/<id>.json` in Strata's data folder with atomic temp-and-rename writes, no 5 MB limit, two
+windows seeing each other's changes. A privacy fix matters to a server that serves several clients
+at once: a reply could go to the wrong request when a model runs in more than one copy — 30 of 30
+forced hand-overs crossed on the old code, 30 of 30 clean on the new (#2892). The security bump:
+Pillow 13.0.0 (the JPEG 2000 decoder, GHSA-78g4-xqwv-q3g8). Going back to 0.2.10 is one step:
+`strata components rollback` returns the 0.1.56 engine, and Control stays 0.1.57. Every number in
+this paragraph is upstream's, from the
+[0.2.11 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.11). This fork adds the
+memory system and the reason-mode steering described below.
 
 <p align="center">
   <a href="https://github.com/Niko1221/Strata/releases/latest"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?label=download&color=0ab887" alt="Download Strata"></a>
@@ -87,7 +72,7 @@ cd Strata
 
 <img width="1265" height="542" alt="image" src="https://github.com/user-attachments/assets/238eb87c-45f2-4be4-8cb8-91d922efbda8" />
 
-Version 0.2.9 (app and Terminal 0.2.9, Control and every engine package 0.1.55)
+Version 0.2.11 (app and Terminal 0.2.11, Control and every engine package 0.1.57)
 
 Two things arrive switched **on**, and everything else stays byte-identical to upstream Strata:
 
@@ -117,16 +102,19 @@ Two things arrive switched **on**, and everything else stays byte-identical to u
   2026-10-24; every banked venue number still carries its *bge-small era* label until a
   venue day re-records it.
 
-- **Carrying carts.** A *cart* is a page of learned knowledge - one document, one finished
-  episode, or the standing persona itself - kept in a server-side ledger and attached on
-  demand. A client that sends `X-Strata-Carts: name,name` gets those pages carried into the
-  conversation on every ask, and never has to re-learn or re-send them; bad names never fail
-  the request and are announced, not hidden. This is opt-in per request: send no header and
-  the bytes are exactly as before. The dev box runs the *anchor* shape - the pages are
-  re-presented just before each question, which measured equal on recall and cheaper in every
-  other direction: 179/180 vs 178/180 gold answers, 39% fewer tokens evaluated per ask, and
-  answers in about half the wall-clock time (bench tags 145651, 171027). The whole story -
-  modes, levers, budgets, and the measured laws - is in docs/MEMORY_CORE.md, section S4.
+- **Carrying carts.** A *cart* is a page of learned knowledge kept in a server-side ledger and
+  attached on demand — today on this box the *standing cart*: the persona's five standing texts,
+  seeded once as an engine session file, so every conversation starts on warm K/V and the bytes are
+  never re-sent. A client that sends `X-Strata-Carts: name` gets that page carried into the
+  conversation on every ask; bad names never fail the request and are announced, not hidden. This
+  is opt-in per request: send no header and the bytes are exactly as before. A client that sends
+  `X-Strata-Carts-Graft: name` goes one step further and *grafts a saved conversation*: the request
+  begins on the cached prefix bytes of a slot saved earlier, the parent's conversation in flight
+  untouched — measured on the running box 2026-11-05, a grafted lane is warm from its very first
+  call, 20.7x faster than the fresh lane's first call, at identical prompt-token charges. The
+  episode-cart minting surface is ruled off on this branch: text plus routing is the corpus path,
+  a cart is a cache. The whole story — modes, levers, budgets, and the measured laws — is in
+  docs/MEMORY_CORE.md, section S4.
 
 - **Reason modes** (DavidAU model families — see below): 41 framings, pairs, thinking levels
   and an autonomous picker — the server boots already knowing how to consult its own cast
@@ -159,15 +147,15 @@ Download the file for your computer, open it, and press install on the model it 
 
 **Windows 10 / 11**
 
-[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.9-windows-x64-setup.exe)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.11-windows-x64-setup.exe)
 
 **Linux**
 
-[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.9-linux-x86_64.AppImage)
+[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.11-linux-x86_64.AppImage)
 
 **Mac** (Apple Silicon, macOS 15 or newer)
 
-[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.9-macos-arm64.dmg)
+[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.11-macos-arm64.dmg)
 
 The app picks the right engine for your graphics card by itself. All files are on the [releases page](https://github.com/Niko1221/Strata/releases/latest).
 
@@ -288,11 +276,14 @@ on 2026-10-21 — and it fails closed to the plain path when it overflows.
 
 ## How it works today
 
-**Tier 3 — curated text memory (live).** ~930 facts on 134 subject shelves (plus 24 index
-cartridges cataloging the map), recalled server-side and injected as one hidden system block
-that rides all three dialects (OpenAI, Anthropic, Responses). A journal feeds itself from
+**Tier 3 — curated text memory (live).** 1,977 facts on 107 subject shelves, sorted by the served
+model's own clerk (measured 2026-11-06; the MEM/CAT index shelves catalog the map), plus a
+document index: 34,531 chunk rows over 141 books of the founding corpus — one drawer per book,
+cut at the headings the print editions write, so a hit carries its provenance and `op=docs`
+reads the passage back out of the file. Recalled server-side and injected as one hidden system
+block that rides all three dialects (OpenAI, Anthropic, Responses). A journal feeds itself from
 conversations; a curation loop classifies, dedups and consolidates with human-gated merge
-review, and relabels the index cartridges every 30 minutes; a budget speaks before it's full;
+review; a budget speaks before it's full;
 `?since=`/`?until=` windows answer when-said questions; a CPU-only embedder (pinned by SHA-256,
 MIT, ~130 MB) makes recall understand paraphrase. Opt-in: the model browses its own store
 mid-answer with a `memory_search` tool the server runs itself — one tool, three verbs: search
@@ -328,13 +319,15 @@ curation loop. Full protocol and records: `docs/MEMORY_CORE.md`.
 **Tier 2 — KV cartridges (built, and riding on a big-RAM box).** The standing texts are seeded once
 as an engine session file and stand in the slot ahead of the traffic that continues them: restore
 **81 ms** for 247 MB, the pin law **refuses foreign files** by config fingerprint, and the knowledge
-delta is real — warm 3/3 correct, cold 3/3 `idk`, wrong-cartridge control 0 leaks. The RAM gate is
-met on this box now: 125 GB since 2026-10-22. What rides live since 2026-10-24 is the five-file
-static cart — the soul plus agent/skill/user/always, 237 MB, `MEM-CRG-22c49c0c.bin`, standing in
-the slot (`kv_standing` true at the 19:37 boot); the 63-fact soul+facts cart it replaced restored
-285 MB in **150.3 ms** (the engine's own line: read+check 142.0 ms).
+delta is real — warm 3/3 correct, cold 3/3 `idk`, wrong-cartridge control 0 leaks. What rides live
+is the five-file static cart — the soul plus agent/skill/user/always, ~53 KB of standing text —
+and its name is a content hash of those bytes: a rotation means a hand moved a file, and the
+harvest cannot move it. `MEM-CRG-f752989d.bin` (480 MB of engine state) stands in the slot since
+the 2026-11-04 boot; the cart re-seeds once per engine version, because the session fingerprint
+hashes `engine_version`.
 What is *not* claimed: prefill skipped for strangers (engine resume extends one conversation, not
-across them — measured, and the docs say so). The venue re-record that would settle its economics
+across them — measured, and the docs say so; the graft header above is the one lever that reaches
+across, by saving the parent's slot first). The venue re-record that would settle its economics
 is unblocked and queued.
 
 **Phase 2 — state-without-text (open research).** Porting the *AKBASCORE MAM / NIRVANA
@@ -393,9 +386,9 @@ Start it with `strata launch --model gyro-s`. Details: [docs/GYRO.md](docs/GYRO.
 | --- | --- | --- |
 | **32 GB** | **Gyro-S**, or the **[Coder](docs/MODELS.md#coder)** for code | The Coder keeps the experts that code uses |
 | **40 GB** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS (39.2 GB) or **Gyro-M** | Swift thinks for a shorter time before it answers |
-| **48 GB** | **IQ3_XXS** (47.0 GB) | Slower, better |
+| **48 GB** | **IQ3_XXS** (47.0 GB), or Unsloth's **UD-IQ1_M** (68 GB download, 1-bit v3.1) | Slower, better |
 | **64 GB** | **IQ3_S** (54.8 GB) | Matches the full model on the published tests |
-| **96 GB or more** | Unsloth's **UD-IQ4_XS** to **Q8_0** | Closest to the full model |
+| **96 GB or more** | Unsloth's **UD-IQ4_XS** to **Q8_0**, or the v3.1 sets between them | Closest to the full model |
 
 Less RAM than a row says can still work, only slower: Strata switches to its
 [low-RAM mode](docs/MODELS.md#a-big-graphics-card-and-little-ram) by itself. Also available:
@@ -509,9 +502,11 @@ memory-and-tooling line shipped six releases on October 17 alone: pairs, thinkin
 autonomous mode, the Settings menu, auto-pick observability and the store purge above. The
 full-size intelligence run — five published suites at full size, 21,336 generations, temperature
 1.0, three repeats — was launched on 2026-10-22 and has not landed a number yet. The server's own
-test suite — 1,163 tests under this repo's runner, no GPU and no downloads needed — passes clean on
-this box: measured 2026-10-24, `python -m pytest serve/` gives 1,163 passed, 20 skipped, 10,856
-subtests in 6 m 06 s. The note this sentence carried for a week — two environmental timing tests,
+test suite — 1,969 tests under this repo's runner, no GPU and no downloads needed — passes clean on
+this box: measured 2026-11-06 on the v0.2.11 merge, `python -m unittest discover -s serve -p
+'test_*.py'` gives 1,969 OK, 17 skipped in 11 m 27 s, and the Terminal suite (`python -m pytest
+tests/terminal`) 2,710 passed, 53 skipped, 404 subtests in 27 m 52 s. The note this sentence
+carried for a week — two environmental timing tests,
 the `test_lifeline` watcher and `test_keepawake` inside a full run — did not reproduce that day, so
 it is now recorded as what it is: a flake on a loaded box, not a fixture of the suite. The suite also
 leaks one 2 GB Postgres cluster per test process into `$TMPDIR` (its atexit cleanup stopped the
