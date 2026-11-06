@@ -3715,8 +3715,7 @@ class CartSlotLedger(Mint):
 
         e = StrataEngine.__new__(StrataEngine)
         e.proc, e.silence_s, e.lines, e.ended = Proc(), 0.0, __import__("queue").Queue(), False
-        e.silent_note = None
-        e.stage_graft = StrataEngine.stage_graft.__get__(e)
+        e.silent_note, e.wlock = None, __import__("threading").Lock()   # F5: the GRAFT line goes through _send
         e._silent = lambda what: __import__("serve.server", fromlist=["EngineSilent"]).EngineSilent(what)
         e.lines.put("GRAFTED 1369 257080992 122.2")           # the answer the pump would have queued
         got = e.stage_graft("/vault/MEM-CART-DEADBEEF.bin")
