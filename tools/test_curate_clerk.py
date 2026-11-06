@@ -68,5 +68,16 @@ class ClerkLeavesItWild(unittest.TestCase):
         self.assertEqual(clerk_class("Some fact.", None), "")
 
 
+
+
+class ClerkCollapsesSelfNested(unittest.TestCase):
+    """The 2026-11-06 census found drawers that repeated their family: TECH/TECH, BIO/BIO.
+    One drawer does not need two name tags - the cutter collapses to the family."""
+
+    def test_a_cutter_that_repeats_its_top_collapses(self):
+        self.assertEqual(clerk_class("Some fact.", fake_ask("TECH/TECH")), "TECH")
+
+    def test_a_real_cutter_still_rides(self):
+        self.assertEqual(clerk_class("Some fact.", fake_ask("TECH/PYTHO")), "TECH/PYTHO")
 if __name__ == "__main__":
     unittest.main(verbosity=2)

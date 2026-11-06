@@ -646,7 +646,14 @@ def clerk_class(fact: str, ask) -> str:
     except Exception:                                   # a sweep must not stall on a label
         return ""
     codes = [c for c in SHELF_ANSWER.findall(ans or "") if c.split("/")[0] in SHELF_TOPS]
-    return codes[-1] if codes else ""
+    if not codes:
+        return ""
+    code = codes[-1]
+    # TECH/TECH is one drawer wearing two name tags (census 2026-11-06): a cutter that
+    # repeats its own family collapses to the family.
+    if "/" in code and code.split("/", 1)[0] == code.split("/", 1)[1]:
+        return code.split("/")[0]
+    return code
 
 
 def fact_class(fact: str, scope: str, lane: str = "fact") -> str:
