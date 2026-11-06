@@ -101,19 +101,25 @@ export async function hydrateChats(opts: {
   let moved = 0;
   const failed: HydrateResult['failed'] = [];
   try {
+    let list = await transport.list();
+    // The flag is read AFTER the list: two windows opened on the first start both await the list, and a
+    // flag read before it is a snapshot the other window's claim cannot reach.
     let flagged = false;
     try { flagged = browser.getItem(HOST_FLAG_KEY) === '1'; } catch { flagged = false; }
-    let list = await transport.list();
     if (!flagged) {
       const old = readBrowserSessions(browser).sessions;
       if (old.length) {
+        // Claim the handover BEFORE asking for it: two windows opened on the first start both see
+        // "not flagged" and each used to send the whole archive (twice the writes, every chat at
+        // rev 2). The claim is synchronous, so the second window's check above sees the first's;
+        // a failed move clears it again, so a disk-full handover is retried at the next start.
+        try { browser.setItem(HOST_FLAG_KEY, '1'); } catch { /* the flag is a courtesy; the host skips what it has */ }
         const result = await transport.importMany(old);
         moved = result.imported.length;
         failed.push(...result.failed);
+        if (failed.length) { try { browser.removeItem(HOST_FLAG_KEY); } catch { /* retried at the next start */ } }
         list = await transport.list();
       }
-      // Set only when nothing was refused: a disk-full move is tried again at the next start.
-      if (!failed.length) { try { browser.setItem(HOST_FLAG_KEY, '1'); } catch { /* the flag is a courtesy; the host skips what it has */ } }
     }
     const fromHost = await readAll(transport, list.chats);
     const revs = new Map([...fromHost].map(([id, v]) => [id, v.rev]));
