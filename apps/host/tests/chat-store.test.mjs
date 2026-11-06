@@ -189,3 +189,23 @@ test('import: only chats the host does not have are taken, the ones it has are l
     assert.equal((await readChat(store, 's_have')).session.title, 'on the host');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a save interrupted between the file and the index: the index is repaired from the file at the next start (F1)', async () => {
+  const dir = scratch();
+  try {
+    let store = createChatStore({ dir });
+    await store.save('s_a', text(chat('s_a', 2, 10, { title: 'second' })));
+    await store.save('s_a', text(chat('s_a', 3, 10, { title: 'third' })));   // rev 2 is in the file
+    // the crash shape: the file is written, the index is the one from the PREVIOUS save
+    const index = JSON.parse(readFileSync(join(dir, 'chats', 'index.json'), 'utf8'));
+    const entry = index.chats.find((c) => c.id === 's_a');
+    entry.rev = 1; entry.bytes = 10; entry.title = 'second (stale)';
+    writeFileSync(join(dir, 'chats', 'index.json'), JSON.stringify(index));
+    store = createChatStore({ dir });                                          // a new host process
+    const listed = store.list().chats.find((c) => c.id === 's_a');
+    assert.equal(listed.rev, 2, 'list tells the file\'s truth, not the stale index\'s');
+    assert.equal(listed.title, 'third', 'and the title is the chat\'s own, not the index\'s memory');
+    const saved = await store.save('s_a', text(chat('s_a', 4, 10)), { baseRev: 2 });
+    assert.equal(saved.rev, 3, 'rev counts on from the file: the page\'s monotonicity holds (F12)');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

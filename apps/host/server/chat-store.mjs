@@ -74,7 +74,19 @@ export function createChatStore({ dir, io = realIo, privateDir = () => {}, now =
     let saved = null;
     try { const parsed = JSON.parse(readFileSync(join(root, 'index.json'), 'utf8')); if (parsed?.v === CHAT_FORMAT && Array.isArray(parsed.chats)) saved = parsed.chats; } catch { /* rebuilt below */ }
     const map = new Map();
-    if (saved) for (const e of saved) if (e && validChatId(e.id) && files.includes(e.id)) map.set(e.id, e);
+    if (saved) for (const e of saved) if (e && validChatId(e.id) && files.includes(e.id)) {
+      // A save interrupted between the file and the index leaves the file AHEAD: the entry's bytes are
+      // the size the index last saw. One stat per chat is cheap; a disagreement repairs the entry from
+      // the file, so list() tells the truth and rev counts up from the number the file carries (F1).
+      let size = -1;
+      try { size = statSync(fileOf(e.id)).size; } catch { /* the file read below reports it */ }
+      if (size >= 0 && size === e.bytes) { map.set(e.id, e); continue; }
+      try {
+        const parsed = JSON.parse(readFileSync(fileOf(e.id), 'utf8'));
+        if (parsed?.v !== CHAT_FORMAT || !parsed.session || parsed.session.id !== e.id) throw new Error('not a chat file');
+        map.set(e.id, entryOf(e.id, Number(parsed.rev) || 1, parsed.session, size));
+      } catch { damaged.add(e.id); }
+    }
     // Files the index does not know (a crash before the index was written, an index lost): read from the files.
     for (const id of files) {
       if (map.has(id)) continue;
