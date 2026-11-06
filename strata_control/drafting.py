@@ -242,13 +242,16 @@ SLOT_RESERVE_MIB = 700       # the engine's default --vram-reserve-mib
 DEFAULT_CONTEXT = 131072     # --max-context when the arguments name none (the 128K default)
 
 #: model families (strata launch --family) the drafter was trained for and measured on: Qwen3.8-Flash-Next, its Gyro build and Unsloth's quantizations of the same weights
-#: (UD-IQ4_XS, UD-Q4_K_XL...; DFlash2 numbers measured on UD-Q4_K_XL on Strix, R9700 and M5 Max). Not Swift (UkisAI's fine-tune), Coder (ISTA-DASLab's coding version) or NVFP4:
-#: no DFlash2 acceptance numbers for them, they start the MTP.
-SUPPORTED_FAMILIES = ("qwen", "gyro", "unsloth")
+#: (UD-IQ4_XS, UD-Q4_K_XL...; DFlash2 numbers measured on UD-Q4_K_XL on Strix, R9700 and M5 Max). Not Coder (ISTA-DASLab's coding version) or NVFP4:
+#: no DFlash2 acceptance numbers for them, they start the MTP. memory-core adds heretic: Swift 1.5 shares Qwen3.8-Flash-Next's
+#: vocab and architecture (the MTP layer of the same family runs on it at 78.2% acceptance, measured 2026-10-30), and the owner
+#: wants the drafter A/B (2026-11-06); its acceptance numbers are what that experiment is for.
+SUPPORTED_FAMILIES = ("qwen", "gyro", "unsloth", "heretic")
 #: The model_name setup.py (and metal/setup_mac.py) write: f"{family name}-{model.lower()}": qwen3.8-flash-next-iq3_s, qwen3.8-flash-next-gyro-gyro-s,
-#: qwen3.8-flash-next-unsloth-ud-q4_k_xl. (Coder is qwen3.8-flash-next-coder-iq1_m, NVFP4 qwen3.8-flash-next-nvfp4-nvfp4: neither matches.) Mirrored in
+#: qwen3.8-flash-next-unsloth-ud-q4_k_xl. (Coder is qwen3.8-flash-next-coder-iq1_m, NVFP4 is qwen3.8-flash-next-nvfp4-nvfp4: neither matches.) Mirrored in
 #: apps/host/server/native-settings.mjs; tests/drafting.test.mjs keeps the two the same.
-_SUPPORTED_NAME = re.compile(r"^qwen3\.8-flash-next(-gyro-[a-z0-9._-]+|-unsloth-[a-z0-9._-]+|-(q|iq|tq)\d[a-z0-9_.]*)?$", re.IGNORECASE)
+_SUPPORTED_NAME = re.compile(r"^qwen3\.8-flash-next(-gyro-[a-z0-9._-]+|-unsloth-[a-z0-9._-]+|-(q|iq|tq)\d[a-z0-9_.]*)?$"
+                             r"|^swift-1\.5-flash-next-heretic(-[a-z0-9._-]+)?$", re.IGNORECASE)
 
 
 def supported_model(model_name: str | None = None, family: str | None = None) -> bool:
