@@ -140,9 +140,27 @@ def _one(code: str, known: set[str]) -> tuple[str, str]:
         return ("", "wild")
     if code in known:
         return (code, "existing")
+    if "/" in code and not code.startswith("NEW/"):
+        top, cut = code.split("/", 1)
+        if top == cut:                       # TECH/TECH: one drawer, two name tags (2026-11-06)
+            return (top, "existing") if top in known else (top, "unknown")
     if code.startswith("NEW/"):
         cut = code[4:]
-        return (("NEW/" + cut) if class_name(cut, quiet=True) else "", "new")
+        if not class_name(cut, quiet=True):
+            return ("", "new")
+        # A cutter that EXTENDS a name the menu already carries is the same drawer wearing a
+        # longer truncation - USR/PREFE arriving beside USR/PREF, MEM/QWEN beside MEM/QWEN3
+        # (census 2026-11-06). Prefix, do not mint, when exactly one shelf is in on it.
+        fam, sep, cta = cut.rpartition("/")
+        kin = [k for k in known
+               if k.rpartition("/")[0] == fam and not k.startswith("NEW/")
+               and (k.rpartition("/")[2].startswith(cta) or cta.startswith(k.rpartition("/")[2]))]
+        if len(kin) == 1:
+            return (kin[0], "existing")
+        return ("NEW/" + cut, "new")
+    kin = [k for k in known if "/" not in k and (k.startswith(code) or code.startswith(k))]
+    if len(kin) == 1:
+        return (kin[0], "existing")          # QWEN3 arriving where the menu carries QWEN
     return (code, "unknown")
 
 

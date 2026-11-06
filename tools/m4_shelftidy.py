@@ -47,7 +47,7 @@ from strata_control.datafolder import data_dir                     # noqa: E402
 from serve.memory import MemoryService, class_name                 # noqa: E402
 
 CANON = ("MEM", "OPS", "HW", "AI", "TECH", "DEC", "USR", "POL", "EVAL", "DOC", "STR",
-         "FIC", "FILL")
+         "FIC", "FILL", "SCI", "BIO", "PHYS", "HUM", "HEALTH")
 TOPS_PROMPT = """A memory store keeps facts on shelves written `TOP` or `TOP/CUTTER`.
 These TOPS were invented for one or two facts each and need a family:
 
