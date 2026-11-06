@@ -570,8 +570,11 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     const int64_t upto = (int64_t) view.ids.size();
     // STRATA_PARK_ASYNC: the K/V bytes these saves copy (the stage they need; an over-estimate by the kept prefix)
     size_t kv_need = 0;
+    const int64_t dupto = draft ? std::min<int64_t>(upto, std::max<int64_t>(draft->max_cells, 0)) : 0;
+        // #5153: the draft layer's K/V rides its own window (the same clamp sources and read limits apply):
+        // a DFlash2-only boot carries an unloaded state (max_cells 0), so the snapshot keeps a zero-row draft
     for (size_t j = 0; j < layers; ++j) kv_need += conversation_kv_bytes(owned(ss, j), g, upto, true);
-    if (draft) kv_need += conversation_kv_bytes(*draft, g, upto, false);
+    if (draft) kv_need += conversation_kv_bytes(*draft, g, dupto, false);
     const bool staged = conversation_park_async_begin(kv_need);
     const auto p4 = now();
     struct Abandon { bool on; ~Abandon() { if (on) conversation_park_async_abandon(); } } abandon{staged};
@@ -595,7 +598,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     }
     // The draft's final cell may not have been computed when the output cap was
     // reached. Refresh that page even when the main prefix continued unchanged.
-    if (draft && !conversation_kv_save(captured.kv.back(), *draft, g, upto, false, error,
+    if (draft && !conversation_kv_save(captured.kv.back(), *draft, g, dupto, false, error,
                                        std::max<int64_t>(0, unchanged - 1), reused_bytes)) return false;
     abandon.on = false;
     if (staged && !conversation_park_async_launch(error)) return false;
@@ -636,7 +639,8 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     std::vector<SessionKvSource> out(layers + 1);
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_source(out[j], owned(ss, j), g, upto, true, error)) return false;
-    if (!conversation_kv_source(out.back(), draft, g, upto, false, error)) return false;
+    if (!conversation_kv_source(out.back(), draft, g,
+            std::min<int64_t>(upto, std::max<int64_t>(draft.max_cells, 0)), false, error)) return false;   // #5153
     meta = std::move(captured);
     sources = std::move(out);
     return true;
@@ -688,7 +692,8 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
     const int64_t upto = (int64_t) image.live.ids.size();
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_validate(image.kv[j], owned(ss, j), g, upto, true, error)) return false;
-    return !draft || conversation_kv_validate(image.kv.back(), *draft, g, upto, false, error);
+    return !draft || conversation_kv_validate(image.kv.back(), *draft, g,
+        std::min<int64_t>(upto, std::max<int64_t>(draft->max_cells, 0)), false, error);   // #5153
 }
 
 bool conversation_copy_stream_ready(int device) { return conversation_detail::copy_stream_ready(device); }
@@ -704,7 +709,8 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
     for (size_t j = 0; j < owned_qsa(ss); ++j)
         if (!conversation_kv_restore(image.kv[j], owned(ss, j), g, upto, true, error))
             return ConversationRestore::transfer_failed;
-    if ((draft && !conversation_kv_restore(image.kv.back(), *draft, g, upto, false, error)) ||
+    if ((draft && !conversation_kv_restore(image.kv.back(), *draft, g,
+             std::min<int64_t>(upto, std::max<int64_t>(draft->max_cells, 0)), false, error)) ||   // #5153
         !conversation_checkpoint_restore(image.live, ss, g, error)) return ConversationRestore::transfer_failed;
     return ConversationRestore::restored;
 }
@@ -766,7 +772,9 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
     for (size_t j = 0; j < owned_qsa(ss); ++j)
         if (!conversation_kv_restore_prefix(image.kv[j], owned(ss, j), g, captured, upto, true, error))
             return ConversationRestore::transfer_failed;
-    if (draft && !conversation_kv_restore_prefix(image.kv.back(), *draft, g, captured, upto, false, error))
+    if (draft && !conversation_kv_restore_prefix(image.kv.back(), *draft, g,
+            std::min<int64_t>(captured, std::max<int64_t>(draft->max_cells, 0)),   // #5153: the draft rides its own window
+            upto, false, error))
         return ConversationRestore::transfer_failed;
     return ConversationRestore::restored;
 }
