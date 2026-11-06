@@ -91,6 +91,8 @@ std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
 }
 
 bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error) {
+    if (upto == 0 && st.max_cells == 0) return true;   // #5153: an unloaded drafter (a DFlash2 boot) has no rows -
+                                                        // every extent is inside a zero-row state: accept vacuously
     if (upto < 0 || upto > st.max_cells || st.n_pages < 0 || l.cells / l.page_size > st.n_pages ||
         st.kv_mode < 0 || st.kv_mode > 2 || st.n_slots <= 0 ||
         (st.kv_mode == 0 && st.n_slots < st.n_pages) ||
