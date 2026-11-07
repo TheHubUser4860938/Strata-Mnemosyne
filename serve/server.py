@@ -58,10 +58,6 @@ from typing import Iterator, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-# The sidecar's socket lives in the data folder, NOT /tmp: /tmp is wiped on shutdown, so a /tmp
-# socket means every boot starts with a dead proxy and the page reads "Failed to fetch" while the
-# sidecar is healthy (measured 2026-11-07, twice).
-RUST_SOCKET_DEFAULT = "/home/eugene/Strata-data/sessions/strata-memory.sock"
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages, anthropic_tools,  # noqa: E402
@@ -299,25 +295,6 @@ V1_V1_ALIASES = {"/v1/v1/messages": "/v1/messages", "/v1/v1/messages/count_token
 CTX_SLACK = 8               # `strata --serve` rejects prompt + max_new + 8 > context: keep the same margin here
 
 
-class _UnixHTTP(HTTPConnection):
-    """HTTP over a unix socket, spelled the way 3.14's stdlib wants it.
-
-    `HTTPConnection(unix_socket=...)` is the convenient spelling and it is NOT in this box's
-    Python (measured on the first Rust-arm boot, 2026-11-07: `TypeError: __init__() got an
-    unexpected keyword argument 'unix_socket'`, twice, on the page's own GET). The portable form
-    is a subclass that overrides `connect()` and hands the base class an AF_UNIX socket — the same
-    shape the parity harness has used all week."""
-
-    def __init__(self, socket_path: str, timeout: float = 15.0):
-        super().__init__("localhost", timeout=timeout)
-        self.socket_path = socket_path
-
-    def connect(self):
-        # create_connection wants an (address, port) pair; a unix socket is one name, so the pair
-        # is spelled by hand — the same four lines the parity harness has used all week
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect(self.socket_path)
 
 
 def _memory_switch_off(v) -> bool:
@@ -332,71 +309,6 @@ def _memory_switch_off(v) -> bool:
     if isinstance(v, str):
         return v.strip().lower() in ("", "0", "off", "false", "no", "none")
     return False
-
-
-def wire_rust_arm(svc, mcfg: dict) -> bool:
-    """Turn the Rust arm on for one boot: the flag, the proxy, and the service's handle on it.
-
-    The ORDER is the contract. `memory.rust` decides whether the proxy has a socket at all, the
-    proxy must exist before the store is handed it, and the store must hold it before the first
-    chat turn builds a block. Getting it wrong is not subtle: the first Rust-arm boot died on
-    `AttributeError: 'Service' object has no attribute 'rust_proxy'` (2026-11-07) because the
-    hand-over sat above the construction. `serve/test_memory.py` pins all three steps.
-    """
-    svc.memory_rust = not _memory_switch_off(mcfg.get("rust", False))
-    svc.rust_proxy = RustMemoryProxy(
-        str(mcfg.get("rust_socket") or RUST_SOCKET_DEFAULT) if svc.memory_rust else "",
-        float(mcfg.get("rust_timeout") or 15))
-    if getattr(svc, "memory", None) is not None:
-        svc.memory.rust = svc.rust_proxy if svc.memory_rust else None
-    return svc.memory_rust
-
-
-class RustMemoryProxy:
-    """The store answered by the Rust sidecar over a unix socket (P6.1, `memory.rust`).
-
-    SHIP WITHOUT A CLIFF: Python stays the default and the sidecar is opt-in, so the flag swaps
-    the arm and not the contract. One connection per call — the socket is local and the calls are
-    short — and a sidecar that is not listening is NOT an error: `call` answers None and the
-    handler falls through to the in-process service, which is what ships today.
-
-    Only the verbs the sidecar actually serves go through. `curate`, `cartridge`, `mint`, `remint`
-    and `retire` stay with the Python, because those are the ones that reach into the engine for a
-    slot hand-back, and the sidecar has no engine of its own.
-    """
-
-    SERVED = ("remember", "forget", "purge", "invalidate", "correct", "classify", "pin", "link",
-              "turn", "turns", "turns_mark", "search", "stats", "browse", "carts", "docs",
-              "register", "retire", "verdict", "curate")
-
-    def __init__(self, socket_path: str = "", timeout: float = 15.0):
-        self.socket_path = str(socket_path or "")
-        self.timeout = float(timeout)
-        self.calls = 0            # served by Rust
-        self.fallbacks = 0        # answered by Python because the socket was not there
-
-    def can(self, op: str) -> bool:
-        return bool(self.socket_path) and str(op or "search") in self.SERVED
-
-    def call(self, method: str, path: str, body=None):
-        """One request, one reply, or None. A 5xx is a fallback too: a store that answers 500 on
-        a write the Python can serve is a reason to use the Python, not to fail the request."""
-        try:
-            conn = _UnixHTTP(self.socket_path, self.timeout)
-            conn.request(method, path, body=None if body is None else json.dumps(body),
-                         headers={"Content-Type": "application/json"})
-            with conn.getresponse() as r:
-                payload = r.read().decode()
-                if r.status >= 500:
-                    self.fallbacks += 1
-                    return None
-                out = json.loads(payload or b"{}")
-            conn.close()
-            self.calls += 1
-            return out
-        except (OSError, HTTPException, ValueError):
-            self.fallbacks += 1
-            return None
 
 
 class ContextOverflow(ValueError):
@@ -10542,11 +10454,6 @@ def make_handler(svc: Service):
 
             With `memory.rust` on, the sidecar answers the whole shape (stats, the fact list, the
             recall hits) and the Python serves it only when the socket is not there."""
-            if getattr(svc, "memory_rust", False):
-                got = svc.rust_proxy.call("GET", self.path or "/memory")
-                if got is not None:
-                    self._json(200, got)
-                    return
             if svc.memory is None:
                 self._json(404, {"error": {"message": 'memory is off: add "memory" to the engine config, or '
                                                       "start the server with --memory DIR"}})
@@ -10748,14 +10655,6 @@ def make_handler(svc: Service):
                                                       "start the server with --memory DIR"}})
                 return
             op = str(req.get("op") or "").lower()
-            if getattr(svc, "memory_rust", False) and svc.rust_proxy.can(op):
-                # the sidecar's POST /memory answers the same envelope the Python does
-                # (`{"ok": true, **reply}`), so the client cannot tell the arms apart
-                got = svc.rust_proxy.call("POST", "/memory", req)
-                if got is not None:
-                    self._json(200, got)
-                    return
-
             if op == "remember":
                 guard = req.get("guard", True)
                 if isinstance(guard, str):      # tolerant on the wire, same style as the mute header
@@ -13170,14 +13069,6 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                 mcfg, embedder=ed or None)
         except (ValueError, OSError, TypeError) as e:
             raise SystemExit(f"[strata] memory: {e}")
-        # THE RUST ARM (P6.1, `memory.rust`): the store answered by the sidecar over a unix
-        # socket. OFF by default, so the boot today is today's boot; a socket that is not
-        # listening falls back to the in-process service, per call, no cliff.
-        # `memory.rust_socket` names the socket (this box: /home/eugene/Strata-data/sessions/strata-memory.sock).
-        wire_rust_arm(svc, mcfg)
-        if svc.memory_rust:
-            print(f"[strata] memory: RUST arm on — /memory proxies to {svc.rust_proxy.socket_path} "
-                  "(verbs it does not serve fall back to Python)", flush=True)
         # THE RERANK ARM (2026-11-02, the reading stage): opt-in, and the client is
         # the box's own HTTP surface - serve/ keeps no model-client dependency, so
         # the store asks the server the same way any app does. memory.rerank = "on"
