@@ -16,6 +16,12 @@ async function api(path, body) {
 }
 function note(msg, bad) { const e = $("error"); e.hidden = !msg; e.textContent = msg || ""; if (bad) e.scrollTop = 0; }
 const when = t => typeof t === "number" ? new Date(t * 1000).toLocaleString() : "—";
+// 18th-century print typography, for READING only. Blackstone's and Blackstone's contemporaries
+// were set with the long-s — `uſe`, `conſtitution`, `ſeveral` — and the print line breaks mid-word,
+// so a row carries `per- haps` and `rea- ſon`. The ledger keeps the scan verbatim (the apparatus
+// is not the text); this transforms the display, not the row, so a copy out of the page still
+// matches the stored bytes in the browser's own normalizing form.
+const readable = t => String(t ?? "").replace(/\u017F/g, "s").replace(/-\s+/g, "");
 let lastView = { q: "" };
 let STATS = {};          // last stats read, so the tier-2 view can paint without a second call
 let TIER = "t3";
@@ -24,7 +30,7 @@ function factRow(m) {
   const li = document.createElement("li");
   li.className = "fact";
   const cls = m.class ? `<span class="chip cls">${esc(m.class)}</span>` : `<span class="chip">wild</span>`;
-  li.innerHTML = `<div class="body"><div class="txt">${esc(m.text)}</div>
+  li.innerHTML = `<div class="body"><div class="txt">${esc(readable(m.text))}</div>
     <div class="meta">#${m.id} · ${cls}<span class="chip">${esc(m.scope || "default")}</span>
       conf ${Number(m.confidence ?? 1).toFixed(2)} · ${m.hits || 0} recall${m.hits === 1 ? "" : "s"} · ${when(m.updated_at || m.created_at)}</div></div>`;
   const btn = document.createElement("button");
@@ -95,9 +101,13 @@ function renderCart() {
   $("c-state").textContent = c ? c.state : "off";
   $("c-sub").textContent = c ? `file ${c.file || "(not applied yet)"} · soul ${c.soul_chars} ch`
                              : "memory.cartridges in the config";
-  $("c-facts").textContent = c ? (c.facts_mode === false ? c.sources.length + " files" : c.facts) : "—";
+  // `sources` is a list of NAMES on the wire; the guard is so that one absent key costs one tile
+  // and not the five below it (measured 2026-11-07: the Rust arm answered the ledger's object,
+  // `.join` threw, and Carts / Index / Re-seed / the vault / the ledger all kept their placeholders)
+  const src = (c && Array.isArray(c.sources)) ? c.sources : [];
+  $("c-facts").textContent = c ? (c.facts_mode === false ? src.length + " files" : c.facts) : "—";
   $("c-factsub").textContent = c ? (c.facts_mode === false
-    ? `${(c.sources.join(" + ") || "(nothing to stand)")} · ${(c.bytes / 1048576).toFixed(0)} MB · shelved facts ride the block`
+    ? `${(src.join(" + ") || "(nothing to stand)")} · ${((c.bytes || 0) / 1048576).toFixed(0)} MB · shelved facts ride the block`
     : `${(c.bytes / 1048576).toFixed(0)} MB · ${c.left_for_block} left for the block · cap ${c.max_chars} ch`) : "";
   $("c-index").textContent = (STATS.by_class && STATS.by_class["MEM/CAT"]) ?? "—";
   $("c-indexsub").textContent = "MEM/CAT labels on the map of the shelves";

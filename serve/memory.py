@@ -3561,11 +3561,35 @@ class MemoryService:
         return {"name": name, "file": file, "kind": kind,
                 "created": bool(cur[0]), "previous_file": cur[1] or ""}
 
+    CART_TEXT_PREVIEW = 200        # what a thinned cart's sources.text keeps (P0.2, 2026-11-06)
+
+    @classmethod
+    def _thin_sources(cls, src):
+        """Shrink a cart's carried text for a LISTING. An episode cart stores its source text
+        verbatim (the ruling: the text is the territory, and 3.7 MB of it is what a /memory card
+        paid for on every call), so the card gets a preview plus the honest `chars` count and the
+        caller asks for `full=True` when it wants the bytes back. Small keys ride untouched -
+        title, base, uri, files, row_ids, shelf_prefixes all stay as they are."""
+        if not isinstance(src, dict):
+            return src
+        text = src.get("text")
+        if not isinstance(text, str) or len(text) <= cls.CART_TEXT_PREVIEW:
+            return src
+        out = dict(src)
+        out["chars"] = len(text)
+        out["text"] = text[:cls.CART_TEXT_PREVIEW] + "…"
+        return out
+
     @_heals
-    def carts_get(self, name: str = "") -> list:
+    def carts_get(self, name: str = "", full: bool = True) -> list:
         """The ledger rows, newest-minted first; a name narrows to that one cart. Sources come
         back as a dict (psycopg parses the jsonb); timestamps leave as epoch floats, the API
-        contract's own tongue (_ep law, ADR-002: storage is timestamptz, the boundary converts)."""
+        contract's own tongue (_ep law, ADR-002: storage is timestamptz, the boundary converts).
+
+        full=True is the ledger's own tongue and the default, so every caller that reads a cart's
+        text - the graft (server.py's graft_name path), the mint's caught_up check - keeps what it
+        reads today. full=False thins only sources.text (see _thin_sources): the /memory card uses
+        it, and the episode rows are 143 carts carrying up to 188 KB of source text each."""
         with self.lock:
             rows = self.conn.execute(
                 "select name, file, kind, sources, tokens, bytes, created_at, minted_at,"
@@ -3579,6 +3603,8 @@ class MemoryService:
             d = dict(zip(cols[:6], r[:6]))
             d.update(created=self._ep(r[6]), minted=self._ep(r[7]))
             d.update(zip(cols[6:], r[8:]))
+            if not full:
+                d["sources"] = self._thin_sources(d["sources"])
             out.append(d)
         return out
 
@@ -3724,7 +3750,21 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
         return (prepend_head(messages, notice) if notice else messages), {
             "scope": scope, "user": last_user, "model": req.get("model"),
             "query": last_user, "classes": classes, "hits": []}
-    block, hits, query = mem.block_for(messages, scope, classes, semantic=semantic)
+    # THE RUST ARM (P6.1's flag, P6.5's hot path): the block is the one memory read EVERY chat
+    # turn makes, so it is the read that decides whether one arm or two carry the store. When
+    # `memory.rust` is on, the sidecar builds both blocks and the Python's in-process service is
+    # the fallback — per call, no cliff. The bytes are the contract: P3.3's parity bar is byte
+    # equality, so a parked conversation's prefix does not fork when the arm answers.
+    rust = getattr(mem, "rust", None)
+    wire = {"messages": messages, "scope": scope, "semantic": semantic,
+            "class": ",".join(classes) if classes else None}
+    block, hits, query = None, [], ""
+    if rust is not None:
+        got = rust.call("POST", "/block", wire)
+        if got is not None and got.get("block"):
+            block, hits, query = got["block"], (got.get("hits") or []), (got.get("query") or "")
+    if block is None:
+        block, hits, query = mem.block_for(messages, scope, classes, semantic=semantic)
     if block is None:
         # journal even when nothing was recalled: a quiet turn today is tomorrow's curation source,
         # and a scope with no facts yet could never bootstrap otherwise. No bytes join the prompt -
@@ -3734,8 +3774,15 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
             return messages, None
         return messages, {"scope": scope, "user": last_user, "model": req.get("model"), "query": query,
                           "classes": classes, "hits": []}
-    tblock, thits = mem.turn_block_for(messages, scope, [h["id"] for h in hits], classes,
-                                       semantic=semantic)
+    tblock, thits = None, None
+    if rust is not None:
+        got = rust.call("POST", "/block", dict(wire, turn=True,
+                                               exclude_ids=[h["id"] for h in hits]))
+        if got is not None:
+            tblock, thits = got.get("block"), (got.get("hits") or [])
+    if tblock is None and thits is None:
+        tblock, thits = mem.turn_block_for(messages, scope, [h["id"] for h in hits], classes,
+                                           semantic=semantic)
     ctx = {"scope": scope, "user": last_user, "model": req.get("model"), "query": query,
            "classes": classes, "hits": [h["id"] for h in hits] + [h["id"] for h in thits]}
     # The Qwen chat template allows ONE system message, at index 0 ("System message must be at the
@@ -3862,3 +3909,54 @@ def journal_stream(items, mem: "MemoryService", ctx: dict):
             except Exception as e:     # noqa: BLE001 - the journal is never allowed to break a reply
                 print(f"[strata] journal: the turn was not stored ({type(e).__name__}: "
                       f"{str(e).splitlines()[0]})", flush=True)
+def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None,
+                        embedder=None) -> "MemoryService":
+    """A MemoryService built from the config's `memory` block — the mapping the server applies,
+    in ONE place so a harness measures the store the box actually serves.
+
+    Measured, 2026-11-07: the Rust port's block harness constructed `MemoryService(dir)` in
+    process and compared it to the sidecar. The pick differed on all 20 turns, and the cause was
+    not the ranking — it was that the constructor defaults are NOT this box's numbers:
+    `recall_limit` 8 vs 96, `max_block_chars` 6,000 vs 48,000, `block_min_score` 0 vs 0.15,
+    `expose_*` off vs 0.05/12/3, `route_shelves` off vs on, `route_demote` 0 (FILTER) vs 0.5
+    (DEMOTE), and no embedder at all. An in-process arm on defaults is a third arm, and an A/B
+    against it measures the config, not the port.
+    """
+    mcfg = mcfg or {}
+    def flag(key, default=False):
+        v = mcfg.get(key)
+        if v is None:
+            return default
+        if isinstance(v, str):
+            return v.strip().lower() in ("1", "on", "true", "yes")
+        return bool(v)
+    return MemoryService(
+        directory,
+        pg_uri=pg_uri,
+        max_block_chars=mcfg.get("max_block_chars") or 6000,
+        recall_limit=mcfg.get("recall_limit") or 8,
+        per_turn=mcfg.get("per_turn") is not False,
+        turn_recall_limit=mcfg.get("turn_recall_limit") or 8,
+        turn_block_chars=mcfg.get("turn_block_chars") or 2000,
+        max_memories=mcfg.get("max_memories") or 0,
+        dedup_recall=mcfg.get("dedup_recall") is not False,
+        encrypt=mcfg.get("encrypt") not in (None, False, 0, "", "off"),
+        key_file=str(mcfg.get("key_file") or ""),
+        passphrase_env=str(mcfg.get("passphrase_env") or ""),
+        inject=mcfg.get("inject") is not False,
+        tool=flag("tool"),
+        tool_rounds=int(mcfg.get("tool_rounds") if mcfg.get("tool_rounds") is not None else 3),
+        floor_cosine=float(mcfg.get("floor_cosine") or 0.0),
+        auto_shelve=flag("auto_shelve"),
+        block_min_score=float(mcfg.get("block_min_score") or 0.0),
+        block_doc_cap=int(mcfg.get("block_doc_cap")
+                          if mcfg.get("block_doc_cap") is not None else 1200),
+        expose_window=int(mcfg.get("expose_window") or 0),
+        expose_step=float(mcfg.get("expose_step") or 0.0),
+        expose_cap=int(mcfg.get("expose_cap") or 3),
+        route_shelves=flag("route_shelves"),
+        route_demote=float(mcfg.get("route_demote") or 0.0),
+        block_position=str(mcfg.get("block_position") or "head"),
+        embedder=(embedder if embedder is not None else (mcfg.get("embedder") or None)),
+    )
+
