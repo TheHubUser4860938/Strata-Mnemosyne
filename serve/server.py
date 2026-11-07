@@ -51,13 +51,17 @@ import threading
 import time
 import urllib.request
 import uuid
-from http.client import HTTPException
+from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterator, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+# The sidecar's socket lives in the data folder, NOT /tmp: /tmp is wiped on shutdown, so a /tmp
+# socket means every boot starts with a dead proxy and the page reads "Failed to fetch" while the
+# sidecar is healthy (measured 2026-11-07, twice).
+RUST_SOCKET_DEFAULT = "/home/eugene/Strata-data/sessions/strata-memory.sock"
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages, anthropic_tools,  # noqa: E402
@@ -293,6 +297,106 @@ KEEPALIVE_S = 10.0          # a held-back tool argument leaves the stream quiet:
 # setup) makes them post /v1/v1/messages; these two paths mean the same as the real ones. Nothing else is aliased.
 V1_V1_ALIASES = {"/v1/v1/messages": "/v1/messages", "/v1/v1/messages/count_tokens": "/v1/messages/count_tokens"}
 CTX_SLACK = 8               # `strata --serve` rejects prompt + max_new + 8 > context: keep the same margin here
+
+
+class _UnixHTTP(HTTPConnection):
+    """HTTP over a unix socket, spelled the way 3.14's stdlib wants it.
+
+    `HTTPConnection(unix_socket=...)` is the convenient spelling and it is NOT in this box's
+    Python (measured on the first Rust-arm boot, 2026-11-07: `TypeError: __init__() got an
+    unexpected keyword argument 'unix_socket'`, twice, on the page's own GET). The portable form
+    is a subclass that overrides `connect()` and hands the base class an AF_UNIX socket — the same
+    shape the parity harness has used all week."""
+
+    def __init__(self, socket_path: str, timeout: float = 15.0):
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self):
+        # create_connection wants an (address, port) pair; a unix socket is one name, so the pair
+        # is spelled by hand — the same four lines the parity harness has used all week
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.socket_path)
+
+
+def _memory_switch_off(v) -> bool:
+    """One honest reading of the opt-out (review 2026-10-24): the old test was a case-sensitive
+    tuple, so a hand-written `"enabled": "OFF"` in strata-*.json left the memory system ON - the
+    byte-identical escape hatch failing on the one value a person types by hand. false, 0, or any
+    spelling of off/false/no/none/empty means OFF; absent or true means ON (the fork default)."""
+    if isinstance(v, bool):
+        return not v
+    if isinstance(v, (int, float)):
+        return v == 0
+    if isinstance(v, str):
+        return v.strip().lower() in ("", "0", "off", "false", "no", "none")
+    return False
+
+
+def wire_rust_arm(svc, mcfg: dict) -> bool:
+    """Turn the Rust arm on for one boot: the flag, the proxy, and the service's handle on it.
+
+    The ORDER is the contract. `memory.rust` decides whether the proxy has a socket at all, the
+    proxy must exist before the store is handed it, and the store must hold it before the first
+    chat turn builds a block. Getting it wrong is not subtle: the first Rust-arm boot died on
+    `AttributeError: 'Service' object has no attribute 'rust_proxy'` (2026-11-07) because the
+    hand-over sat above the construction. `serve/test_memory.py` pins all three steps.
+    """
+    svc.memory_rust = not _memory_switch_off(mcfg.get("rust", False))
+    svc.rust_proxy = RustMemoryProxy(
+        str(mcfg.get("rust_socket") or RUST_SOCKET_DEFAULT) if svc.memory_rust else "",
+        float(mcfg.get("rust_timeout") or 15))
+    if getattr(svc, "memory", None) is not None:
+        svc.memory.rust = svc.rust_proxy if svc.memory_rust else None
+    return svc.memory_rust
+
+
+class RustMemoryProxy:
+    """The store answered by the Rust sidecar over a unix socket (P6.1, `memory.rust`).
+
+    SHIP WITHOUT A CLIFF: Python stays the default and the sidecar is opt-in, so the flag swaps
+    the arm and not the contract. One connection per call — the socket is local and the calls are
+    short — and a sidecar that is not listening is NOT an error: `call` answers None and the
+    handler falls through to the in-process service, which is what ships today.
+
+    Only the verbs the sidecar actually serves go through. `curate`, `cartridge`, `mint`, `remint`
+    and `retire` stay with the Python, because those are the ones that reach into the engine for a
+    slot hand-back, and the sidecar has no engine of its own.
+    """
+
+    SERVED = ("remember", "forget", "purge", "invalidate", "correct", "classify", "pin", "link",
+              "turn", "turns", "turns_mark", "search", "stats", "browse", "carts", "docs",
+              "register", "retire", "verdict", "curate")
+
+    def __init__(self, socket_path: str = "", timeout: float = 15.0):
+        self.socket_path = str(socket_path or "")
+        self.timeout = float(timeout)
+        self.calls = 0            # served by Rust
+        self.fallbacks = 0        # answered by Python because the socket was not there
+
+    def can(self, op: str) -> bool:
+        return bool(self.socket_path) and str(op or "search") in self.SERVED
+
+    def call(self, method: str, path: str, body=None):
+        """One request, one reply, or None. A 5xx is a fallback too: a store that answers 500 on
+        a write the Python can serve is a reason to use the Python, not to fail the request."""
+        try:
+            conn = _UnixHTTP(self.socket_path, self.timeout)
+            conn.request(method, path, body=None if body is None else json.dumps(body),
+                         headers={"Content-Type": "application/json"})
+            with conn.getresponse() as r:
+                payload = r.read().decode()
+                if r.status >= 500:
+                    self.fallbacks += 1
+                    return None
+                out = json.loads(payload or b"{}")
+            conn.close()
+            self.calls += 1
+            return out
+        except (OSError, HTTPException, ValueError):
+            self.fallbacks += 1
+            return None
 
 
 class ContextOverflow(ValueError):
@@ -8891,19 +8995,23 @@ class CartMinter:
         except Exception:                                        # noqa: BLE001 - see index_line
             return []
 
-    def carts(self, name: str = "") -> list:
+    def carts(self, name: str = "", full: bool = True) -> list:
         """The ledger with one honest extra field: whether the .bin the row names ACTUALLY stands
         in the vault (the surfaces report absences, they do not assume them). The filter speaks
         the ledger's own tongue: names are stored lowercase (NAME_RE), so "Page1" must FIND
-        page1, not answer an empty list that reads like an absence (audit finding 12)."""
-        rows = self.svc.memory.carts_get(str(name or "").strip().lower())
+        page1, not answer an empty list that reads like an absence (audit finding 12).
+
+        full=False thins each row's carried text to a preview (memory.CART_TEXT_PREVIEW) - the
+        card lists carts, it does not read them, and 143 episode rows were 3.7 MB per /memory."""
+        rows = self.svc.memory.carts_get(str(name or "").strip().lower(), full=full)
         vault = self.svc.slot_save_path or ""
         for r in rows:
             r["file_exists"] = bool(vault) and os.path.exists(os.path.join(vault, r["file"]))
         return rows
 
-    def view(self):
-        return self.carts()
+    def view(self, full: bool = False):
+        """The card's shape: the whole ledger, texts thinned unless ?carts=full asks for bytes."""
+        return self.carts(full=full)
 
 
 def graft_mark(svc, headers, req):
@@ -10430,7 +10538,15 @@ def make_handler(svc: Service):
 
         def _memory_get(self):
             """memory-core: GET /memory - store stats and the recent facts; with ?q=, a recall search.
-            ?scope= filters (or searches that project plus the user scope); ?limit= caps the list."""
+            ?scope= filters (or searches that project plus the user scope); ?limit= caps the list.
+
+            With `memory.rust` on, the sidecar answers the whole shape (stats, the fact list, the
+            recall hits) and the Python serves it only when the socket is not there."""
+            if getattr(svc, "memory_rust", False):
+                got = svc.rust_proxy.call("GET", self.path or "/memory")
+                if got is not None:
+                    self._json(200, got)
+                    return
             if svc.memory is None:
                 self._json(404, {"error": {"message": 'memory is off: add "memory" to the engine config, or '
                                                       "start the server with --memory DIR"}})
@@ -10468,7 +10584,11 @@ def make_handler(svc: Service):
             if getattr(svc, "cartridges", None) is not None:    # M3b: the cartridge reports beside the store
                 stats["cartridges"] = svc.cartridges.view()
                 if svc.carts is not None:      # the S3 ledger rides the same card (2026-10-25):
-                    stats["carts"] = svc.carts.view()    # every cart, and whether its file stands
+                    stats["carts"] = svc.carts.view(     # every cart, and whether its file stands.
+                        full=(str((qs.get("carts") or [""])[0]).strip().lower() == "full"))
+                        # ?carts=full carries each episode cart's source text (up to 188 KB a row);
+                        # the card reads name, kind, state, tokens, bytes, file - the thin rows are
+                        # all of it, and 3.73 MB of /memory came down to 65 KB (P0.2, 2026-11-06).
             self._json(200, {"stats": stats,
                              "memories": svc.memory.list_memories(scope=memory_api.scope_name(scope, "") or None,
                                                                   limit=limit, include_invalid=inv not in ("", "0"),
@@ -10628,6 +10748,14 @@ def make_handler(svc: Service):
                                                       "start the server with --memory DIR"}})
                 return
             op = str(req.get("op") or "").lower()
+            if getattr(svc, "memory_rust", False) and svc.rust_proxy.can(op):
+                # the sidecar's POST /memory answers the same envelope the Python does
+                # (`{"ok": true, **reply}`), so the client cannot tell the arms apart
+                got = svc.rust_proxy.call("POST", "/memory", req)
+                if got is not None:
+                    self._json(200, got)
+                    return
+
             if op == "remember":
                 guard = req.get("guard", True)
                 if isinstance(guard, str):      # tolerant on the wire, same style as the mute header
@@ -13009,18 +13137,6 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     if isinstance(mcfg, str):
         mcfg = {"dir": mcfg}
 
-    def _memory_switch_off(v) -> bool:
-        """One honest reading of the opt-out (review 2026-10-24): the old test was a case-sensitive
-        tuple, so a hand-written `"enabled": "OFF"` in strata-*.json left the memory system ON - the
-        byte-identical escape hatch failing on the one value a person types by hand. false, 0, or any
-        spelling of off/false/no/none/empty means OFF; absent or true means ON (the fork default)."""
-        if isinstance(v, bool):
-            return not v
-        if isinstance(v, (int, float)):
-            return v == 0
-        if isinstance(v, str):
-            return v.strip().lower() in ("", "0", "off", "false", "no", "none")
-        return False
 
     mem_off = mcfg is False or (isinstance(mcfg, dict) and "enabled" in mcfg
                                 and _memory_switch_off(mcfg["enabled"]))
@@ -13045,37 +13161,23 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             if _emb:
                 ed = {"dir": str(_emb)}
         try:
-            svc.memory = memory_api.MemoryService(
+            # the config -> service mapping lives in memory_api.service_from_config, so an offline
+            # harness builds the SAME service the server serves (measured 2026-11-07: the Rust
+            # port's block harness compared a defaults-built service to the sidecar, and every
+            # turn differed on the router's pick — a config gap, not a ranking gap).
+            svc.memory = memory_api.service_from_config(
                 a.memory or memory_api.memory_dir(mcfg.get("dir", "memory"), cfg.get("cwd")),
-                max_block_chars=mcfg.get("max_block_chars") or 6000,
-                recall_limit=mcfg.get("recall_limit") or 8,
-                per_turn=mcfg.get("per_turn") is not False,
-                turn_recall_limit=mcfg.get("turn_recall_limit") or 8,
-                turn_block_chars=mcfg.get("turn_block_chars") or 2000,
-                max_memories=mcfg.get("max_memories") or 0,
-                dedup_recall=mcfg.get("dedup_recall") is not False,
-                encrypt=mcfg.get("encrypt") not in (None, False, 0, "", "off"),
-                key_file=str(mcfg.get("key_file") or ""),
-                passphrase_env=str(mcfg.get("passphrase_env") or ""),
-                inject=mcfg.get("inject") is not False,
-                tool=mcfg.get("tool") is True or str(mcfg.get("tool") or "").lower() in ("1", "on", "true"),
-                tool_rounds=int(mcfg.get("tool_rounds") if mcfg.get("tool_rounds") is not None else 3),
-                floor_cosine=float(mcfg.get("floor_cosine") or 0.0),
-                auto_shelve=mcfg.get("auto_shelve") is True
-                            or str(mcfg.get("auto_shelve") or "").lower() in ("1", "on", "true"),
-                block_min_score=float(mcfg.get("block_min_score") or 0.0),
-                block_doc_cap=int(mcfg.get("block_doc_cap")
-                                  if mcfg.get("block_doc_cap") is not None else 1200),
-                expose_window=int(mcfg.get("expose_window") or 0),
-                expose_step=float(mcfg.get("expose_step") or 0.0),
-                expose_cap=int(mcfg.get("expose_cap") or 3),
-                route_shelves=mcfg.get("route_shelves") is True
-                              or str(mcfg.get("route_shelves") or "").lower() in ("1", "on", "true"),
-                route_demote=float(mcfg.get("route_demote") or 0.0),
-                block_position=str(mcfg.get("block_position") or "head"),
-                embedder=ed or None)
+                mcfg, embedder=ed or None)
         except (ValueError, OSError, TypeError) as e:
             raise SystemExit(f"[strata] memory: {e}")
+        # THE RUST ARM (P6.1, `memory.rust`): the store answered by the sidecar over a unix
+        # socket. OFF by default, so the boot today is today's boot; a socket that is not
+        # listening falls back to the in-process service, per call, no cliff.
+        # `memory.rust_socket` names the socket (this box: /home/eugene/Strata-data/sessions/strata-memory.sock).
+        wire_rust_arm(svc, mcfg)
+        if svc.memory_rust:
+            print(f"[strata] memory: RUST arm on — /memory proxies to {svc.rust_proxy.socket_path} "
+                  "(verbs it does not serve fall back to Python)", flush=True)
         # THE RERANK ARM (2026-11-02, the reading stage): opt-in, and the client is
         # the box's own HTTP surface - serve/ keeps no model-client dependency, so
         # the store asks the server the same way any app does. memory.rerank = "on"

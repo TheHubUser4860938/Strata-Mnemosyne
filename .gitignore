@@ -127,3 +127,6 @@ node_modules/
 engine-feed/engine/*/strata
 engine-feed/engine/*/strata-vision
 engine-feed/engine/*/libcublasLt.so.*
+
+# Rust build artifacts (5.5 GB of object files; the sources are what is tracked)
+rust/target/

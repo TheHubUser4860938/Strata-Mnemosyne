@@ -4401,3 +4401,50 @@ class CrossScopeDedupe(unittest.TestCase):
             m.close()
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class RustArmWiring(unittest.TestCase):
+    """P6.1's flag and P6.5's chat path: `wire_rust_arm` runs the three steps in ONE order.
+
+    The first Rust-arm boot died because the hand-over sat above the proxy's construction
+    (`AttributeError: 'Service' object has no attribute 'rust_proxy'`, 2026-11-07) — a five-line
+    ordering bug that every fixture diff and every page load in the world would have missed,
+    because the flag was only ever exercised with the sidecar already running.
+    """
+
+    def _svc(self, memory=None):
+        import types
+        return types.SimpleNamespace(memory=memory)
+
+    def test_flag_on_hands_the_proxy_to_the_store(self):
+        from serve.server import RUST_SOCKET_DEFAULT, wire_rust_arm
+        mem = self._svc()
+        svc = self._svc(memory=mem)
+        self.assertTrue(wire_rust_arm(svc, {"rust": True}), "the flag answers for the boot")
+        self.assertIs(svc.memory.rust, svc.rust_proxy,
+                      "the store holds THE proxy the server built, not a copy of it")
+        self.assertEqual(svc.rust_proxy.socket_path, RUST_SOCKET_DEFAULT)
+        self.assertTrue(svc.rust_proxy.socket_path.startswith("/home/"),
+                        "the socket survives a shutdown: /tmp is wiped, and a missing socket is a "
+                        "dead proxy wearing a healthy sidecar's clothes")
+        self.assertTrue(svc.rust_proxy.can("search") and svc.rust_proxy.can("curate"),
+                        "the verbs the sidecar serves")
+        self.assertFalse(svc.rust_proxy.can("cartridge"),
+                        "the engine-touching verbs stay with the Python — it owns the slot hand-back")
+
+    def test_flag_off_leaves_the_python_arm_alone(self):
+        from serve.server import wire_rust_arm
+        mem = self._svc()
+        svc = self._svc(memory=mem)
+        self.assertFalse(wire_rust_arm(svc, {}))
+        self.assertIsNone(svc.memory.rust, "off: the store keeps its in-process service")
+        self.assertEqual(svc.rust_proxy.socket_path, "")
+        self.assertIsNone(svc.rust_proxy.call("GET", "/memory"),
+                          "no socket: every call is a fallback, per call, no cliff")
+        self.assertEqual(svc.rust_proxy.fallbacks, 1)
+
+    def test_a_store_with_no_memory_service_still_boots(self):
+        from serve.server import wire_rust_arm
+        svc = self._svc(memory=None)        # memory disabled in the config
+        self.assertTrue(wire_rust_arm(svc, {"rust": "on"}))
+        self.assertIsNotNone(svc.rust_proxy, "the proxy exists for whoever asks next")
