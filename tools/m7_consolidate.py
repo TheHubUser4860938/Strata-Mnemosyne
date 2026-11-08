@@ -59,8 +59,12 @@ def main() -> int:
     args = ap.parse_args()
 
     conn = M.attach(args.dir)
+    # FACTS ONLY (audit 2026-11-07): the corpus is a ROUTING MAP, and 33k chunk rows are not
+    # paraphrases of each other - the pass clustered 4,000 sampled chunks into 721 clusters
+    # (1,693 rows to retire, 42%) because 73% of them share print typography. The matrix is the
+    # other half of the bill: 35,462 rows is a 5.03 GB S = V@V.T on a 125 GB box.
     rows = conn.execute("""SELECT m.id, m.text, e.vec FROM memories m JOIN embeddings e ON e.id = m.id
-                           WHERE m.invalid_at IS NULL""").fetchall()
+                           WHERE m.invalid_at IS NULL and """ + M.DOC_FACT_SQL).fetchall()
     conn.close()
     dupes = cluster(rows, args.threshold)
     purge = sum(len(d[2]) for d in dupes)

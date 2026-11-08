@@ -146,11 +146,20 @@ def main() -> int:
                 for cl, n in sorted(shelves.items()):
                     top = cl.split("/")[0]
                     if top in pairs and pairs[top] != top:
-                        cut = cl.split("/")[1] if "/" in cl else pairs[top]
-                        post(cl, f"{pairs[top]}/{cut}", "top")
+                        # A bare invented top IS the family: "FLUOR" -> BIO, not BIO/BIO
+                        # (audit 2026-11-07 - the collapse law lived in clerk_class and
+                        # m4_reshelve's _one, so every tidy run re-minted the self-nested
+                        # drawers the 11-06 census had just collapsed).
+                        cut = cl.split("/")[1] if "/" in cl else ""
+                        post(cl, f"{pairs[top]}/{cut}" if cut else pairs[top], "top")
             else:
                 print("tops: nothing invented to place")
         if a.roll:
+            # The tops pass MOVES rows: its UPDATEs land before the roll reads the census, so a
+            # stale dict posts moves that match zero rows and logs them as done (audit 2026-11-07),
+            # and the freshly renamed cutter is the one under the bar that never gets rolled.
+            if a.apply and a.tops:
+                shelves = census(svc)
             n = 0
             for cl, cnt in sorted(shelves.items()):
                 if "/" in cl and cnt < a.bar:

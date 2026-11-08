@@ -223,7 +223,10 @@ def main() -> int:
             for j, (mid, cur, text) in enumerate(chunk):
                 new, kind = got.get(j + 1, ("", "unparsed"))
                 tally[f"{kind}:{new or 'WILD'}"] += 1
-                if new and new != cur:
+                if new and new != cur and kind in ("existing", "new"):
+                    # `unknown` is a PROPOSAL, not an address (audit 2026-11-07): a code off the
+                    # menu used to be written, which is the pile the shelftidy pass exists to roll
+                    # up - 25 invented tops in the 11-02 census.
                     moved += 1
                     log.write(json.dumps({"id": mid, "from": cur, "to": new, "kind": kind,
                                           "text": text[:200]}) + "\n")

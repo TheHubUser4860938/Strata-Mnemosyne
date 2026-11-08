@@ -299,6 +299,40 @@ def _pick_target(fact, rows, min_created=0.0):
     return scored[0][2], scored[0][0], None
 
 
+_SCOPE_CACHE: dict = {}
+
+
+def _scope_rows(url, scope, log, pages=8, page=500, refresh=False):
+    """Every active row of one scope, in pages. The picker used to read `limit=500` and stop,
+    which on this store is 500 of 1,664 facts (30%): a correction whose target was touched three
+    weeks ago found no target, stored as a plain new fact, and the stale value kept living beside
+    it. Ordered newest-first, so a page break costs the OLDEST misses, not an arbitrary sample.
+
+    Cached for the life of the process (one sweep), because a window asks once per CORRECT
+    candidate and the answer moves only under the sweep itself - and the batch guard
+    (min_created) already ignores the rows this run wrote."""
+    key = (url, scope)
+    if not refresh and key in _SCOPE_CACHE:
+        return _SCOPE_CACHE[key]
+    out, after = [], None
+    for _ in range(max(1, pages)):
+        u = f"{url}/memory?scope={urllib.parse.quote(scope)}&limit={page}"
+        if after:
+            u += f"&before_id={after}"
+        st, r = http(u)
+        rows = (r or {}).get("memories") if st == 200 else None
+        if not rows:
+            break
+        out.extend(rows)
+        if len(rows) < page:
+            break
+        after = rows[-1].get("id")
+    if len(out) >= pages * page:
+        log({"kind": "picker_truncated", "scope": scope, "rows": len(out)})
+    _SCOPE_CACHE[key] = out
+    return out
+
+
 def supersede_id(url, fact, scope, log, min_created=0.0):
     """The (id, text) of the active fact this CORRECT-class candidate replaces, or (None, None)
     (see _pick_target for the matching rules). Prefers the row with the most hits - the one
@@ -308,9 +342,8 @@ def supersede_id(url, fact, scope, log, min_created=0.0):
     correction that cannot find its target still stores as a plain new fact (op=remember),
     never fails."""
     try:
-        st, r = http(f"{url}/memory?scope={urllib.parse.quote(scope)}&limit=500")
         rows = [(m["id"], m["text"], m.get("hits", 0), m.get("created_at", 0))
-                for m in (r or {}).get("memories", [])] if st == 200 else []
+                for m in _scope_rows(url, scope, log)]
     except Exception as e:                                    # noqa: BLE001 - a lookup is never worth losing a fact
         log({"kind": "supersede_lookup", "err": str(e)[:100]})
         return None, None
@@ -347,9 +380,8 @@ def state_supersede_id(url, key, scope, log, min_created=0.0):
     the fresh one waiting for the model to pick - the journal's line 103 ("engine 0.1.43
     running") is the fossil this lane exists to bury."""
     try:
-        st, r = http(f"{url}/memory?scope={urllib.parse.quote(scope)}&limit=500")
         rows = [(m["id"], m.get("text", ""), m.get("created_at", 0))
-                for m in (r or {}).get("memories", [])] if st == 200 else []
+                for m in _scope_rows(url, scope, log)]
     except Exception as e:                                    # noqa: BLE001 - a lookup is never worth losing a fact
         log({"kind": "state_lookup_err", "err": str(e)[:100]})
         return None
@@ -409,7 +441,11 @@ def law_verdict(answer):
 
 
 _EXTRACT_RE = re.compile(
-    r"\s*FACT:\s*(.+?)\s*\|\|\s*PROBE:\s*(.+?)\s*\|\|\s*GOLD:\s*(.+?)\s*\|\|\s*SCOPE:\s*(user|project)"
+    # A list marker is TOLERATED (audit 2026-11-07): the prompt says "no numbering", and a small
+    # model that numbers its list anyway used to lose every fact on the numbered lines - and the
+    # turn was then marked processed, so the loss was permanent. 8,364 of 17,870 cron extracts
+    # recorded cands=0; this is the parse side of that number.
+    r"\s*(?:[-*+]\s+|\d+[.)]\s+)?FACT:\s*(.+?)\s*\|\|\s*PROBE:\s*(.+?)\s*\|\|\s*GOLD:\s*(.+?)\s*\|\|\s*SCOPE:\s*(user|project)"
     # ATTR captures ANY text ([^|]*), not just the three tokens: a garbled ATTR must DEMOTE
     # the candidate to unverified (parse_extract_line validates), never kill the whole line -
     # a field that silently deletes facts from the queue is its own new bug (measured by
@@ -624,7 +660,9 @@ if the fact is miscellaneous.
 
 Fact: {fact}
 """
-SHELF_ANSWER = re.compile(r"\b([A-Z][A-Z0-9]{1,7}(?:/[A-Z0-9]{2,8})?)\b")
+SHELF_ANSWER = re.compile(r"\b([A-Z][A-Z0-9]{1,7}(?:/[A-Z0-9]{2,8})?(?:\.[A-Za-z0-9]+)*)\b")
+# The dotted tail is a legal half of a call number (CLASS_RE advertises MEM/CRG.3.431) and the
+# pattern used to stop before it, so the clerk's best answer came back truncated (audit 2026-11-07).
 
 
 def clerk_class(fact: str, ask) -> str:
@@ -769,6 +807,11 @@ def main():
     ap.add_argument("--max-facts", type=int, default=2, help="candidate facts extracted per turn")
     ap.add_argument("--sweep", action="store_true", help="idle-gated batches (hot-loop shape)")
     ap.add_argument("--interval", type=int, default=60, help="--sweep: seconds between idle checks")
+    ap.add_argument("--max-wait", type=int, default=1800,
+                    help="--sweep: seconds to wait for the engine to go quiet before this tick "
+                         "gives up and exits 0 (audit 2026-11-07: the wait was unbounded - one tick "
+                         "held the 30-min timer for ~14 h on 2026-11-04, and flock -n skipped every "
+                         "tick behind it while the queue grew)")
     ap.add_argument("--idle-window", type=int, default=240,
                     help="--sweep: seconds the engine must go with NO request at all (server's "
                          "activity.last_request_at) before a batch may start - sustained quiet, "
@@ -871,9 +914,12 @@ def main():
                 law_emb = create(str(data_dir(ROOT) / "embeddings" / model), name=model, threads=4)
                 sdir = stats.get("dir") or (os.path.dirname(db_path) if db_path else "")
                 with _M.attach(sdir) as con:
+                    # FACTS ONLY (audit 2026-11-07): the law compares a fact to the facts the box
+                    # believes, and the candidate filter below is by SCOPE - so loading 33,382
+                    # corpus chunks every tick moved 109 MB of vectors to drop 20 runs later.
                     raw = con.execute("select m.id, m.text, m.scope, e.vec from memories m "
                                       "join embeddings e on e.id = m.id"
-                                      " where m.invalid_at is null").fetchall()
+                                      " where m.invalid_at is null and " + _M.DOC_FACT_SQL).fetchall()
                 V = np.stack([np.frombuffer(r[3], dtype=np.float32) for r in raw]) if raw \
                     else np.zeros((0, law_emb.dims), dtype=np.float32)
                 V = V / (np.linalg.norm(V, axis=1, keepdims=True) + 1e-9)
@@ -1125,6 +1171,7 @@ def main():
         print(f"idle-queue on: settle {a.settle:.0f}s, max age {a.queue_max_age:.0f}s, "
               f"{iqueue.pending()} slot(s) restored", flush=True)
     wmark_c = wmark_t = 0          # window watermarks into candidates / processed_ids
+    gate_t0 = time.time()          # the silence gate's own deadline (see --max-wait)
     batch_start = time.time()     # sibling protection for supersede: a correction's target must
     while True:                   # predate this batch - candidates from one sweep must not eat
                                   # each other's fresh rows (the 2026-10-12 turn-565-ate-564 bug)
@@ -1140,6 +1187,14 @@ def main():
         # /v1/status at all, so the gate never actually blocked: activity.in_flight does.)
         if a.sweep:
             st, svc = http(url + "/v1/status", timeout=15)
+            # FAIL CLOSED (audit 2026-11-07): the gate read `svc.get("activity")` on a reply that
+            # never arrived - http() answers (0, {"error": ...}) on a timeout - so a status probe
+            # that timed out mid-prefill opened the window and spent 60 extract asks straight into
+            # a busy box, the exact cost the 240 s gate was bought for on 2026-10-16.
+            if st != 200 or "activity" not in svc:
+                print(f"status probe failed (HTTP {st}) - sweep waits", flush=True)
+                time.sleep(min(a.interval, POLL_S))
+                continue
             act = svc.get("activity") or {}
             busy = ((act.get("in_flight") or 0) > 0 or bool(svc.get("busy"))
                     or (svc.get("queued") or 0) > 0)
@@ -1160,6 +1215,10 @@ def main():
             elif busy or quiet < a.idle_window:
                 print(f"engine busy or only {quiet:.0f}s quiet (wants {a.idle_window}) "
                       f"- sweep waits", flush=True)
+                if time.time() - gate_t0 > a.max_wait:
+                    print(f"sweep gives up after {(time.time() - gate_t0) / 60:.0f} min of waiting; "
+                          f"the queue keeps its turns for the next tick", flush=True)
+                    break
                 time.sleep(a.interval)
                 continue
         st, r = http(url + "/memory", {"op": "turns", "limit": min(1000, a.window)}, timeout=60)
@@ -1234,17 +1293,26 @@ def main():
         if not (a.dry_run or a.extract_only):
             s_ok, s_void = score_batch(win_c)
             unscored += s_void
-            if win_t and (not win_c or s_ok):
-                mark_ids(win_t)
-                marked_total += len(win_t)
-                note_mark = f"marked {len(win_t)}"
+            # MARK PER TURN, NOT PER WINDOW (audit 2026-11-07): s_ok is a COUNT, so one scored
+            # candidate in a 32-candidate window retired all 26 turns - the 31 facts whose cold
+            # arm never saw the light of day were gone from op=turns for good. A turn stays pending
+            # when ANY of its candidates came back UNSCORED: the blind arm gets a second chance,
+            # the seen ones do not pay twice (the store's dedup makes a re-read free).
+            blind = {c["turn_id"] for c in win_c if c.get("cls") == "UNSCORED"}
+            markable = [t for t in win_t if t not in blind]
+            if markable:
+                mark_ids(markable)
+                marked_total += len(markable)
+                note_mark = f"marked {len(markable)}"
             elif win_t:
                 note_mark = ('LEFT PENDING - all ' + str(len(win_c)) + ' candidates '
                              'UNSCORED (blind-gate law: an unscored window eats no turns)')
             else:
                 note_mark = ""
             print(f"window {batch + 1}: +{len(win_t)} turns, {len(win_c)} candidates, "
-                  f"{s_ok} scored, {s_void} unscored; {note_mark}", flush=True)
+                  f"{s_ok} scored, {s_void} unscored; {note_mark}"
+                  + (f"; {len(win_t) - len(markable)} left blind" if markable and win_t else ""),
+                  flush=True)
         batch += 1
         if a.dry_run or (a.batches and batch >= a.batches) or (a.limit and drained >= a.limit):
             break
