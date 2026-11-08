@@ -65,6 +65,14 @@ ANSWER_RULES = {
     "con": ("First quote the memory lines that bear on the question, then give the final answer "
             "in a few words on its own last line. If the memory does not hold what is needed, "
             "reply exactly idk on the last line."),
+    # THE EMISSION RULE (2026-11-08, Grok's fix #1 and #4, three judging passes running): the
+    # panel's losses are answer-shape, not retrieval - gold session coverage 0.857 on preference
+    # and the model still answers bare "idk". Emit the full value; idk only when the block truly
+    # lacks it. One style per arm; direct stays the default byte-path.
+    "emit": ("Answer in a few words - the FULL value the question asks for, not a part of it. "
+             "When the memory lines carry it, say it; when the question counts, compares, or "
+             "asks which came first, combine the lines and give the result. Reply exactly: idk "
+             "only when the memory does not hold what is needed."),
 }
 
 
@@ -475,7 +483,7 @@ def main(argv=None) -> int:
                     help="the LEXICAL arm (arm C1): sends X-Strata-Memory-Embedder: off on every "
                          "recall and ask, so both arms run against ONE store, ONE vector set and "
                          "ONE boot - the only difference between the two records is the reranker")
-    ap.add_argument("--style", choices=("direct", "con"), default="direct",
+    ap.add_argument("--style", choices=("direct", "con", "emit"), default="direct",
                     help="answer instruction: direct, or the authors' recommended extract-then-answer")
     ap.add_argument("--map", dest="map_path", default=None,
                     help="gold-map sidecar (default: OUT.map) - point at an earlier run's map to --skip-ingest")
