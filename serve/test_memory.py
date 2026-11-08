@@ -4719,6 +4719,27 @@ class BlockCoverageTest(unittest.TestCase):
         self.assertNotIn("fence", attr, "and a covered word is not listed")
         self.assertEqual(m.stats()["block_cover_terms"], 3, "stats proves which arm boots")
 
+    def test_the_tool_names_the_term_it_never_found(self):
+        # THIS BOX RUNS THE BROWSE ARM (inject off, tool on), so the payload below is what the model
+        # actually reads - the block header's `missing=` is the passive arm's version of the same rule.
+        m = MemoryService(self.tmp.name + "/tool", block_cover_terms=3)
+        self.addCleanup(m.close)
+        m.remember("the fence repair was booked for 9 May at the Coopersburg yard", scope="ops")
+        r = tool_result(m, {"q": "did I fix the fence before buying the cows"}, scope="ops")
+        self.assertEqual(r["ok"], True)
+        payload = json.loads(r["text"])
+        self.assertEqual(payload["found"], 1, "the fence row is returned")
+        self.assertIn("cows", payload["gap"], "and the payload says no row speaks of cows")
+        self.assertNotIn("fence", payload["gap"], "a covered term is not listed")
+
+    def test_the_tool_pays_nothing_when_the_list_covers_the_query(self):
+        m = MemoryService(self.tmp.name + "/tool0", block_cover_terms=3)
+        self.addCleanup(m.close)
+        m.remember("the fence repair was booked for 9 May at the Coopersburg yard", scope="ops")
+        payload = json.loads(tool_result(m, {"q": "the fence repair at Coopersburg"},
+                                         scope="ops")["text"])
+        self.assertNotIn("gap", payload, "a covered query's payload is byte-identical to today's")
+
     def test_the_coverage_line_is_off_by_default(self):
         m = MemoryService(self.tmp.name + "/cov0")
         self.addCleanup(m.close)
