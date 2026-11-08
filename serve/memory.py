@@ -1908,6 +1908,18 @@ class MemoryService:
             klass = old[0] if old and old[0] else None
         new = self.remember(text, scope=scope, source=source, confidence=confidence,
                             provenance=provenance, klass=klass)
+        if new.get("deduped") and new.get("id") != int(old_id):
+            # THE AMENDMENT LANDS (audit 2026-11-07). The sweep pays one engine ask to write the
+            # survivor's trail sentence ("X, superseding Y (was: Z)"); the write guard then compared
+            # that sentence to the store, found a >=75% twin in a THIRD row, and answered
+            # {"id": carrier, "deduped": "semantic"} - so the chain pointed at the carrier's older
+            # wording and the trail was never stored, while the sweep's journal recorded it as
+            # landed. A correction is the one write whose text was chosen on purpose: write it whole.
+            landed = self.remember(text, scope=scope, source=source, confidence=confidence,
+                                   provenance=provenance, klass=klass, guard=False, exact=False)
+            if landed.get("id"):
+                new = landed
+                new["amended"] = True
         if new.get("id") == int(old_id):
             # the write-path dedup suppressed this correction INTO the very row it replaces (>=75%
             # token overlap): the new text added nothing the carrier lacks, so the old row IS the
@@ -2678,7 +2690,14 @@ class MemoryService:
         out = []
         for pos, r in enumerate(rows):
             fresh = math.exp(-max(0.0, now - self._ep(r[4])) / 86400.0 / AGE_SCALE_DAYS)
-            score = 0.75 * ((k - pos) / k) + 0.25 * fresh + 0.10 * r[3]
+            # SCALED TO THE FUSION (audit 2026-11-07): the block floor is ONE number read by both
+            # arms, and the two scales disagreed - for k=8 the lexical blend ran 1.07..0.41 across
+            # ranks 1-8 while the fused arm ran 0.500..0.111, so block_min_score 0.15 (this box)
+            # cut NOTHING on the embedder-off arm and ranks 6-8 on the fused one, and the shipped
+            # within-boot A/B (X-Strata-Memory-Embedder: off) measured the floor as well as the arm.
+            # Dividing by the blend's own ceiling (0.75 + 0.25 + 0.10) puts rank 1 near 1.0 on both
+            # scales; the ORDER is untouched, so every block's bytes are stable.
+            score = (0.75 * ((k - pos) / k) + 0.25 * fresh + 0.10 * r[3]) / 1.10
             out.append(dict(id=r[0], scope=r[1], text=r[2], score=round(score, 4),
                             lex_rank=pos + 1,          # position in the bm25 list, BEFORE the blend
                             confidence=r[3], hits=r[6],  # the memory_search tool shows both; they were
