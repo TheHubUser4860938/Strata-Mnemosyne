@@ -342,6 +342,8 @@ def run(url: str, data: list[dict], out_path: str, repeats: int, k: int, types: 
         pass
     maps = load_map(map_path)
     stats, started = {"questions": 0, "lines": 0}, time.time()
+    seen_type: dict[str, int] = {}      # per_type: N of EVERY type (the dataset is grouped, so a
+                                        # plain --limit 50 reads one type all the way down)
     with open(out_path, "a") as out, open(map_path, "a") as mapf:
         for q in data:
             if limit and stats["questions"] >= limit:
