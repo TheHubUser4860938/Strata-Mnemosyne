@@ -455,7 +455,8 @@ MEMORY_TOOL = {
                     "browse with one tool: ask with WORDS (q searches); ask for the MAP (catalog:true "
                     "lists the shelves with row counts, newest dates and curated labels - read it first "
                     "when you do not know where to look); name a SHELF (class alone walks that drawer's "
-                    "newest rows, no words needed). Narrow any call with class (a shelf prefix like POL, "
+                    "newest rows, no words needed; add offset to page a big drawer to the bottom). "
+                    "Narrow any call with class (a shelf prefix like POL, "
                     "TECH, USR, or MEM/CRG) and/or since/until dates (YYYY-MM-DD) for when-said "
                     "questions. Use it whenever the memory block in context is not enough, or you are "
                     "unsure a fact is really there - and call it again with other words or another shelf "
@@ -3019,7 +3020,9 @@ class MemoryService:
         curated labels under the shelf they name (the stored half of the owner's option 3; the
         counts are always the live half). With prefixes the map drills that subtree AND answers the
         same call with the subtree's newest rows up to `limit` - so walking a drawer needs no
-        keywords, one call is the whole move. Rows are newest-first because a memory library is
+        keywords, one call is the whole move - and `offset` is the cursor that pages a drawer to
+        its bottom (rows by SQL OFFSET, the shelf list by its sorted window). Rows are
+        newest-first because a memory library is
         read like a ledger of the recent, with dates as the page numbers. since/until bound the
         rows exactly as search() bounds its candidates; a name that is no shelf shows nothing."""
         off = max(0, int(offset or 0))      # THE CURSOR (2026-11-08): a walk that reads the newest
