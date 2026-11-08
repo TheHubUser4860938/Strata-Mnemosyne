@@ -16,7 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 ON = ES_CONTINUOUS | ES_SYSTEM_REQUIRED
 
 
-def wait_for(cond, t=3.0):
+def wait_for(cond, t=10.0):
+    # 3 s was tight on a loaded box: this suite runs 2,057 tests on 8 cores with a serving engine
+    # beside it, and keepawake's daemon thread is woken by a Condition, not by the test - so the
+    # assertion raced the scheduler, not the code (the flake's one red in the 2026-11-07 baseline;
+    # the same test is green standalone in 0.19 s).
     end = time.time() + t
     while time.time() < end:
         if cond():
