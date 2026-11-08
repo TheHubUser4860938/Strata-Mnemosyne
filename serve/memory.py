@@ -502,12 +502,31 @@ MEMORY_OFF_NOTICE = (
     "catalog:true to read the map of shelves.")
 
 
+# REQUEST vocabulary: the words a QUESTION carries that a FACT rarely does. A preference row says
+# "Premiere Pro"; the question that should find it says "can you recommend some resources". STOP is
+# the grammar's small words; this is the speech-act's - verbs of asking and the adjectives of
+# asking-broadly. Measured on the venue's gold rows (2026-11-08): single-session-preference questions
+# cover 0.29 of their content words against the row that answers them, and the gap line fires on
+# 7/7 of them, naming "recommend resources" and "suggest accessories current" - the ask, not the
+# subject. Every other type sits at 0.68-0.76 coverage, so this list is the difference between a
+# gap that means "the store lacks this entity" and one that means "you phrased this as a request".
+REQUEST = frozenset(" ".join((
+    "advice ideas options suggest suggested suggests recommend recommended recommends",
+    "describe described explain explained share shared tell told show shown list listed",
+    "some any all current recent interesting helpful useful good great nice best top",
+    "complement complements suit suits fit fits find get want wanted need needed looking",
+    "would could should please thanks resources resource",
+)).split())
+
+
 def content_words(query: str, cap: int = 12) -> list[str]:
-    """The query's CONTENT words, once, in order: >= 4 characters, not STOP, deduplicated, capped.
-    The same vocabulary `coverage_gap` uses, so the block header, the tool payload and the ranking
-    term all mean the same thing by "what the query asked for"."""
+    """The query's CONTENT words, once, in order: >= 4 characters, not STOP, not a REQUEST word,
+    deduplicated, capped. ONE vocabulary for three surfaces - the block header's `missing=`, the
+    tool payload's `gap`/`coverage`, and the ranking's cover term - so "what the query asked for"
+    means the same thing in all three, and a gap that fires means the same thing to the model each
+    time it reads one."""
     return list(dict.fromkeys(w for w in WORD_RE.findall((query or "").lower())
-                              if len(w) >= 4 and w not in STOP))[:cap]
+                              if len(w) >= 4 and w not in STOP and w not in REQUEST))[:cap]
 
 
 def term_cover(text: str, words: list[str]) -> float:
