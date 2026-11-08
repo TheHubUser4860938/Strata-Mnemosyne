@@ -347,10 +347,14 @@ def run(url: str, data: list[dict], out_path: str, repeats: int, k: int, types: 
             if limit and stats["questions"] >= limit:
                 break
             qid, qtype = q["question_id"], q["question_type"]
+            if qid.endswith("_abs"):
+                # The rename happens BEFORE the filter, not after: the oracle's abstention questions
+                # carry a normal question_type ("single-session-user" and friends) and are only
+                # identifiable by the `_abs` id suffix. Asking for --types abstention used to match
+                # NOTHING and the run wrote an empty .jsonl, which then died in metrics() at rows[0].
+                qtype = "abstention"
             if types and qtype not in types:
                 continue
-            if qid.endswith("_abs"):
-                qtype = "abstention"
             scope = f"lme_{qid}"
             if len(done.get(qid, ())) >= repeats:
                 continue
@@ -412,6 +416,9 @@ def metrics(out_path: str) -> dict:
     and judge accuracy, overall and per type. Abstention questions keep recall nulls (skipped in the
     means, as the official retrieval eval does); the judge line says the judge was local."""
     rows = [json.loads(l) for l in open(out_path)]
+    if not rows:      # an empty run is an honest zero, not an IndexError at rows[0]
+        return {"lines": 0, "judge": "none (empty run - check --types against the dataset)",
+                "overall": {}, "by_type": {}}
     out = {"lines": len(rows), "judge": rows[0]["judge"] or "none (--no-judge)"}
 
     def agg(sub):
