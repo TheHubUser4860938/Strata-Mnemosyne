@@ -67,6 +67,46 @@ RATE = {"grok-4.7": (2.0, 6.0), "grok-4.6": (2.0, 6.0), "grok-4.3": (1.25, 2.50)
 # rendered "it earlier than the time management workshop...", and Grok judged exactly that.)
 RULE_SEAM = "\n\nQuestion: "
 
+# GROK v2 (2026-11-08, returned with the dive packet): the checker rules as the external judge
+# reads them. v1 is the official LongMemEval template; v2 clarifies three groups the judges
+# disagreed on - abstention accepts "information is incomplete", preference names bare "idk" as a
+# No, temporal states the off-by-one tolerance. Adopted between experiments; the 2026-11-08
+# packets stand under v1.
+RULES_V2 = {
+    "temporal-reasoning":
+        "Yes if the response contains the correct answer, is equivalent to it, or contains all "
+        "intermediate steps needed to reach it. No if it only contains a subset of the required "
+        "information. Do not penalize off-by-one errors for counts of days/weeks/months (e.g., "
+        "19 days is acceptable when the answer is 18).",
+    "abstention":
+        "Yes if the model correctly identifies the question as unanswerable. Acceptable signals "
+        "include stating that the information is incomplete, that some related information is "
+        "present but the asked information is not, or any clear refusal such as \u201cidk\u201d, "
+        "\u201cI don\u2019t know\u201d, or an explicit statement that the fact is missing. No if "
+        "the model answers the question (even partially) or invents missing information.",
+    "multi-session":
+        "Yes if the response contains the correct answer, is equivalent to it, or contains all "
+        "intermediate steps needed to reach it. No if it only contains a subset of the required "
+        "information.",
+    "knowledge-update":
+        "Yes if the response contains the correct (updated) answer. If the response also mentions "
+        "previous/outdated information, it is still correct as long as the required updated answer "
+        "is present. No if only the outdated value is given or the updated value is absent.",
+    "single-session-preference":
+        "Yes if the response recalls and utilizes the user\u2019s personal information correctly "
+        "according to the rubric. The model does not need to reflect every point in the rubric. "
+        "No if it fails to use the stored preference (including bare \u201cidk\u201d or generic "
+        "answers that ignore the preference).",
+    "single-session-assistant":
+        "Yes if the response contains the correct answer, is equivalent to it, or contains all "
+        "intermediate steps needed to reach it. No if it only contains a subset of the required "
+        "information.",
+    "single-session-user":
+        "Yes if the response contains the correct answer, is equivalent to it, or contains all "
+        "intermediate steps needed to reach it. No if it only contains a subset of the required "
+        "information.",
+}
+
 
 def verdict(text: str) -> tuple[bool, bool]:
     """(last-token verdict, official "yes" in text verdict) from a judge reply."""
@@ -131,8 +171,12 @@ def call(base: str, model: str, key: str, prompt: str, max_tokens: int,
     return {"ok": False, "text": "", "usage": {}, "err": last}
 
 
-def emit_packet(items: list, path: Path) -> None:
-    """A paste-ready batch, grouped by question type so each group carries ITS OWN official rules."""
+def emit_packet(items: list, path: Path, rules: dict = {}) -> None:
+    """A paste-ready batch, grouped by question type so each group carries ITS OWN official rules.
+    --rules v2 swaps in the clarified texts Grok returned with the dive packet (2026-11-08): the
+    abstention group accepts "the information is incomplete" phrasings, preference names bare "idk"
+    as a No, temporal states the off-by-one tolerance. The three packets judged on 2026-11-08 stand
+    under v1; an arm judged under v2 is comparable to a v2 arm, and the report says which."""
     by: dict[str, list] = defaultdict(list)
     for it in items:
         by[it["type"]].append(it)
@@ -140,7 +184,7 @@ def emit_packet(items: list, path: Path) -> None:
            "the Correct Answer under the rules of its group, else `no`. Reply with one line per "
            "item, numbered, and nothing else - `<number>. yes` or `<number>. no`.", ""]
     for t in sorted(by, key=lambda k: -len(by[k])):
-        rule, _, _ = by[t][0]["prompt"].partition(RULE_SEAM)
+        rule = rules.get(t) or by[t][0]["prompt"].partition(RULE_SEAM)[0]
         out += [f"## {t}  ({len(by[t])} items)", "", rule.strip(), ""]
         for it in by[t]:
             _, seam, body = it["prompt"].partition(RULE_SEAM)   # the tail only: Question/Answer/Response
@@ -202,6 +246,8 @@ def main() -> int:
     ap.add_argument("--emit-packet", default="", help="write a paste-ready batch here and stop")
     ap.add_argument("--parse-reply", default="", help="score a saved chat reply (reads <reply>.items.json)")
     ap.add_argument("--items", default="", help="the packet's .items.json, when the reply was saved elsewhere")
+    ap.add_argument("--rules", choices=["v1", "v2"], default="v2",
+                    help="packet rule text: v1 = official checker template, v2 = Grok-clarified (2026-11-08). Judge v1 arms with v1 packets.")
     ap.add_argument("--out", default="", help="output .jsonl (default: <in>.<judge>.rejudge.jsonl)")
     a = ap.parse_args()
 
@@ -213,7 +259,7 @@ def main() -> int:
 
     if a.emit_packet:
         p = Path(a.emit_packet)
-        emit_packet(items, p)
+        emit_packet(items, p, RULES_V2 if a.rules == 'v2' else {})
         print(f"[rejudge] packet: {len(items)} items ({len({i['question_id'] for i in items})} "
               f"questions, repeats<= {a.repeats}) -> {p}\n[paste {p} into the judge, save the reply, "
               f"then: --parse-reply <reply>]")
