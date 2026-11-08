@@ -483,6 +483,9 @@ MEMORY_TOOL = {
             "since": {"type": "string", "description": "optional lower date bound: YYYY-MM-DD or epoch seconds"},
             "until": {"type": "string", "description": "optional upper date bound: YYYY-MM-DD or epoch seconds"},
             "limit": {"type": "integer", "description": "max facts to return, 1-20 (default 8)"},
+            "offset": {"type": "integer", "description": "the walk's cursor: rows (or shelves, with"
+                                                         " catalog) to skip - page 2 of a drawer is"
+                                                         " the same call at limit 20 offset 20",},
         },
         "required": [],
 }
@@ -632,10 +635,11 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
         # class_list); no argument at all still means the server's default classes, byte-identical.
         cls = class_list(named) if named else classes
         since, until = time_bound(args.get("since")), time_bound(args.get("until"))
+        off = max(0, int(args.get("offset") or 0))   # the walk's cursor (2026-11-08)
     except (TypeError, ValueError) as e:
         return _tool_done(t0, False, json.dumps({"error": f"bad argument: {e}"}))
     if catalog:
-        out = mem.browse(scope, prefixes=cls, limit=limit, since=since, until=until)
+        out = mem.browse(scope, prefixes=cls, limit=limit, since=since, until=until, offset=off)
         out["mode"] = "map"
         mem.note_tool("maps", not out["shelves"])
         return _tool_done(t0, True, json.dumps(out, ensure_ascii=False))
@@ -644,7 +648,7 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
             return _tool_done(t0, False, '{"error": "give words (q), a shelf (class), or '
                                           'catalog:true - this store has a map, drawers, and a '
                                           'search; or call with nothing to get this menu"}')
-        out = mem.browse(scope, prefixes=cls, limit=limit, since=since, until=until)
+        out = mem.browse(scope, prefixes=cls, limit=limit, since=since, until=until, offset=off)
         out["mode"] = "walk"
         mem.note_tool("walks", not out["rows"])
         return _tool_done(t0, True, json.dumps(out, ensure_ascii=False))
@@ -1153,7 +1157,7 @@ class MemoryService:
                  derived_weight: float = 1.0, block_cover_terms: int = 0,
                  cover_weight: float = 0.0, proof_weight: float = 0.0,
                  turn_recall_agg: int = 0, route_glossary: float = 0.0,
-                 route_top: int = ROUTE_TOP):
+                 route_top: int = ROUTE_TOP, block_shelf_tags: bool = False):
         self.directory = memory_dir(directory)      # absolute, created 0700 - same rules as slot_save_path
         # STORAGE (ADR-002 native rebase, 2026-10-16): PostgreSQL, no SQLite anywhere. Production
         # OWNS its cluster under <dir>/pgdata - a unix socket inside the data dir, so the store
@@ -1234,6 +1238,11 @@ class MemoryService:
         # 0.408 -> 0.293, and row_coverage 0.776 -> 0.690 - the vote REDISTRIBUTES, it does not widen.
         # 3 = today's bytes.
         self.route_top = max(1, int(route_top))
+        # THE ROW TELLS YOU WHERE IT LIVES (2026-11-08). A block line that ends `@USR/PREF:12`
+        # hands the model a DESTINATION: one memory_search(class="USR/PREF") opens that drawer and
+        # offset pages it. Cost is ~13 characters per shown line plus one instruction clause -
+        # measured on the panel, not guessed. False = today's bytes exactly.
+        self.block_shelf_tags = bool(block_shelf_tags)
         self._glo = None                       # (census stamp, (shelf->words, word->shelves))
         self._route_stats = {"tries": 0, "picks": 0, "fallbacks": 0, "picked": {}}  # observability, see stats()
         # BROWSE LEDGER (2026-10-24, the venue-day scar): tool prints rode server stdout into the
@@ -2999,7 +3008,8 @@ class MemoryService:
 
     @_heals
     def browse(self, scope: str, prefixes: list[str] | None = None, limit: int = 8,
-               since: float | None = None, until: float | None = None) -> dict:
+               since: float | None = None, until: float | None = None,
+               offset: int = 0) -> dict:
         """The card map and the shelf walk (browse verbs, 2026-10-24, Browse Day pre-registration):
         SQL over exactly the scopes a tool call can reach (the user scope plus this project's), with
         NO query and NO picker - a librarian reads the index, not a ranking. Every branch is shown
@@ -3012,6 +3022,9 @@ class MemoryService:
         keywords, one call is the whole move. Rows are newest-first because a memory library is
         read like a ledger of the recent, with dates as the page numbers. since/until bound the
         rows exactly as search() bounds its candidates; a name that is no shelf shows nothing."""
+        off = max(0, int(offset or 0))      # THE CURSOR (2026-11-08): a walk that reads the newest
+        # 20 and stops is a PAGE, not a walk - DOC/FOUNDING/GROTI1 holds 1,577 rows and nothing
+        # let a caller ask for the next twenty.
         scopes = [USER_SCOPE]
         s = scope_name(scope)
         if s != USER_SCOPE:
@@ -3024,7 +3037,8 @@ class MemoryService:
             # asked for the narrowest mark in the library and got the entire card catalog was shown
             # 96 rows off other shelves; the same trap caught the map on 2026-10-24, where a junk
             # class name fell through `cls or None` and answered "here is every shelf you have".
-            return {"shelves": [], "total_rows": 0, "hidden_drawers": 0, "hidden_rows": 0, "rows": []}
+            return {"shelves": [], "total_rows": 0, "hidden_drawers": 0, "hidden_rows": 0,
+                    "rows": [], "offset": 0}
         if prefixes:
             frag, fp = shelf_sql("m.class", prefixes)
             where += " and (" + frag + ")"
@@ -3047,7 +3061,8 @@ class MemoryService:
             rows = self.conn.execute(
                 f"select m.id, coalesce(m.class, ''), m.text, m.confidence, coalesce(m.hits, 0),"
                 f" m.created_at from memories m where {where}"
-                f" order by m.created_at desc, m.id desc limit %s", params + [limit]).fetchall()
+                f" order by m.created_at desc, m.id desc limit %s offset %s",
+                params + [limit, off]).fetchall()
             label_rows = self.conn.execute(
                 "select text from memories where invalid_at is null and class = %s"
                 " and scope = any(%s) order by id", (CAT_CLASS, scopes)).fetchall()
@@ -3066,10 +3081,14 @@ class MemoryService:
         total = sum(r[1] for r in shelves)
         shown = [{"shelf": r[0] or "(unclassified)", "rows": r[1],
                   "newest": r[2].date().isoformat() if r[2] else None,
-                  **({"label": lab[r[0]]} if r[0] in lab else {})} for r in shelves[:24]]
+                  **({"label": lab[r[0]]} if r[0] in lab else {})} for r in shelves[off:off + 24]]
+        # The map pages its SORTED list (facts first, then biggest-first) - a deterministic order,
+        # so page 2 never repeats page 1 - and the rollups count from the END of the window, so
+        # "hidden" always means "deeper than you have looked".
         return {"shelves": shown, "total_rows": total,
-                "hidden_drawers": max(0, len(shelves) - 24),
-                "hidden_rows": max(0, total - sum(r[1] for r in shelves[:24])),
+                "hidden_drawers": max(0, len(shelves) - off - 24),
+                "hidden_rows": max(0, total - sum(r[1] for r in shelves[:off + 24])),
+                "offset": off,
                 "rows": [{"id": r[0], "class": r[1], "text": r[2], "confidence": r[3],
                           "hits": r[4], "when": r[5].date().isoformat()} for r in rows]}
 
@@ -3402,11 +3421,24 @@ class MemoryService:
             n_active = self.conn.execute(
                 "select count(*) from memories where invalid_at is null"
                 " and " + DOC_FACT_SQL).fetchone()[0]   # facts, not the routing map
+            tags: dict[str, int] = {}
+            if self.block_shelf_tags:      # the drawer sizes for the shelves this block cites,
+                # one grouped pass over the classes present - the block is PINNED per
+                # conversation, so this runs once per pin, not once per turn
+                want = sorted({str(h.get("class") or "") for h in hits} - {""})
+                if want:
+                    tags = {r[0]: r[1] for r in self.conn.execute(
+                        "select class, count(*) from memories where invalid_at is null"
+                        " and class = any(%s) group by 1", (want,)).fetchall()}
             self.conn.commit()
         v, instruction = self.version(), (
             "Long-term memory of this user, kept by the inference server and shared by all their"
             " applications. Use it silently when relevant - never mention these notes, this tag, or"
             " 'remembering' to the user; if a note conflicts with what the user says now, they win.")
+        if self.block_shelf_tags:
+            instruction += (" A trailing @SHELF:n names the row's drawer and how many rows it"
+                            " holds: memory_search(class=\"SHELF\") walks it newest-first,"
+                            " offset pages it.")
         def head(n: int, missing: str = "") -> str:      # the count is written AFTER trimming:
             # shown = what the model reads. `missing` names the query's own words that NO row in the
             # list uses (2026-11-08, the Grok-judged packet): the abstention failures are questions
@@ -3428,8 +3460,11 @@ class MemoryService:
         # the header is part of the budget arithmetic, and a term covered by a row the budget trimmed
         # is honest to call covered - the retrieval saw it, the block just had no room.
         missing = coverage_gap(query, [h["text"] for h in hits], self.block_cover_terms)
+        def at(h: dict) -> str:     # the address, when asked for: a hit is also a door
+            c = str(h.get("class") or "")
+            return f" @{c}:{tags.get(c, '?')}" if self.block_shelf_tags and c else ""
         lines = [head(len(hits), missing), instruction]
-        lines += [f"[{i + 1}] ({h['scope']}) {show(h)}" for i, h in enumerate(hits)]
+        lines += [f"[{i + 1}] ({h['scope']}) {show(h)}{at(h)}" for i, h in enumerate(hits)]
         lines.append("</server_memory>")
         # The fixed skeleton's cost, MEASURED not guessed (audit F9, 2026-11-03): the old
         # constant 120 was "the header and the instruction line cost", but the instruction is
@@ -4414,6 +4449,7 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         turn_recall_agg=num("turn_recall_agg", 0),          # the tail cap for counting questions
         route_glossary=num("route_glossary", 0.0, float),  # the glossary vote weight
         route_top=num("route_top", ROUTE_TOP),             # shelves the pick keeps (3 = today)
+        block_shelf_tags=flag("block_shelf_tags"),         # @SHELF:n on each shown line
         block_position=str(mcfg.get("block_position") or "head"),
         cache_entries=num("cache_entries", 64),
         embedder=(embedder if embedder is not None else (mcfg.get("embedder") or None)),
