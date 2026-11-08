@@ -4668,6 +4668,67 @@ class TrustTierTest(unittest.TestCase):
         self.assertEqual(h["score"], 0.9818, "and at 1.0 the score is today's, untouched")
 
 
+class BlockCoverageTest(unittest.TestCase):
+    """Two block fixes from the Grok-judged LongMemEval packet (2026-11-08), one test each.
+
+    The newest value wins a collapsed pair: `_dedupe` gives a near-dupe clash ONE slot, and it used
+    to give it to whoever ranked highest - so a store holding "personal best 27:12" and, later,
+    "personal best 25:50" showed the older one whenever bm25 preferred it, and the venue answered
+    with the stale time (packet items 16 and 19: 27:12 for a gold of 25:50, $350,000 for $400,000).
+
+    The coverage line names what the block cannot cover: the abstention failures are two-entity
+    questions where the store holds one entity, and the model invented the other (item 6: "the fence
+    fix came before the cow purchase" - no cow row exists). `shown="N of M active"` says how much
+    is read; only a term list says what is NOT in it.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_the_newest_value_wins_a_collapsed_pair(self):
+        m = MemoryService(self.tmp.name + "/kb")
+        self.addCleanup(m.close)
+        old = m.remember("my 5k personal best time is 27:12", scope="ops")["id"]
+        new = m.remember("my 5k personal best time is 25:50", scope="ops")["id"]
+        with m.lock:
+            m.conn.execute("update memories set updated_at = now() - interval '30 days' where id = %s",
+                           (old,))
+            m.conn.commit()
+        # bm25 scores the pair identically and the old row has the lower id, so the LEXICAL rank puts
+        # it first; the collapse is where the survivor is chosen, and that is what the rule changes
+        hits = m.search("5k personal best time", scope="ops", limit=5)
+        self.assertEqual([h["id"] for h in hits], [new],
+                         "one slot for the pair, and the NEWER row takes it (the fix)")
+        b, shown, _ = m.block_for([{"role": "user", "content": "what is my 5k personal best time"}],
+                                   "ops")
+        self.assertIn("25:50", b, "the slot goes to the NEWER value")
+        self.assertNotIn("27:12", b, "and the stale one is the row that vacates the slot")
+        self.assertEqual([h["id"] for h in shown], [new])
+
+    def test_the_coverage_line_names_the_uncovered_term(self):
+        m = MemoryService(self.tmp.name + "/cov", block_cover_terms=3)
+        self.addCleanup(m.close)
+        m.remember("the fence repair was booked for 9 May at the Coopersburg yard", scope="ops")
+        b, shown, _ = m.block_for([{"role": "user", "content": "did I fix the fence before buying the cows"},
+                                   {"role": "user", "content": "which came first, the fence or the cows"}],
+                                  "ops")
+        self.assertIn("shown=", b)
+        attr = b.split('missing="', 1)[1].split('"', 1)[0]
+        self.assertIn("cows", attr, "the header names the query word no row in the block uses")
+        self.assertNotIn("fence", attr, "and a covered word is not listed")
+        self.assertEqual(m.stats()["block_cover_terms"], 3, "stats proves which arm boots")
+
+    def test_the_coverage_line_is_off_by_default(self):
+        m = MemoryService(self.tmp.name + "/cov0")
+        self.addCleanup(m.close)
+        m.remember("the fence repair was booked for 9 May at the Coopersburg yard", scope="ops")
+        b, _, _ = m.block_for([{"role": "user", "content": "did I fix the fence before buying the cows"},
+                               {"role": "user", "content": "which came first, the fence or the cows"}], "ops")
+        self.assertNotIn("missing=", b, "0 = today's bytes exactly")
+        self.assertEqual(m.stats()["block_cover_terms"], 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
