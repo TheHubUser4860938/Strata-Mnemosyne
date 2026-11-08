@@ -17,7 +17,7 @@ from pathlib import Path
 
 from serve.frontend import ChatTemplate
 from serve.memory import (MemoryService as _BaseMemoryService, norm_text, request_state,
-                          time_bound, tool_result, LINKS_PER_ROW)
+                          time_bound, tool_result, glossary_map, LINKS_PER_ROW)
 from serve.server import (ByteTokenizer, Cartridges, CartMinter, MockEngine, Service, serve, stand_on,
                           curate_argv, curate_lock)
 
@@ -4814,6 +4814,68 @@ class RankTermsTest(unittest.TestCase):
         self.assertEqual(len(tshown), 4, "the counting shape gets the wider cap")
         self.assertGreater(len(tshown), 2, "wider than turn_recall_limit")
         self.assertIn("camping trip", t)
+
+
+class GlossaryVoteTest(unittest.TestCase):
+    """The Auto Ontology port (2026-11-08): the curated MEM/CAT label is a GLOSSARY, and a glossary
+    word in the question votes for the shelf it names.
+
+    Why this is the port and not a new organ: the router today can only see the tokens a shelf's own
+    rows carry, and the founding panel's four zero-containment topics are that blindness measured -
+    the words in the question are not the words in the text. NVIDIA's stack resolves the same problem
+    with a human-curated name -> definition list at query time
+    (auto_ontology/retrieval/entity_coverage/prompts.py::format_glossary_section, Apache 2.0), and we
+    already keep that list: 42 labels of the form "SHELF - words" the clerk writes.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_glossary_map_reads_the_labels_own_contract(self):
+        by_shelf, by_word = glossary_map([
+            "HUM/RHETOR - public speaking, rhetoric, the delivery of a speech",
+            "OPS - the boot, the ports, the box",
+            "NOLABEL",                                    # no dash: no entry, no crash
+            "MEM/CAT - ",                                  # empty tail: no entry
+        ])
+        self.assertEqual(by_shelf["HUM/RHETOR"], ["public speaking", "rhetoric", "the delivery of a speech"])
+        self.assertEqual(sorted(by_word["rhetoric"]), ["HUM/RHETOR"])
+        self.assertEqual(sorted(by_shelf), ["HUM/RHETOR", "OPS"])
+        self.assertEqual(len(by_shelf), 2, "a label with no words describes no shelf")
+
+    def test_a_glossary_word_lands_a_shelf_the_rows_never_spelled_out(self):
+        m = MemoryService(self.tmp.name + "/glo", route_shelves=True, route_glossary=0.6)
+        self.addCleanup(m.close)
+        m.remember("the shelf map is a card catalog of drawers and call numbers",
+                   scope="ops", klass="MEM/SHLV")
+        m.remember("Clio signs the bottom of her transmissions", scope="ops", klass="USR/SIGN")
+        m.remember("HUM - public speaking and the delivery of a speech", scope="ops", klass="MEM/CAT")
+        m.remember("the orator opened with a pause and closed on the same line",
+                   scope="ops", klass="HUM/RHETOR")
+        # "delivery" is in no HUM row's text as a whole word the query shares... it is: use a word
+        # ONLY the label knows.
+        pick = m._route("how should i handle the closing line of a keynote address", "ops")
+        self.assertIn("HUM/RHETOR", pick,
+                      "the label's words carry the vote when the rows' words do not")
+        self.assertEqual(m.stats()["glossary"]["weight"], 0.6, "stats proves which arm boots")
+        off = MemoryService(self.tmp.name + "/glo0")
+        self.addCleanup(off.close)
+        self.assertEqual(off.stats()["glossary"], {"weight": 0.0, "shelves": 0},
+                         "0.0 is the router of today")
+
+    def test_coverage_is_the_number_beside_the_gap_list(self):
+        m = MemoryService(self.tmp.name + "/covnum", block_cover_terms=3)
+        self.addCleanup(m.close)
+        m.remember("the fence repair was booked for 9 May at the Coopersburg yard", scope="ops")
+        payload = json.loads(tool_result(m, {"q": "did I fix the fence before buying the cows"},
+                                         scope="ops")["text"])
+        self.assertIn("cows", payload["gap"], "the term list, as shipped this morning")
+        self.assertLess(payload["coverage"], 1.0, "and the number Auto Ontology answers with")
+        # content_words() keeps >=4-letter non-stop words: fence, before, buying, cows. The row
+        # carries one of the four, so coverage is a quarter - and that is the number that says
+        # "this block answers part of the question", which is what abstention needs.
+        self.assertAlmostEqual(payload["coverage"], 0.25, places=2)
 
 
 if __name__ == "__main__":

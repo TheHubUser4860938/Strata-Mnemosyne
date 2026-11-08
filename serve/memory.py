@@ -540,6 +540,53 @@ def coverage_gap(query: str, texts, limit: int = 3) -> str:
     return " ".join(w[:20] for w in [w for w in words if w[:4] not in body][:limit])
 
 
+def glossary_map(labels: list[str]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """(shelf -> words, word -> shelves) from the MEM/CAT label rows, whose stored contract is
+    "SHELF - words" - the same shape browse() parses for the map's curated lines.
+
+    Ported in SHAPE from NVIDIA Auto Ontology's Glossary section
+    (auto_ontology/retrieval/entity_coverage/prompts.py::format_glossary_section, Apache 2.0, read
+    2026-11-08): a human-curated name -> definition list the agent resolves at QUERY time, so a
+    shortcut in the question becomes the vocabulary the store is filed under. Their rule that
+    "Resolving rewrites an existing entry; it never adds an extra one" is exactly why this votes on
+    the shelf a label already names rather than inventing a concept layer.
+
+    Words are the label's own text after the dash, comma-split, lowercased; a word is matched by
+    its 4-character prefix, the plurals rule coverage_gap already uses.
+    """
+    by_shelf: dict[str, list[str]] = {}
+    by_word: dict[str, list[str]] = {}
+    for text in labels:
+        head, sep, tail = str(text).partition(" - ")
+        if not sep:
+            continue
+        shelf = head.strip()
+        if not shelf:
+            continue
+        words = [w.strip().lower() for w in tail.replace(";", ",").split(",") if len(w.strip()) >= 4]
+        if not words:
+            continue
+        by_shelf[shelf] = sorted(set(by_shelf.get(shelf, [])) | set(words))
+        for w in by_shelf[shelf]:
+            into = by_word.setdefault(w, [])
+            if shelf not in into:
+                into.append(shelf)
+    return by_shelf, by_word
+
+
+def coverage_of(query: str, texts, limit: int = 3) -> tuple[str, float]:
+    """(gap terms, coverage) - the tool payload and the block header's pair. Coverage is the share of
+    the query's content words these rows actually use; the gap is the list of the ones they do not.
+    Auto Ontology's `check_answerable` answers with exactly this number ("coverage 0.5; no term
+    covers 'ad spend'"), and a number is what a model abstains on: a term list it must sum itself."""
+    words = content_words(query)
+    if not words:
+        return "", 1.0
+    body = " ".join(t.lower() for t in texts)
+    gap = [w for w in words if w[:4] not in body]
+    return " ".join(w[:20] for w in gap[:limit]), round(1.0 - len(gap) / len(words), 2)
+
+
 def tool_result(mem: "MemoryService", arguments, scope: str = "default",
                 classes: list[str] | None = None) -> dict:
     """Run one memory_search call from the model (C, agentic recall 2026-10-12; the browse verbs
@@ -658,9 +705,11 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
         # abstention failures are two-entity questions whose second entity is not in the store, and
         # a `found: 8` reads as "there are eight rows about this" - not as "none of them mention
         # cows". Absent when the list covers everything, so the ordinary payload is byte-identical.
-        gap = coverage_gap(q, [h["text"] for h in hits], mem.block_cover_terms)
+        gap, cov = coverage_of(q, [h["text"] for h in hits], mem.block_cover_terms)
         if gap:
             out["gap"] = gap
+        if cov < 1.0:
+            out["coverage"] = cov      # Auto Ontology's answerability number, on the same evidence
     if not informative(q):
         out["notice"] = ("this query carried no informative words - "
                          + ("there was nothing to match, so nothing was found: try other words, or "
@@ -1084,7 +1133,7 @@ class MemoryService:
                  route_shelves: bool = False, route_demote: float = 0.0,
                  derived_weight: float = 1.0, block_cover_terms: int = 0,
                  cover_weight: float = 0.0, proof_weight: float = 0.0,
-                 turn_recall_agg: int = 0):
+                 turn_recall_agg: int = 0, route_glossary: float = 0.0):
         self.directory = memory_dir(directory)      # absolute, created 0700 - same rules as slot_save_path
         # STORAGE (ADR-002 native rebase, 2026-10-16): PostgreSQL, no SQLite anywhere. Production
         # OWNS its cluster under <dir>/pgdata - a unix socket inside the data dir, so the store
@@ -1154,6 +1203,12 @@ class MemoryService:
         # AGGREGATION-AWARE TAIL (2026-11-08): counting questions want every row, lookups want the
         # best one. 0 = the tail cap is turn_recall_limit for every shape, exactly today.
         self.turn_recall_agg = max(0, int(turn_recall_agg))
+        # THE GLOSSARY VOTE (2026-11-08, the Auto Ontology port): a query word that a MEM/CAT label
+        # names votes for that shelf, alongside the words the rows themselves carry. The router is
+        # blind to vocabulary today - it can only see the tokens on a shelf - and the founding
+        # panel's four zero-containment topics are that blindness measured. 0.0 = today's bytes.
+        self.route_glossary = min(1.0, max(0.0, float(route_glossary)))
+        self._glo = None                       # (census stamp, (shelf->words, word->shelves))
         self._route_stats = {"tries": 0, "picks": 0, "fallbacks": 0, "picked": {}}  # observability, see stats()
         # BROWSE LEDGER (2026-10-24, the venue-day scar): tool prints rode server stdout into the
         # double-click terminal and died with the window, so whether the model browsed at all became
@@ -3372,6 +3427,45 @@ class MemoryService:
             shown.append(h)
         return "\n".join([head(len(shown), missing), instruction] + trimmed + [lines[-1]]), shown
 
+    def _glossary(self) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        """The curated label rows as a glossary, cached on their own census stamp: the shelf map is
+        small and moves only when the clerk files something, so the vote costs one read per change.
+        Same stamp law as _dedupe_tables - a cache that cannot see a write is a stale map."""
+        with self.lock, _rollback_on_error(self.conn):
+            key = self.conn.execute(
+                "select count(*), coalesce(max(id),0),"
+                " coalesce(extract(epoch from max(updated_at)), 0.0)"
+                " from memories where invalid_at is null and class = %s", (CAT_CLASS,)).fetchone()
+            if self._glo is not None and self._glo[0] == tuple(key):
+                self.conn.commit()
+                return self._glo[1]
+            rows = self.conn.execute(
+                "select text from memories where invalid_at is null and class = %s",
+                (CAT_CLASS,)).fetchall()
+            self.conn.commit()
+        out = glossary_map([r[0] for r in rows])
+        self._glo = (tuple(key), out)
+        return out
+
+    def _glossary_vote(self, query: str, pick: list[str]) -> list[str]:
+        """Merge the glossary's votes into the router's. A label word in the question is a human
+        saying "this drawer answers that word", so it votes at route_glossary x the rank-0 weight -
+        strong enough to lift a shelf the rows never spelled out, not strong enough to outvote a
+        shelf the rows themselves keep landing on. Prefix-matched, so "cows" reaches a label that
+        says "cow"; already-picked shelves keep their standing and are not double-counted."""
+        _, by_word = self._glossary()
+        if not by_word:
+            return pick
+        words = content_words(query)
+        if not words:
+            return pick
+        tally: dict[str, float] = {s: ROUTE_W[i] for i, s in enumerate(pick) if i < len(ROUTE_W)}
+        for w in words:
+            for shelf, ws in by_word.items():
+                if any(g[:4] == w[:4] for g in ws):
+                    tally[shelf] = tally.get(shelf, 0.0) + self.route_glossary * ROUTE_W[0]
+        return [x for x, _ in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))[:ROUTE_TOP]]
+
     def _route(self, query: str, scope: str) -> list[str] | None:
         """The query->shelf router for the AUTO-INJECTION path (see shelf_vote for the law, the
         measured role, and why contamination is the only job it ever had). Runs only where nobody
@@ -3385,6 +3479,8 @@ class MemoryService:
         self._route_stats["tries"] += 1
         stage1 = self.search(query, scope=scope, limit=ROUTE_STAGE1, semantic=False, credit=False)
         pick = shelf_vote(stage1)
+        if self.route_glossary > 0.0:
+            pick = self._glossary_vote(query, pick)   # a label's word votes for its shelf too
         if pick:
             self._route_stats["picks"] += 1
             # what it picked, not just that it picked (2026-10-23, the routegrade's ask). Copy-on-
@@ -3682,6 +3778,7 @@ class MemoryService:
                 "trust_tier": {"weight": self.derived_weight, "derived_rows": derived_rows},
                 "block_cover_terms": self.block_cover_terms,
                 "rank_terms": {"cover": self.cover_weight, "proof": self.proof_weight},
+                "glossary": {"weight": self.route_glossary, "shelves": len(self._glossary()[0])},
                 "turn_recall_agg": self.turn_recall_agg,
                 "by_scope": by_scope, "by_class": by_class,
                 "turns": turns, "turns_pending": pending, "inject": self.inject,
@@ -4286,6 +4383,7 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         cover_weight=num("cover_weight", 0.0, float),       # the coverage ranking term
         proof_weight=num("proof_weight", 0.0, float),       # the evidence-count ranking term
         turn_recall_agg=num("turn_recall_agg", 0),          # the tail cap for counting questions
+        route_glossary=num("route_glossary", 0.0, float),  # the glossary vote weight
         block_position=str(mcfg.get("block_position") or "head"),
         cache_entries=num("cache_entries", 64),
         embedder=(embedder if embedder is not None else (mcfg.get("embedder") or None)),
