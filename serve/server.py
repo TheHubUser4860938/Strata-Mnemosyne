@@ -968,7 +968,9 @@ def curate_argv(python: str, script: str, url: str, tag: str = "manual", limit: 
             python, script, "--url", url, "--tag", tag]
     if limit:
         argv += ["--limit", str(int(limit))]
-    if passes:
+    if passes is not None:
+        # `if passes:` read a configured 0 as MISSING (the same trap the cartridge window fixed on
+        # 2026-10-24): --passes 0 is a real ask - score the candidate on no cold arm at all.
         argv += ["--passes", str(int(passes))]
     if batches:
         argv += ["--batches", str(int(batches))]
@@ -8155,7 +8157,12 @@ class Cartridges:
         """Static-mode text: the configured files joined in order with a blank line between.
         An unreadable file is announced and skipped - an absent thing is never silently
         'not enough' (the anti-vacuity law). Returns (text, names_that_stood)."""
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Relative names resolve where the ENGINE works (the run config's "cwd"), not where this
+        # checkout lives (audit 2026-11-07): a second checkout - a worktree - served from the same
+        # config shipped the OTHER tree's persona, and the cart's content hash rotated with it, so
+        # the box paid a 377 MB re-seed with no hand on any file.
+        root = (getattr(getattr(self.svc, "engine", None), "spawn", None) or [None, None, None])[2] \
+            or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         docs, names = [], []
         for fp in self.files_cfg:
             p = fp if os.path.isabs(fp) else os.path.join(root, fp)
@@ -10488,10 +10495,14 @@ def make_handler(svc: Service):
 
         def _memory_get(self):
             """memory-core: GET /memory - store stats and the recent facts; with ?q=, a recall search.
-            ?scope= filters (or searches that project plus the user scope); ?limit= caps the list.
+            ?scope= filters (or searches that project plus the user scope); ?limit= caps the list;
+            ?before_id= pages the list past the 500-row ceiling (the curation picker reads every
+            fact of a scope, and 500 is 30% of this store).
 
-            With `memory.rust` on, the sidecar answers the whole shape (stats, the fact list, the
-            recall hits) and the Python serves it only when the socket is not there."""
+            An optional sidecar (the `memory.rust` hook in request_state) may answer the block leg;
+            the Python service answers this shape. The Rust arm itself is off the working line as of
+            2026-11-07 - Python searched 35k rows in 0.36-0.47 s against the sidecar's 1.4 s on 51k,
+            for its own embedder, matrix and ~15 GB - so today one process serves all of it."""
             if svc.memory is None:
                 self._json(404, {"error": {"message": 'memory is off: add "memory" to the engine config, or '
                                                       "start the server with --memory DIR"}})
@@ -10534,8 +10545,10 @@ def make_handler(svc: Service):
                 stats["cartridges"] = svc.cartridges.view()
                 if svc.carts is not None:      # the S3 ledger rides the same card (2026-10-25):
                     stats["carts"] = svc.carts.view(     # every cart, and whether its file stands.
-                        full=(str((qs.get("carts") or [""])[0]).strip().lower() == "full"))
-                        # ?carts=full carries each episode cart's source text (up to 188 KB a row);
+                        full=(str((qs.get("carts") or [""])[0]).strip().lower()
+                              in ("full", "1", "true", "yes")))
+                        # ?carts=full (and the spelling the page uses, ?carts=1) carries each
+                        # episode cart's source text (up to 188 KB a row);
                         # the card reads name, kind, state, tokens, bytes, file - the thin rows are
                         # all of it, and 3.73 MB of /memory came down to 65 KB (P0.2, 2026-11-06).
             self._json(200, {"stats": stats,
@@ -13169,6 +13182,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
               f"floor cos {svc.memory.floor_cosine or 'off'}; "
               f"auto-shelve {svc.memory.auto_shelve and 'on (sub-shelves only)' or 'off'}; "
               f"block floor {svc.memory.block_min_score or 'off (quota)'}; "
+              # the one reading-stage knob the owner tunes was invisible at boot and uneditable from
+              # /settings (audit 2026-11-07): a DOC row shows its head in the block up to this many
+              # chars, and the tool arm returns the whole passage.
+              f"doc row in the block {svc.memory.block_doc_cap:,} chars; "
               f"exposure decay {svc.memory.expose_step and f'on ({svc.memory.expose_window} turns, step {svc.memory.expose_step}, cap {svc.memory.expose_cap})' or 'off'}; "
               f"shelf router {rt}; "
               f"at-rest {at_rest_line}; "

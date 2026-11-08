@@ -30,6 +30,10 @@ from serve import memory as M  # noqa: E402
 
 
 def cluster(rows, threshold):
+    """Greedy cosine clusters at >= threshold. THE SURVIVOR IS THE FULLEST TEXT, ties to the newest
+    (the docstring's law, and the code did not keep it - audit 2026-11-07: it kept the newest seed,
+    so a cluster of "engine = 0.1.58" beside a one-line "engine is new" retired the richer row).
+    The seed walk stays newest-first, which is what makes an unclaimed cluster cheap to find."""
     ids = [r[0] for r in rows]
     texts = [r[1] for r in rows]
     V = np.array([np.frombuffer(r[2], dtype=np.float32) for r in rows])
@@ -44,8 +48,13 @@ def cluster(rows, threshold):
         claimed[i] = True
         for j in members:
             claimed[j] = True
-        out.append((i, members))
-    dupes = [(ids[i], texts[i], [ids[j] for j in mem]) for i, mem in out if mem]
+        keep = max([i] + members, key=lambda j: (len(texts[j]), ids[j]))
+        rest = [j for j in members if j != keep]
+        if keep != i and i in rest:
+            rest.remove(i)
+        if rest:
+            out.append((keep, rest))
+    dupes = [(ids[i], texts[i], [ids[j] for j in mem]) for i, mem in out]
     return dupes
 
 

@@ -81,6 +81,12 @@ EDITABLE = [
     ("open_browser", "bool", "Open the chat page in the browser when the model is ready"),
     ("vram_reserve_mib", ("arg", "--vram-reserve-mib"),
      "VRAM in MiB the engine leaves free for other programs (engine default 700)"),
+    ("memory.block_doc_cap", ("section", "memory", "int>=0"),
+     "How much of a corpus chunk rides in the recall block before the ellipsis (0: whole rows; "
+     "the memory_search tool always returns the passage). Takes effect at the next restart"),
+    ("memory.recall_limit", ("section", "memory", "int>=1"),
+     "Facts the recall block shows at most per conversation (the head block; the tail has its own). "
+     "Takes effect at the next restart"),
 ]
 SPEC = {k: kind for k, kind, _ in EDITABLE}
 
@@ -95,8 +101,8 @@ def _arg(cfg: dict, flag: str):
 
 def value_of(cfg: dict, key: str):
     kind = SPEC[key]
-    if isinstance(kind, tuple) and kind[0] == "sampling":
-        s = cfg.get("sampling")
+    if isinstance(kind, tuple) and kind[0] in ("sampling", "section"):
+        s = cfg.get(kind[1] if kind[0] == "section" else "sampling")
         return s.get(key.split(".", 1)[1]) if isinstance(s, dict) else None
     if isinstance(kind, tuple) and kind[0] == "arg":
         return _arg(cfg, kind[1])
@@ -153,6 +159,15 @@ def check(key: str, v, cfg: dict):
         return _number(key, v)
     if k == "arg":
         return _number(key, v, whole=True)
+    if k == "section":
+        # ("section", "memory", "int>=0"): a key that lives INSIDE a config block (the memory
+        # system's knobs) checked by the same rules the flat keys use (added 2026-11-07 so
+        # /settings can offer block_doc_cap and recall_limit without a bespoke validator).
+        return check(key, v, cfg) if kind[2] == "section" else {
+            "int>=0": lambda: _number(key, v, whole=True),
+            "int>=1": lambda: _number(key, v, whole=True, lo=1),
+            "num>=0": lambda: _number(key, v),
+        }[kind[2]]()
     rule = kind[1]                                     # a sampling key: the server's own rules
     if rule == "num>=0":
         return float(_number(key, v))
@@ -175,17 +190,18 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
         if value_of(new, key) == v:
             continue
         kind = SPEC[key]
-        if isinstance(kind, tuple) and kind[0] == "sampling":
-            s = dict(new.get("sampling") or {}) if isinstance(new.get("sampling"), dict) else {}
+        if isinstance(kind, tuple) and kind[0] in ("sampling", "section"):
+            box = kind[1] if kind[0] == "section" else "sampling"
+            s = dict(new.get(box) or {}) if isinstance(new.get(box), dict) else {}
             sub = key.split(".", 1)[1]
             if v is None:
                 s.pop(sub, None)
             else:
                 s[sub] = v
             if s:
-                new["sampling"] = s
+                new[box] = s
             else:
-                new.pop("sampling", None)
+                new.pop(box, None)
         elif isinstance(kind, tuple) and kind[0] == "arg":
             a = list(new.get("args") or [])
             flag = kind[1]

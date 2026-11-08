@@ -93,6 +93,18 @@ test('original requests, cache, progress, hardware and MCP facts are translated 
   assert.equal(mapped.mcp.servers[0].state,'ready');assert.equal(mapped.mcp.servers[0].tools[0].name,'read_file');
 });
 
+test('the cart fence: a cart parked beside the pool is named, not counted into the slots', () => {
+  const raw = {engine:{max_context:32768}, live:{state:'idle'}, hardware:{}, history:{}, requests:[], totals:{},
+    conversation_cache:{enabled:true,budget_mib:18432,parked:5,slots:4,bytes:15*1024**3,parks:9,restores:4,
+      evictions:1,carts:{mode:'anchor',cap:10,pool:10,engine_slots:10,engine_parked:1,asks:3,riders:2,
+        standing:{file:'MEM-CRG-251dc37e.bin',bytes:468360408,state:'loaded'}}}};
+  const mapped = originalDashboard(raw,{gpus:[gpu('a')]},{context:{maxTokens:32768},hardware:{},history:[],totals:{},telemetry:{}});
+  assert.equal(mapped.conversationCache.parked,5);
+  assert.equal(mapped.conversationCache.carts.engineParked,1,'the rider survives the mapping');
+  assert.equal(mapped.conversationCache.carts.engineSlots,10,'the engine answers the fence, not the ledger');
+  assert.equal(mapped.conversationCache.carts.standing.file,'MEM-CRG-251dc37e.bin');
+});
+
 test('All GPUs: a card with no temperature sensor is left out and the card that reports is named (#3727 follow-up)',()=>{
   const devices=[{...gpu('nv',0),name:'NVIDIA GeForce RTX 5070'},{...gpu('igpu',1),name:'AMD Radeon(TM) Graphics',vramGb:0.4}];
   const readings=[reading('nv',3,0.8,34,7),reading('igpu',0,0.001,null,null)];

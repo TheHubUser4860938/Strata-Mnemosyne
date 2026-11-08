@@ -1164,6 +1164,7 @@ def main():
     candidates: list[dict] = []    # op=turns keeps returning unmarked turns, and the fetch
     seen: set[str] = set()         # loop must not re-extract the same window forever
     drained = fails = 0
+    turn_fetch_failed = False      # see the op=turns clause: a failed fetch is an unknown queue
     batch = 0
     marked_total = 0
     iqueue = IdleQueue(state / "idle_queue.json", settle=a.settle, max_age=a.queue_max_age) if a.queue else None
@@ -1228,6 +1229,13 @@ def main():
         # exactly 50 that way). Marks now land per window, so the fetch shrinks to the
         # unit of work: the card falls in view and a dead run re-extracts at most one
         # window. The endpoint's own cap (memory.py:368) stays the hard ceiling.
+        # A FAILED FETCH IS NOT AN EMPTY QUEUE (audit 2026-11-07): the old code answered
+        # `(r.get("turns") or []) if st == 200 else []`, broke the loop, and printed a clean
+        # 0-turn drain. 33 ticks of cron.log carry `db_pending_after=None` - the same GET
+        # failing a second time, its (0, {...}) answer having no `stats` key.
+        if st != 200:
+            print(f"op=turns failed (HTTP {st}) - the queue is unknown, not empty", flush=True)
+            turn_fetch_failed = True
         turns = (r.get("turns") or []) if st == 200 else []
         if a.limit:
             turns = turns[:max(0, a.limit - drained)]
@@ -1339,7 +1347,9 @@ def main():
     (state / f"curate_{a.tag}.review.txt").write_text(scrub("\n".join(review) + "\n\n" + txt + "\n"),
                                                       encoding="utf-8")
     js.close()
-    return 0
+    # a tick that could not read the queue says so with its exit code (systemd marks the unit
+    # failed; the timer still fires on the next half hour)
+    return 1 if (turn_fetch_failed and not drained) else 0
 
 
 if __name__ == "__main__":
