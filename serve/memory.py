@@ -249,7 +249,7 @@ ROUTE_STAGE1 = 12      # cheap-pass hits the vote reads - the probe's number, ke
 ROUTE_TOP = 3          # shelves kept - the probe's number, kept for parity
 
 
-def shelf_vote(hits: list[dict]) -> list[str]:
+def shelf_vote(hits: list[dict], top: int = ROUTE_TOP) -> list[str]:
     """The router's vote: rank-weighted over the shelves the cheap pass landed on, top ROUTE_TOP kept.
     A hit on a WILD (unclassified) row votes for NOTHING - inventing a "no shelf" shelf would let
     unclassified rows out-vote classified ones (m4_shelf_nav's law, and the dev store keeps ~20% wild).
@@ -260,7 +260,7 @@ def shelf_vote(hits: list[dict]) -> list[str]:
         klass = str(h.get("class") or "")
         if klass:
             tally[klass] = tally.get(klass, 0.0) + ROUTE_W[pos]
-    return [s for s, _ in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))[:ROUTE_TOP]]
+    return [s for s, _ in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))[:top]]
 
 
 def scope_name(value, fallback: str = DEFAULT_PROJECT) -> str:
@@ -1152,7 +1152,8 @@ class MemoryService:
                  route_shelves: bool = False, route_demote: float = 0.0,
                  derived_weight: float = 1.0, block_cover_terms: int = 0,
                  cover_weight: float = 0.0, proof_weight: float = 0.0,
-                 turn_recall_agg: int = 0, route_glossary: float = 0.0):
+                 turn_recall_agg: int = 0, route_glossary: float = 0.0,
+                 route_top: int = ROUTE_TOP):
         self.directory = memory_dir(directory)      # absolute, created 0700 - same rules as slot_save_path
         # STORAGE (ADR-002 native rebase, 2026-10-16): PostgreSQL, no SQLite anywhere. Production
         # OWNS its cluster under <dir>/pgdata - a unix socket inside the data dir, so the store
@@ -1227,6 +1228,12 @@ class MemoryService:
         # blind to vocabulary today - it can only see the tokens on a shelf - and the founding
         # panel's four zero-containment topics are that blindness measured. 0.0 = today's bytes.
         self.route_glossary = min(1.0, max(0.0, float(route_glossary)))
+        # How MANY shelves the router keeps (the pick length). ROUTE_TOP=3 was the probe's number,
+        # measured when nothing else voted; a glossary vote at a real weight competes for the same 3
+        # slots, and the 1.0 arm (2026-11-08) showed the shape that makes: temporal +6 lines, idk
+        # 0.408 -> 0.293, and row_coverage 0.776 -> 0.690 - the vote REDISTRIBUTES, it does not widen.
+        # 3 = today's bytes.
+        self.route_top = max(1, int(route_top))
         self._glo = None                       # (census stamp, (shelf->words, word->shelves))
         self._route_stats = {"tries": 0, "picks": 0, "fallbacks": 0, "picked": {}}  # observability, see stats()
         # BROWSE LEDGER (2026-10-24, the venue-day scar): tool prints rode server stdout into the
@@ -3484,7 +3491,8 @@ class MemoryService:
                 if word[:4] == w[:4]:                  # the plurals rule coverage_gap uses
                     for shelf in shelves:              # and its value is the shelves it names
                         tally[shelf] = tally.get(shelf, 0.0) + self.route_glossary * ROUTE_W[0]
-        return [x for x, _ in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))[:ROUTE_TOP]]
+        return [x for x, _ in sorted(tally.items(),
+                          key=lambda kv: (-kv[1], kv[0]))[:self.route_top]]
 
     def _route(self, query: str, scope: str) -> list[str] | None:
         """The query->shelf router for the AUTO-INJECTION path (see shelf_vote for the law, the
@@ -3498,7 +3506,7 @@ class MemoryService:
             return None
         self._route_stats["tries"] += 1
         stage1 = self.search(query, scope=scope, limit=ROUTE_STAGE1, semantic=False, credit=False)
-        pick = shelf_vote(stage1)
+        pick = shelf_vote(stage1, self.route_top)
         if self.route_glossary > 0.0:
             pick = self._glossary_vote(query, pick)   # a label's word votes for its shelf too
         if pick:
@@ -3798,7 +3806,8 @@ class MemoryService:
                 "trust_tier": {"weight": self.derived_weight, "derived_rows": derived_rows},
                 "block_cover_terms": self.block_cover_terms,
                 "rank_terms": {"cover": self.cover_weight, "proof": self.proof_weight},
-                "glossary": {"weight": self.route_glossary, "shelves": len(self._glossary()[0])},
+                "glossary": {"weight": self.route_glossary, "shelves": len(self._glossary()[0]),
+                       "top": self.route_top},
                 "turn_recall_agg": self.turn_recall_agg,
                 "by_scope": by_scope, "by_class": by_class,
                 "turns": turns, "turns_pending": pending, "inject": self.inject,
@@ -4404,6 +4413,7 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         proof_weight=num("proof_weight", 0.0, float),       # the evidence-count ranking term
         turn_recall_agg=num("turn_recall_agg", 0),          # the tail cap for counting questions
         route_glossary=num("route_glossary", 0.0, float),  # the glossary vote weight
+        route_top=num("route_top", ROUTE_TOP),             # shelves the pick keeps (3 = today)
         block_position=str(mcfg.get("block_position") or "head"),
         cache_entries=num("cache_entries", 64),
         embedder=(embedder if embedder is not None else (mcfg.get("embedder") or None)),
