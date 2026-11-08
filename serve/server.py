@@ -8348,6 +8348,7 @@ class Cartridges:
 
     def view(self):
         files = []
+        self.vault_total = 0
         try:      # the vault inventory for the page's tier-2 view (2026-10-24 night, owner's
                   # ask: multiple cartridges are coming, they get their own sub page): the slot
                   # dir IS the shelf - one standing cartridge per engine pin plus the bench
@@ -8371,6 +8372,9 @@ class Cartridges:
         return {"shelves": self.prefixes, "max_chars": self.max_chars, "facts": self.n_facts,
                 "left_for_block": self.n_left, "file": self.applied, "bytes": self.bytes,
                 "state": self.state, "soul_chars": self.soul_chars, "files": files,
+                # the vault is LISTED to 24 (newest first); the page says "24 of N" rather than
+                # letting a venue day's shelf read like its whole contents (audit 2026-11-07)
+                "files_total": len(files) if not files else self.vault_total,
                 # IS THE SPEEDUP REAL RIGHT NOW (review 2026-10-24): "seeded" alone used to
                 # survive an engine restart, because the K/V lives in the ENGINE process and the
                 # re-seed window kept renewing itself under steady traffic - so the page could
@@ -10180,10 +10184,10 @@ def make_handler(svc: Service):
                                                    "memory.html" if path == "/memory-ui" else "index.html")).read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
-                if not path:
-                    # the chat's svg/html preview is a sandboxed frame; this keeps it from navigating away to a web page
-                    # (a link or <meta refresh> inside a model's html), which no sandbox flag does (serve/web/preview.js)
-                    self.send_header("Content-Security-Policy", PAGE_CSP)
+                # EVERY page carries it (audit 2026-11-07): the header used to ride the index page
+                # only, so /memory-ui and /api-monitor could be framed by anything - and the Memory
+                # page's Retire button writes to the live ledger on one blind click.
+                self.send_header("Content-Security-Policy", PAGE_CSP)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -10514,7 +10518,11 @@ def make_handler(svc: Service):
                 # the per-request embedder mute (arm-C A/B), echoed in the response so a harness can
                 # prove from the REPLY which arm served it - the venue law reads responses, not logs.
                 sem = (self.headers.get("X-Strata-Memory-Embedder") or "").strip().lower() not in ("off", "mute", "0")
+                # stats rides the SEARCH reply too (audit 2026-11-07): the page paints its tiles from
+                # this call, so a search followed by a Remember left the Facts and Curation tiles on
+                # the pre-write numbers until the operator pressed Browse.
                 self._json(200, {"query": q, "scope": memory_api.scope_name(scope), "embedder": sem,
+                                 "stats": svc.memory.stats(),
                                  "hits": svc.memory.search(q, scope=scope, limit=limit, classes=prefixes,
                                                            since=since, until=until, semantic=sem)})
                 return
@@ -10533,7 +10541,8 @@ def make_handler(svc: Service):
             self._json(200, {"stats": stats,
                              "memories": svc.memory.list_memories(scope=memory_api.scope_name(scope, "") or None,
                                                                   limit=limit, include_invalid=inv not in ("", "0"),
-                                                                  klass=(prefixes or [None])[0])})
+                                                                  klass=(prefixes or [None])[0],
+                                                                  before_id=(qs.get("before_id") or [""])[0] or None)})
 
         def _reason_get(self):
             """The fork's reason modes (server-side steering of the DavidAU template): what THIS
@@ -10820,6 +10829,9 @@ def make_handler(svc: Service):
                         klass=req.get("class") or None, scope=req.get("scope") or None,
                         cap=int(req.get("cap") or 3900),
                         mode=str(req.get("mode") or "paragraphs"),
+                        force=bool(req.get("force")),   # the mode and cap live OUTSIDE the ledger's
+                        #   stat key, so a chunk-mode sweep was a silent no-op on the wire while the
+                        #   CLI's --force did the work (audit 2026-11-07)
                         exts=req.get("exts") or (".txt", ".md"))}}
                 elif action == "remove":
                     r = {"docs": {"removed": svc.memory.docs.remove(str(req.get("corpus") or ""))}}
@@ -10872,7 +10884,12 @@ def make_handler(svc: Service):
                 raise ValueError('op: one of "remember", "forget", "purge", "invalidate", "correct", '
                                  '"classify", "pin", "link", "curate", "search", "turn", "turns", "cartridge", '
                                  '"docs", "mint", "remint", "retire", "carts"')
-            self._json(200, {"ok": True, **r})
+            # EVERY op answers under its own key AND under `result` (audit 2026-11-07): the docs
+            # verbs reply {"ok":true,"docs":{...}} while tools/m4_reshelve.py reads
+            # out["result"]["docs"], and the two have been quietly out of step since the wire verb
+            # shipped. The wrapper costs nothing on the wire and pins one shape for all 17 ops;
+            # the bare key stays for the callers that were written against it.
+            self._json(200, {"ok": True, "result": r, **r})
         def _images(self, req):
             """POST /v1/images/generations (serve/images.py): one sd-cli job in the GPU's turn."""
             gen = svc.images
@@ -11434,7 +11451,10 @@ def make_handler(svc: Service):
             # template's flat form; the flag rides mem_ctx (the return tuple is already wide) and _responses
             # builds the loop after prepare. Internal rounds never reach the assembler: run_with_mcp swallows
             # the events of names it serves itself.
-            if svc.memory is not None and mem_ctx is not None and (
+            # The gate reads tool_choice: "none" too (audit 2026-11-07): the assembler answers tools=None for
+            # it, and this gate appended the memory tool to None - so Codex got memory_search offered on a
+            # request where Chat and Claude offer none. Three dialects, one prompt contract.
+            if svc.memory is not None and mem_ctx is not None and req.get("tool_choice") != "none" and (
                     svc.memory.tool or (self.headers.get("X-Strata-Memory-Tool") or "").strip().lower()
                     in ("1", "on", "true")):
                 if "memory_search" not in {t.get("name") for t in tools or [] if isinstance(t, dict)}:
@@ -11516,15 +11536,21 @@ def make_handler(svc: Service):
             # a fresh boot read low by the whole standing prefix and the anchored bodies. One ensure()
             # (windowed, ~free after the first) makes the count the bytes the route would have sent.
             mem_live_ct = svc.memory is not None and not memory_api.muted(self.headers)   # m1/m2 parity
-            if svc.cartridges is not None and mem_live_ct:
-                svc.cartridges.ensure()
-                if svc.cartridges.state in ("loaded", "seeded"):
-                    messages = stand_on(svc, messages, self.headers, req)   # S4: the count must ride the SAME
-                                                                        # bytes as the route it mirrors -
-                                                                        # standing, index, attached carts,
-                                                                        # pulled tail (the review lesson of
-                                                                        # 2026-10-24: a mirror that skips a
-                                                                        # leg makes the context bar lie)
+            if svc.cartridges is not None:
+                if mem_live_ct:
+                    svc.cartridges.ensure()
+                    if svc.cartridges.state in ("loaded", "seeded"):
+                        messages = stand_on(svc, messages, self.headers, req)   # S4: the count must ride the SAME
+                                                                            # bytes as the route it mirrors -
+                                                                            # standing, index, attached carts,
+                                                                            # pulled tail (the review lesson of
+                                                                            # 2026-10-24: a mirror that skips a
+                                                                            # leg makes the context bar lie)
+                else:
+                    # the muted arm invalidates on the route itself, so a count asked between a muted
+                    # turn and a served one must not report the muted turn's standing prefix as the
+                    # warm state (audit 2026-11-07: the mirror was a leg short on this arm only)
+                    svc.cartridges.invalidate()
             if svc.soul and mem_live_ct and not (svc.cartridges
                                                  and svc.cartridges.standing_rides()):
                 messages = memory_api.prepend_head(messages, svc.soul)   # bytes too, or the context bar

@@ -2052,15 +2052,21 @@ class MemoryService:
 
     @_heals
     def list_memories(self, scope: str | None = None, limit: int = 100,
-                      include_invalid: bool = False, klass: str | None = None) -> list[dict]:
+                      include_invalid: bool = False, klass: str | None = None,
+                      before_id: int | None = None) -> list[dict]:
         """The store newest-first. Invalidated (superseded) rows are hidden by default - the caller
         wants what the recall can serve; include_invalid brings back the version history with its
         invalid_at / superseded_by chain for the review list and as-of inspection. klass filters to
-        one shelf subtree (prefix match: MEM pulls MEM/CRG with it)."""
+        one shelf subtree (prefix match: MEM pulls MEM/CRG with it). before_id pages the list:
+        the newest row of the NEXT page, so a caller that needs EVERY fact - the curation picker -
+        can ask (the 500 ceiling was 30% of this store)."""
         conds, params = [], []
         if scope:
             conds.append("scope = %s")
             params.append(scope)
+        if before_id:
+            conds.append("id < %s")
+            params.append(int(before_id))
         if klass:
             named = [c for c in (class_name(x, quiet=True) for x in klass.split(",")) if c]
             # The sentinel again (class_list 2026-10-15, browse 2026-10-24): a list filter whose every
@@ -3836,8 +3842,12 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
         # tells the model the store holds what this conversation has never seen. The notice is the
         # lever and its clauses ride together - pilot v3 tests the sentence, not its parts.
         notice = ""
+        # The notice promises a tool, so it rides ONLY when the tool is actually offered: the
+        # config's `tool`, the X-Strata-Memory-Tool header, and the request's own tool_choice
+        # (audit 2026-11-07: with tool_choice "none" the model got neither block nor tool, and the
+        # v3 notice's "call memory_search before you say you don't know" was a sign on a missing door).
         if (mem.tool or (headers.get("X-Strata-Memory-Tool") or "").strip().lower()
-                in ("1", "on", "true")):
+                in ("1", "on", "true")) and str(req.get("tool_choice") or "").lower() != "none":
             notice = MEMORY_OFF_NOTICE
         return (prepend_head(messages, notice) if notice else messages), {
             "scope": scope, "user": last_user, "model": req.get("model"),

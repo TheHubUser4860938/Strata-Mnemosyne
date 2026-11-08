@@ -125,3 +125,27 @@ def test_a_legal_local_shadow_stays_quiet():
         assert not _check(tmp), "the guard cried on a legal shadow"
     finally:
         tmp.unlink()
+
+
+# The documented runner is unittest (AGENTS.md), and this file was pytest-only: under
+# `python -m unittest tools.test_curate_scope` it reported NO TESTS RAN, so the guard that
+# caught the `unscored += 1` livelock ran only when someone remembered pytest (audit 2026-11-07).
+import unittest
+
+
+class ScopeGuard(unittest.TestCase):
+    """Thin unittest wrappers: the module keeps its pytest-callable functions, and the class is
+    what makes `python -m unittest tools.test_curate_scope` run something."""
+
+    def test_the_repo_is_clean(self):
+        test_no_enclosing_name_augmented_without_nonlocal()
+
+    def test_the_guard_fires_on_the_shape_that_broke_the_sweep(self):
+        globals()["test_the_guard_fires_on_the_shape_that_broke_the_sweep"]()
+
+    def test_a_legal_local_shadow_stays_quiet(self):
+        globals()["test_a_legal_local_shadow_stays_quiet"]()
+
+
+if __name__ == "__main__":
+    unittest.main()
