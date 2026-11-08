@@ -499,6 +499,27 @@ MEMORY_OFF_NOTICE = (
     "catalog:true to read the map of shelves.")
 
 
+def coverage_gap(query: str, texts, limit: int = 3) -> str:
+    """The query's own CONTENT terms that none of these rows uses - the abstention lever, in one
+    place so the block header and the tool payload cannot drift (2026-11-08, the Grok-judged packet:
+    items 6 and 10 are two-entity questions where the store holds one, and the model invented the
+    other - "the fence fix came before the cow purchase", with no cow row anywhere).
+
+    A term counts as covered by a 4-character prefix: the cheapest thing that survives the stemmer's
+    plurals ("cow"/"cows", "workshop"/"workshops") without shipping a stemmer in Python. STOP is the
+    same list `_dedupe` uses - the line is for content terms, and a first cut that did not filter
+    listed "which came first" and cut "cows" at the cap. Terms are capped at `limit` of 20 chars
+    each, so the line costs a bounded few bytes; "" means the list covers every content term, which
+    is today's payload exactly.
+    """
+    if not query or limit <= 0:
+        return ""
+    body = " ".join(t.lower() for t in texts)
+    words = [w for w in dict.fromkeys(WORD_RE.findall(query.lower()))
+             if len(w) >= 4 and w not in STOP]
+    return " ".join(w[:20] for w in [w for w in words if w[:4] not in body][:limit])
+
+
 def tool_result(mem: "MemoryService", arguments, scope: str = "default",
                 classes: list[str] | None = None) -> dict:
     """Run one memory_search call from the model (C, agentic recall 2026-10-12; the browse verbs
@@ -610,6 +631,16 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
             f["filed"] = _stamp(w)
         facts.append(f)
     out = {"found": len(facts), "facts": facts}
+    if mem.block_cover_terms > 0 and facts:
+        # THE GAP LINE, tool-arm half (2026-11-08): this box runs the browse arm (inject off, tool
+        # on), so the model reads THIS payload, not a block header. Same rule as the block's
+        # `missing=`, same function: the query's own content terms that no returned row uses. The
+        # abstention failures are two-entity questions whose second entity is not in the store, and
+        # a `found: 8` reads as "there are eight rows about this" - not as "none of them mention
+        # cows". Absent when the list covers everything, so the ordinary payload is byte-identical.
+        gap = coverage_gap(q, [h["text"] for h in hits], mem.block_cover_terms)
+        if gap:
+            out["gap"] = gap
     if not informative(q):
         out["notice"] = ("this query carried no informative words - "
                          + ("there was nothing to match, so nothing was found: try other words, or "
@@ -3249,23 +3280,10 @@ class MemoryService:
                 t = t[:self.block_doc_cap].rsplit(" ", 1)[0] + " …"
             return t
 
-        # A word counts as covered by a 4-character prefix: the cheapest thing that survives the
-        # stemmer's plurals ("cow"/"cows", "workshop"/"workshops") without shipping a stemmer in
-        # Python. Words under 4 characters are never listed, and the line is capped at
-        # `block_cover_terms` entries of 20 chars each, so the coverage line costs a bounded few
-        # bytes. Computed on the CANDIDATE list, not the shown list: the header is part of the
-        # budget arithmetic, and a term covered by a row the budget trimmed is honest to call
-        # covered - the retrieval saw it, the block just had no room.
-        missing = ""
-        if self.block_cover_terms > 0 and query:
-            body = " ".join(h["text"].lower() for h in hits)
-            # STOP, the same list _dedupe uses: the line is for CONTENT terms. A first cut listed
-            # "which came first" and cut "cows" at the cap - true of the query, useless as a map of
-            # what the block holds.
-            words = [w for w in dict.fromkeys(WORD_RE.findall(query.lower()))
-                     if len(w) >= 4 and w not in STOP]
-            gap = [w for w in words if w[:4] not in body][:self.block_cover_terms]
-            missing = " ".join(g[:20] for g in gap)
+        # One rule, one place: see coverage_gap. Computed on the CANDIDATE list, not the shown list:
+        # the header is part of the budget arithmetic, and a term covered by a row the budget trimmed
+        # is honest to call covered - the retrieval saw it, the block just had no room.
+        missing = coverage_gap(query, [h["text"] for h in hits], self.block_cover_terms)
         lines = [head(len(hits), missing), instruction]
         lines += [f"[{i + 1}] ({h['scope']}) {show(h)}" for i, h in enumerate(hits)]
         lines.append("</server_memory>")
