@@ -17,7 +17,7 @@ from pathlib import Path
 
 from serve.frontend import ChatTemplate
 from serve.memory import (MemoryService as _BaseMemoryService, norm_text, request_state,
-                          time_bound, tool_result, glossary_map, LINKS_PER_ROW)
+                          time_bound, tool_result, glossary_map, shelf_vote, LINKS_PER_ROW)
 from serve.server import (ByteTokenizer, Cartridges, CartMinter, MockEngine, Service, serve, stand_on,
                           curate_argv, curate_lock)
 
@@ -4861,7 +4861,7 @@ class GlossaryVoteTest(unittest.TestCase):
         self.assertEqual(m.stats()["glossary"]["weight"], 0.6, "stats proves which arm boots")
         off = MemoryService(self.tmp.name + "/glo0")
         self.addCleanup(off.close)
-        self.assertEqual(off.stats()["glossary"], {"weight": 0.0, "shelves": 0},
+        self.assertEqual(off.stats()["glossary"], {"weight": 0.0, "shelves": 0, "top": 3},
                          "0.0 is the router of today")
 
     def test_the_vote_lands_on_the_shelf_the_label_names(self):
@@ -4884,6 +4884,24 @@ class GlossaryVoteTest(unittest.TestCase):
         self.assertIn("HUM/ELOQ", pick, "the vote must name a shelf the caller can filter on")
         self.assertTrue(all("/" in x or x.isupper() for x in pick),
                         f"every key is a class, not a label word: {pick}")
+
+    def test_route_top_widens_the_pick_instead_of_fighting_over_it(self):
+        """The pick length is a knob (2026-11-08). ROUTE_TOP=3 was measured before anything voted;
+        with the glossary at 1.0 the vote competes for the same three slots, and the 1.0 arm
+        redistributed: temporal +6 lines, idk 0.408 -> 0.293, row_coverage 0.776 -> 0.690. Offline
+        on the 42 routing questions, the pick reaches the GOLD shelf on 30/42 with the vote off,
+        28/42 at top 3, 31/42 at top 4, 33/42 at top 5 - so the slot is the scarce thing, not the
+        weight. 3 keeps today's bytes."""
+        hits = [{"class": "A", "score": 9}, {"class": "B", "score": 8},
+                {"class": "C", "score": 7}, {"class": "D", "score": 6}]
+        self.assertEqual(shelf_vote(hits), ["A", "B", "C"], "3 = the probe's number, unchanged")
+        self.assertEqual(shelf_vote(hits, 4)[-1], "D", "a 4th slot ADDS, it does not replace")
+        m = MemoryService(self.tmp.name + "/rtop", route_shelves=True, route_glossary=1.0, route_top=5)
+        self.addCleanup(m.close)
+        self.assertEqual(m.stats()["glossary"]["top"], 5, "stats proves which length booted")
+        dflt = MemoryService(self.tmp.name + "/rtop0")
+        self.addCleanup(dflt.close)
+        self.assertEqual(dflt.stats()["glossary"]["top"], 3, "the default is today's bytes")
 
     def test_coverage_is_the_number_beside_the_gap_list(self):
         m = MemoryService(self.tmp.name + "/covnum", block_cover_terms=3)
