@@ -303,7 +303,10 @@ export interface MonitorState {
   };
   history: MonitorSample[];
   requests?: ServeRequest[];
-  conversationCache?: { enabled?:boolean; parked?:number; slots?:number; memoryGb?:number; budgetGb?:number; parks?:number; restores?:number; evictions?:number; lastEvent?:string; lastAt?:number; lastTokens?:number; requests?:number;requestsReused?:number;lastPrompt?:number;lastReused?:number; source:string };
+  conversationCache?: { enabled?:boolean; parked?:number; slots?:number; memoryGb?:number; budgetGb?:number; parks?:number; restores?:number; evictions?:number; lastEvent?:string; lastAt?:number; lastTokens?:number; requests?:number;requestsReused?:number;lastPrompt?:number;lastReused?:number; source:string;
+    // the cartridge fence (memory-core): a standing cart parks BESIDE the ordinary slots, so the
+    // pool counts it and the ratio needs to say so (the web card does; the app dropped the object)
+    carts?: { mode?:string; cap?:number; pool?:number; engineSlots?:number|null; engineParked?:number|null; asks?:number; riders?:number; standing?: { file?:string; bytes?:number; state?:string }|null } };
   mcp?: { servers:{ name:string; state:string; transport?:string; info?:{name?:string;version?:string}; error?:string; tools:{name:string;description?:string}[] }[]; tools:number };
   totals: {
     promptMs?: number;

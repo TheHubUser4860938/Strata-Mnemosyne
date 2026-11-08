@@ -68,7 +68,9 @@ DEFAULT_PROJECT = "default"             # requests that name no scope land in th
 # RELATIONS (2026-10-29, the Mind survey's "knowing is relating"). A CLOSED set on purpose: every
 # kind must have a writer that exists today, or it is a dead column - this fork already ships one
 # lesson about that, the harvest's `lane` field, parsed by the extractor and never threaded into the
-# candidate dict, so the taboo-lane clause it feeds has been dead since it shipped. `about` is the
+# candidate dict, so the taboo-lane clause it feeds has been dead since it shipped (fixed
+# 2026-10-29: tools/curate_loop.py carries lane and state_key into the candidate and the provenance
+# jsonb; the live store shows 1,330 fact / 158 state / 11 taboo rows, and the clause is live). `about` is the
 # automatic one (two facts compared at write time, similar enough to matter, distinct enough to
 # keep); `contradicts` is the tension a supersession cannot express, which is exactly the shape of
 # rows 6585/6932 disagreeing with a cart's truth; `supports` is the receipt law turned into an edge -
@@ -734,12 +736,8 @@ def time_bound(value) -> float | None:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=datetime.timezone.utc)
         return dt.timestamp()
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-        try:
-            return datetime.datetime.strptime(s[:19], fmt).replace(
-                tzinfo=datetime.timezone.utc).timestamp()
-        except ValueError:
-            continue
+    # fromisoformat (3.11+) takes every shape the strptime ladder below used to try, so the ladder
+    # is gone (audit 2026-11-07: it was unreachable - nothing fromisoformat rejects, strptime accepts).
     raise ValueError(f"bad date {s!r}: use YYYY-MM-DD, an ISO datetime, or epoch seconds")
 
 
@@ -1566,7 +1564,7 @@ class MemoryService:
             about: int | None = None      # a relation, not a verdict about the text
             supersede_held = False        # set when a PIN blocked the automatic retirement
             if vec is not None and guard:
-                verdict = self._semantic_dupe(text, same, vec, scope)
+                verdict = self._semantic_dupe(text, same, vec)
                 if verdict and verdict[0] == "suppress":
                     self.conn.execute(
                         "update memories set updated_at=%s, confidence=greatest(confidence,%s), "
@@ -1683,7 +1681,7 @@ class MemoryService:
                 out["evicted"] = evicted
             return out
 
-    def _semantic_dupe(self, text: str, same, vec, scope: str) -> tuple | None:
+    def _semantic_dupe(self, text: str, same, vec) -> tuple | None:
         """The write-time near-dupe DECISION, only reached when an embedder is configured. Cosine
         PROPOSES and nothing more: measured 2026-10-14 on the store that had just grown 57 rows of
         one username policy over two sweeps, a duplicate family's own self-similarity runs 0.59 to
@@ -2506,6 +2504,13 @@ class MemoryService:
                 self.conn.commit()
                 self._bm25_n[fam] = (n, top)
                 self._bm25_avgdl[fam] = max(1.0, float(tot) / max(1, n))
+                # BOUNDED like every other cache here (audit 2026-11-07): one pair of entries per
+                # distinct (scopes, shelf) family, and the scopes come off a header, so a venue day
+                # with 500 project scopes used to grow these two dicts for the whole boot.
+                while len(self._bm25_n) > 64:
+                    old = next(iter(self._bm25_n))
+                    self._bm25_n.pop(old, None)
+                    self._bm25_avgdl.pop(old, None)
             return float(n), self._bm25_avgdl[fam]
 
     def _bm25(self, rows: list, qtoks: list, dfm: dict, n: float, avgdl: float,
@@ -3609,14 +3614,17 @@ class MemoryService:
         ids = set(int(i) for i in raw_ids) if isinstance(raw_ids, list) else set()
         raw_pre = s.get("shelf_prefixes")
         if isinstance(raw_pre, list):
-            pats = []
-            for p in raw_pre:
-                p = str(p).strip().rstrip("*")
-                if p:
-                    pats += [p, p + ".%", p + "/%"]
+            pats = [str(p).strip().rstrip("*") for p in raw_pre]
+            pats = [p for p in pats if p]
             if pats:
+                # ONE spelling of the subtree law (audit 2026-11-07): this used its own
+                # `like any(array)` with the bare prefix as an exact arm, and `_` is a one-character
+                # wildcard - TECH/MY_X answered for the row on TECH/MYAX, where shelf_sql,
+                # shelf_covers and shelf_mask all answer nothing. The ledger keeps the unvalidated
+                # prefix spelling (CartMinter.render stores it raw), so the drift was reachable.
+                frag, params = shelf_sql("class", pats)
                 rows = self.conn.execute(
-                    "select id from memories where class like any(%s)", (pats,)).fetchall()
+                    "select id from memories where " + frag, params).fetchall()
                 ids.update(r[0] for r in rows)
         return sorted(ids)
 
@@ -3852,11 +3860,12 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
         return (prepend_head(messages, notice) if notice else messages), {
             "scope": scope, "user": last_user, "model": req.get("model"),
             "query": last_user, "classes": classes, "hits": []}
-    # THE RUST ARM (P6.1's flag, P6.5's hot path): the block is the one memory read EVERY chat
-    # turn makes, so it is the read that decides whether one arm or two carry the store. When
-    # `memory.rust` is on, the sidecar builds both blocks and the Python's in-process service is
-    # the fallback — per call, no cliff. The bytes are the contract: P3.3's parity bar is byte
-    # equality, so a parked conversation's prefix does not fork when the arm answers.
+    # THE SIDECAR HOOK (P6.1's flag): the block is the one memory read EVERY chat turn makes, so it
+    # is the read that decides whether one arm or two carry the store. The Rust port is off the
+    # working line (2026-11-07: Python searches in 0.36-0.47 s against 35k rows, the sidecar took
+    # 1.4 s against 51k and cost its own embedder, matrix and ~15 GB), so `mem.rust` is unset and
+    # every call below falls through to the Python arms. The hook stays: it is one attribute and
+    # two calls, and the parity contract (byte-equal blocks) is what an arm must satisfy.
     rust = getattr(mem, "rust", None)
     wire = {"messages": messages, "scope": scope, "semantic": semantic,
             "class": ",".join(classes) if classes else None}
@@ -3880,7 +3889,9 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
     if rust is not None:
         got = rust.call("POST", "/block", dict(wire, turn=True,
                                                exclude_ids=[h["id"] for h in hits]))
-        if got is not None:
+        # `block is None` is the sidecar's word for "I did not answer the TAIL" - a hits:[] answer
+        # with no block used to mean the Python tail never ran, on every request, silently.
+        if got is not None and got.get("block") is not None:
             tblock, thits = got.get("block"), (got.get("hits") or [])
     if tblock is None and thits is None:
         tblock, thits = mem.turn_block_for(messages, scope, [h["id"] for h in hits], classes,

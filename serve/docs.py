@@ -282,11 +282,16 @@ class Docs:
     def __init__(self, svc):
         self.svc = svc
         self._readers: dict[str, DocReader] = {}   # corpus -> the cached file reader
+        self._ready = False                        # the DDL has run in this process
 
     def _ensure(self):
         """The ledger exists before any verb reads it - the attacher's path (a running server
         booted on the old DDL list), and a fresh store's first docs call before its own
-        startup ran. One IF NOT EXISTS, idempotent against the store's own _startup."""
+        startup ran. One IF NOT EXISTS, idempotent against the store's own _startup.
+        Run ONCE per process (audit 2026-11-07): three DDL statements on every docs verb,
+        `read()` included, was the cheapest round trip to shave off the reading stage."""
+        if self._ready:
+            return
         with self.svc.lock:
             self.svc.conn.execute(_DOCS_DDL)
             # 2026-11-02, the reading stage: a store indexed before this build has
@@ -301,6 +306,7 @@ class Docs:
                 "create index if not exists mem_doc_corpus on memories ((provenance->>'corpus'))"
                 " where " + DOC_SOURCE_SQL)
             self.svc.conn.commit()
+            self._ready = True
 
     def index(self, folder, corpus: str, *, klass: str | None = None, scope: str | None = None,
               cap: int = CHUNK_CAP, mode: str = "paragraphs", exts=DEFAULT_EXTS,
