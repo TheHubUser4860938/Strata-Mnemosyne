@@ -517,6 +517,28 @@ class DocsOverHttp(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("docs", r["error"]["message"])
 
+    def test_the_wire_answers_under_result_as_well_as_its_own_key(self):
+        """Audit 2026-11-07: op=docs replied {"ok":true,"docs":{...}} while tools/m4_reshelve.py
+        reads out["result"]["docs"] - the clerk printed an empty ledger through the wire. Every op
+        answers both ways now; the bare key stays for the callers written against it."""
+        status, r = self._post({"op": "docs", "action": "list", "corpus": "resultshape"})
+        self.assertEqual(status, 200)
+        self.assertIn("docs", r, "the bare key the page reads")
+        self.assertIn("result", r, "the wrapper the tools read")
+        self.assertEqual(r["result"]["docs"], r["docs"], "one answer, two handles")
+
+    def test_the_wire_can_force_a_re_chunk(self):
+        """The mode and cap live OUTSIDE the ledger's stat key, so a chunk-mode sweep over an
+        untouched folder was a silent no-op on the wire while the CLI's --force did the work."""
+        self._post({"op": "docs", "action": "index", "folder": str(self.docs_dir),
+                    "corpus": "forced", "mode": "paragraphs"})
+        _st, quiet = self._post({"op": "docs", "action": "index", "folder": str(self.docs_dir),
+                                 "corpus": "forced", "mode": "sections"})
+        self.assertEqual(quiet["docs"]["indexed"]["files"], 0, "the stat sweep says nothing moved")
+        _st, forced = self._post({"op": "docs", "action": "index", "folder": str(self.docs_dir),
+                                  "corpus": "forced", "mode": "sections", "force": True})
+        self.assertEqual(forced["docs"]["indexed"]["files"], 1, "--force re-chunks on the wire")
+
     def test_wire_exts_as_a_string_is_not_split_into_characters(self):
         """Audit 2026-10-31: the handler wrapped exts in tuple(str(x) for x in ...), so a comma
         STRING became single characters and the store's own normalization never saw the value.

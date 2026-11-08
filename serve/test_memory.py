@@ -16,8 +16,8 @@ import unittest.mock
 from pathlib import Path
 
 from serve.frontend import ChatTemplate
-from serve.memory import (MemoryService as _BaseMemoryService, request_state, time_bound,
-                          tool_result, LINKS_PER_ROW)
+from serve.memory import (MemoryService as _BaseMemoryService, norm_text, request_state,
+                          time_bound, tool_result, LINKS_PER_ROW)
 from serve.server import (ByteTokenizer, Cartridges, CartMinter, MockEngine, Service, serve, stand_on,
                           curate_argv, curate_lock)
 
@@ -1628,6 +1628,39 @@ class ClassAxis(unittest.TestCase):
         b = self.mem.correct("the widget greemak works at Beta Foundry", a["id"], scope="user")
         shelved = {m["id"]: m["class"] for m in self.mem.list_memories(scope="user", limit=50)}
         self.assertEqual(shelved[b["id"]], "STR", "a correction never re-shelves its fact")
+
+    def test_a_corrections_trail_sentence_lands(self):
+        """Audit 2026-11-07: the sweep pays one engine ask to write "X, superseding Y (was: Z)".
+        The write guard compared that sentence to the store, found a >=75% twin in a THIRD row,
+        and answered {"id": carrier, "deduped": "semantic"} - so the chain pointed at the carrier's
+        older wording, the trail was never stored, and the sweep's journal recorded it as landed."""
+        carrier = self.mem.remember("the loom greemak runs at the Acme Foundry in Massachusetts",
+                                    scope="user")
+        old = self.mem.remember("the loom greemak runs at Acme Foundry", scope="user")
+        amended = ("the loom greemak runs at the Acme Foundry in Massachusetts, superseding "
+                   "the Lowell claim")
+        r = self.mem.correct(amended, old["id"], scope="user")
+        got = {row[0]: row for row in self.mem.conn.execute(
+            "select id, text, superseded_by, invalid_at from memories"
+            " where id = any(%s)", ([carrier["id"], old["id"], r["id"]],)).fetchall()}
+        self.assertEqual(norm_text(got[r["id"]][1]), norm_text(amended),
+                         "the survivor carries the trail sentence the sweep paid for")
+        self.assertEqual(got[old["id"]][2], r["id"], "the chain points at the trail, not the twin")
+        self.assertIsNone(got[carrier["id"]][3], "the carrier is not dragged into the chain")
+
+    def test_the_block_floor_cuts_the_same_depth_on_both_arms(self):
+        """One floor, two scales: the lexical blend ran 1.07..0.41 across ranks 1-8 and the fused
+        arm 0.500..0.111, so a 0.15 floor cut nothing on the embedder-off arm - the within-boot
+        A/B measured the floor as well as the arm."""
+        for i in range(12):
+            self.mem.remember(f"the ledger line {i} records the quay duty of the harbour master",
+                              scope="user", klass="OPS")
+        lo = self.mem.search("quay duty harbour master", limit=8, semantic=False)
+        hi = self.mem.search("quay duty harbour master", limit=8, semantic=True)
+        self.assertTrue(lo and hi)
+        self.assertLessEqual(lo[-1]["score"], 1.0 + 1e-9, "the blend is a share, not a sum")
+        self.assertGreater(lo[-1]["score"], 0.15, "the last rank survives a 0.15 floor on both arms")
+        self.assertGreater(hi[-1]["score"], 0.0)
 
     def test_remember_dedup_fills_but_never_reshelves(self):
         r = self.mem.remember("the fallow pit yields blue slate", scope="ops", klass="MEM")
