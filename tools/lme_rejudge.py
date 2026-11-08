@@ -374,7 +374,8 @@ def main() -> int:
 
     rep = {
         "in": str(a.src), "data": str(a.data), "field": a.field,
-        "judge": f"{a.model or 'served model'} at {a.base_url} (official LongMemEval checker rules, "
+        "judge": f"{a.model or 'served model'} at {a.base_url} ({'Grok-v2' if a.rules == 'v2' else 'official v1'} "
+                 f"LongMemEval checker rules, "
                  f"temp {a.temperature}, max_tokens {a.max_tokens}, last-token parse, "
                  f"{'BATCHED one-reply-per-group' if a.parse_reply else 'one prompt per item'})",
         "instrument_on_file": rows[0].get("judge", ""),

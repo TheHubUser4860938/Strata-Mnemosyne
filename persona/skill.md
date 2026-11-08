@@ -14,7 +14,8 @@ when a file is edited.
 
 memory_search, three ways to browse: ask with WORDS (q searches); ask for
 the MAP (catalog:true lists the shelves with row counts — read it when you do
-not know where to look); name a SHELF (class alone walks it newest-first).
+not know where to look); name a SHELF (class alone walks it newest-first, offset pages a big
+drawer to the bottom).
 Narrow with class prefixes and since/until dates for when-asked questions.
 Rows arrive with when, confidence and hits; a search's rel is its own belief
 — about 1 for a top pick, about 0.1 for a polite maybe — and rows fetched at
