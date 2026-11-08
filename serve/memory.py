@@ -1031,7 +1031,7 @@ class MemoryService:
                  block_doc_cap: int = 1200,
                  expose_window: int = 0, expose_step: float = 0.0, expose_cap: int = 3,
                  route_shelves: bool = False, route_demote: float = 0.0,
-                 derived_weight: float = 1.0):
+                 derived_weight: float = 1.0, block_cover_terms: int = 0):
         self.directory = memory_dir(directory)      # absolute, created 0700 - same rules as slot_save_path
         # STORAGE (ADR-002 native rebase, 2026-10-16): PostgreSQL, no SQLite anywhere. Production
         # OWNS its cluster under <dir>/pgdata - a unix socket inside the data dir, so the store
@@ -1085,6 +1085,10 @@ class MemoryService:
         # exposure decay, so it moves the ORDER and filters nothing - the same delivery law as
         # route_demote, on the write axis instead of the shelf axis. See _trust_tier.
         self.derived_weight = min(1.0, max(0.0, float(derived_weight)))
+        # COVERAGE LINE (2026-11-08, the Grok-judged packet): the block header names up to N of the
+        # query's words that NO row in the list uses, so a two-entity question whose second entity is
+        # absent stops being a licence to invent it. 0 = off = today's bytes; 3 is the measured arm.
+        self.block_cover_terms = max(0, int(block_cover_terms))
         self._route_stats = {"tries": 0, "picks": 0, "fallbacks": 0, "picked": {}}  # observability, see stats()
         # BROWSE LEDGER (2026-10-24, the venue-day scar): tool prints rode server stdout into the
         # double-click terminal and died with the window, so whether the model browsed at all became
@@ -2294,6 +2298,17 @@ class MemoryService:
                 kept.append(h)
             elif self._is_declarative(h["text"]) and not self._is_declarative(clash["text"]):
                 kept[kept.index(clash)] = h                 # the fact bumps its own question from the slot
+            elif self._is_declarative(h["text"]) and self._is_declarative(clash["text"]) \
+                    and float(h.get("updated_at") or 0) > float(clash.get("updated_at") or 0):
+                # THE LATEST VALUE WINS THE SLOT (2026-11-08, from the Grok-judged packet): two rows
+                # that say the same thing in different words are usually the SAME fact said twice, and
+                # the pair the venue loses on is the knowledge-update pair - "personal best 27:12"
+                # beside "personal best 25:50", where the block showed the older one because it ranked
+                # higher on bm25 and the model answered with it. Rank answers "which row matches the
+                # words"; recency answers "which row is true now". Between two declarative near-dupes,
+                # that is the one to ask. The score ORDER of the list is untouched - only which row of
+                # a collapsed pair rides the slot - so a store with one row per fact changes nothing.
+                kept[kept.index(clash)] = h
         return kept
 
     @_heals
@@ -3199,7 +3214,8 @@ class MemoryService:
             self.conn.commit()
 
     @_heals
-    def _render_block(self, hits: list[dict], budget: int, scope: str) -> tuple[str, list[dict]]:
+    def _render_block(self, hits: list[dict], budget: int, scope: str,
+                      query: str = "") -> tuple[str, list[dict]]:
         """One fact block, byte-shaped identically for head and tail use: header + instruction line +
         one "[n] (scope) text" line per fact, kept under `budget` characters. Returns the block and the
         hits it ACTUALLY shows - what a later request dedups against and what the journal credits must
@@ -3216,15 +3232,41 @@ class MemoryService:
             "Long-term memory of this user, kept by the inference server and shared by all their"
             " applications. Use it silently when relevant - never mention these notes, this tag, or"
             " 'remembering' to the user; if a note conflicts with what the user says now, they win.")
-        def head(n: int) -> str:      # the count is written AFTER trimming: shown = what the model reads
-            return f'<server_memory version="{v}" scope="{scope}" shown="{n} of {n_active} active">'
-        lines = [head(len(hits)), instruction]
+        def head(n: int, missing: str = "") -> str:      # the count is written AFTER trimming:
+            # shown = what the model reads. `missing` names the query's own words that NO row in the
+            # list uses (2026-11-08, the Grok-judged packet): the abstention failures are questions
+            # about TWO entities where the store holds ONE - shown a fence-repair row, the model
+            # answered "the fence fix came before the cow purchase" and invented the cow's date.
+            # `shown="3 of 2071 active"` says how much is read; only a TERM list says what the
+            # reading leaves out. Empty = today's bytes exactly.
+            h = f'<server_memory version="{v}" scope="{scope}" shown="{n} of {n_active} active"'
+            return (h + f' missing="{missing}">' if missing else h + ">")
+
         def show(h: dict) -> str:     # the block shows a document row's head, not its 3,900
             t = h["text"]             # chars; the ellipsis says the passage is longer, and
             if self.block_doc_cap and str(h.get("class") or "").startswith("DOC/") \
                     and len(t) > self.block_doc_cap:      # the tool arm can reach the rest
                 t = t[:self.block_doc_cap].rsplit(" ", 1)[0] + " …"
             return t
+
+        # A word counts as covered by a 4-character prefix: the cheapest thing that survives the
+        # stemmer's plurals ("cow"/"cows", "workshop"/"workshops") without shipping a stemmer in
+        # Python. Words under 4 characters are never listed, and the line is capped at
+        # `block_cover_terms` entries of 20 chars each, so the coverage line costs a bounded few
+        # bytes. Computed on the CANDIDATE list, not the shown list: the header is part of the
+        # budget arithmetic, and a term covered by a row the budget trimmed is honest to call
+        # covered - the retrieval saw it, the block just had no room.
+        missing = ""
+        if self.block_cover_terms > 0 and query:
+            body = " ".join(h["text"].lower() for h in hits)
+            # STOP, the same list _dedupe uses: the line is for CONTENT terms. A first cut listed
+            # "which came first" and cut "cows" at the cap - true of the query, useless as a map of
+            # what the block holds.
+            words = [w for w in dict.fromkeys(WORD_RE.findall(query.lower()))
+                     if len(w) >= 4 and w not in STOP]
+            gap = [w for w in words if w[:4] not in body][:self.block_cover_terms]
+            missing = " ".join(g[:20] for g in gap)
+        lines = [head(len(hits), missing), instruction]
         lines += [f"[{i + 1}] ({h['scope']}) {show(h)}" for i, h in enumerate(hits)]
         lines.append("</server_memory>")
         # The fixed skeleton's cost, MEASURED not guessed (audit F9, 2026-11-03): the old
@@ -3247,7 +3289,7 @@ class MemoryService:
                 break
             trimmed.append(line)
             shown.append(h)
-        return "\n".join([head(len(shown)), instruction] + trimmed + [lines[-1]]), shown
+        return "\n".join([head(len(shown), missing), instruction] + trimmed + [lines[-1]]), shown
 
     def _route(self, query: str, scope: str) -> list[str] | None:
         """The query->shelf router for the AUTO-INJECTION path (see shelf_vote for the law, the
@@ -3390,7 +3432,7 @@ class MemoryService:
         hits = self._router_search(query, scope, classes, semantic)
         if not hits:
             return None, [], query
-        block, shown = self._render_block(hits, self.max_block_chars, scope)
+        block, shown = self._render_block(hits, self.max_block_chars, scope, query=query)
         if shown:
             self._seen([h["id"] for h in shown])    # credit the LINES, not the candidate pool
         self._pin(key, (block, [h["id"] for h in shown]))
@@ -3435,7 +3477,7 @@ class MemoryService:
         if not hits:
             self._pin(key, ("", []))                # the miss is pinned too: same message, same nothing
             return None, []
-        block, shown = self._render_block(hits, self.turn_block_chars, scope)
+        block, shown = self._render_block(hits, self.turn_block_chars, scope, query=q)
         if not shown:
             self._pin(key, ("", []))                # nothing fits the budget: inject no bytes at all
             return None, []
@@ -3554,6 +3596,7 @@ class MemoryService:
         out = {"version": self.version(), "memories": memories,
                 "facts": memories - doc_chunks, "doc_chunks": doc_chunks,
                 "trust_tier": {"weight": self.derived_weight, "derived_rows": derived_rows},
+                "block_cover_terms": self.block_cover_terms,
                 "by_scope": by_scope, "by_class": by_class,
                 "turns": turns, "turns_pending": pending, "inject": self.inject,
                 "max_memories": self.max_memories, "invalid": invalid,
@@ -4153,6 +4196,7 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         route_shelves=flag("route_shelves"),
         route_demote=num("route_demote", 0.0, float),
         derived_weight=num("derived_weight", 1.0, float),   # the trust tier: 1.0 = today's bytes
+        block_cover_terms=num("block_cover_terms", 0),      # 0 off, 3 = the coverage line
         block_position=str(mcfg.get("block_position") or "head"),
         cache_entries=num("cache_entries", 64),
         embedder=(embedder if embedder is not None else (mcfg.get("embedder") or None)),
