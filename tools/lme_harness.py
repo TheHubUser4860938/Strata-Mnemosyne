@@ -360,9 +360,12 @@ def run(url: str, data: list[dict], out_path: str, repeats: int, k: int, types: 
             if per_type and seen_type.get(qtype, 0) >= per_type:
                 continue
             scope = f"lme_{qid}"
+            # The window counts QUESTIONS, not questions-left-to-ask (resume bug, 2026-11-08):
+            # incrementing after the done-skip let a resumed run pull the 8th..11th of each type
+            # into a --per-type 7 window, and --skip-ingest has no gold map for those.
+            seen_type[qtype] = seen_type.get(qtype, 0) + 1
             if len(done.get(qid, ())) >= repeats:
                 continue
-            seen_type[qtype] = seen_type.get(qtype, 0) + 1
             if qid in maps:
                 where = maps[qid]
             elif skip_ingest:
