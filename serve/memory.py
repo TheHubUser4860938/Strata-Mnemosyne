@@ -84,6 +84,13 @@ LINK_KINDS = ("about", "contradicts", "supports")
 # The source is the truth: Docs.index writes `doc-index-<date>` and nothing else does.
 DOC_SOURCE_SQL = "source like 'doc-index%'"
 DOC_FACT_SQL = "source not like 'doc-index%'"
+# THE HARVEST'S OWN TAG (tools/curate_loop.py writes source="curation-<date>"). One definition, so
+# "derived" means the same thing in the rank weight, the stats tile and any future clerk: a DERIVED row
+# is one the engine extracted, not one a human stated. Mnemosyne's design has this as a trust tier
+# (STATED / IMPORTED / EXTERNAL_WRITE / DERIVED) and ranks consolidation summaries at 0.25x "so they
+# don't enter ranking at the same weight as the sources they paraphrase" - read in their core/beam.py
+# 2026-11-08. We have the label and no weight for it: that is the gap this constant names.
+DERIVED_SOURCE_SQL = "source like 'curation-%'"
 LINKS_PER_ROW = 4                       # the tool result rides the model's context; a traversal has
 LINK_TEXT_CHARS = 120                   # no floor, so the read is bounded like Mind's own read is
 WORD_RE = re.compile(r"\w{2,}", re.UNICODE)
@@ -1023,7 +1030,8 @@ class MemoryService:
                  auto_shelve: bool = False, block_min_score: float = 0.0,
                  block_doc_cap: int = 1200,
                  expose_window: int = 0, expose_step: float = 0.0, expose_cap: int = 3,
-                 route_shelves: bool = False, route_demote: float = 0.0):
+                 route_shelves: bool = False, route_demote: float = 0.0,
+                 derived_weight: float = 1.0):
         self.directory = memory_dir(directory)      # absolute, created 0700 - same rules as slot_save_path
         # STORAGE (ADR-002 native rebase, 2026-10-16): PostgreSQL, no SQLite anywhere. Production
         # OWNS its cluster under <dir>/pgdata - a unix socket inside the data dir, so the store
@@ -1071,6 +1079,12 @@ class MemoryService:
         # outvotes its own shelf". See _router_search for both arms. 1.0 is not a demote - clamp
         # keeps it in the filter arm, where nothing is hidden and nothing is penalized either.
         self.route_demote = min(1.0, max(0.0, float(route_demote)))
+        # TRUST TIER, MEASURED (2026-11-08, from Mnemosyne's DERIVED tier): rows the harvest wrote
+        # (source like 'curation-%') paraphrase a turn; the turn's own stated row is the source.
+        # 1.0 = today's bytes. 0 < d < 1 multiplies a derived row's score AFTER fusion and AFTER the
+        # exposure decay, so it moves the ORDER and filters nothing - the same delivery law as
+        # route_demote, on the write axis instead of the shelf axis. See _trust_tier.
+        self.derived_weight = min(1.0, max(0.0, float(derived_weight)))
         self._route_stats = {"tries": 0, "picks": 0, "fallbacks": 0, "picked": {}}  # observability, see stats()
         # BROWSE LEDGER (2026-10-24, the venue-day scar): tool prints rode server stdout into the
         # double-click terminal and died with the window, so whether the model browsed at all became
@@ -2063,7 +2077,7 @@ class MemoryService:
     @_heals
     def list_memories(self, scope: str | None = None, limit: int = 100,
                       include_invalid: bool = False, klass: str | None = None,
-                      before_id: int | None = None) -> list[dict]:
+                      before_id: int | None = None, links: bool = False) -> list[dict]:
         """The store newest-first. Invalidated (superseded) rows are hidden by default - the caller
         wants what the recall can serve; include_invalid brings back the version history with its
         invalid_at / superseded_by chain for the review list and as-of inspection. klass filters to
@@ -2097,12 +2111,22 @@ class MemoryService:
                 "select id,scope,text,source,confidence,created_at,updated_at,hits,class" + cols
                 + " from memories" + where + " order by updated_at desc limit %s", params).fetchall()
             self.conn.commit()
-        return [dict(id=r[0], scope=r[1], text=r[2], source=r[3], confidence=r[4],
-                     created_at=round(self._ep(r[5]), 1), updated_at=round(self._ep(r[6]), 1),
-                     hits=r[7], **{"class": r[8]},
-                     **({"invalid_at": round(self._ep(r[9]), 1) if r[9] else None,
-                        "superseded_by": r[10]}
-                        if include_invalid else {})) for r in rows]
+        out = [dict(id=r[0], scope=r[1], text=r[2], source=r[3], confidence=r[4],
+                    created_at=round(self._ep(r[5]), 1), updated_at=round(self._ep(r[6]), 1),
+                    hits=r[7], **{"class": r[8]},
+                    **({"invalid_at": round(self._ep(r[9]), 1) if r[9] else None,
+                       "superseded_by": r[10]}
+                       if include_invalid else {})) for r in rows]
+        if links and out:
+            # THE SCAR AND THE RELATION, on the page (audit 2026-11-07, item 9): links_of is the
+            # tool's data and the page showed none, so a fact that "contradicts" another looked
+            # like a lone claim. One batched query for the page's own rows, bounded per row.
+            got = self.links_of([m["id"] for m in out])
+            for m in out:
+                rel = got.get(m["id"])
+                if rel:
+                    m["links"] = rel
+        return out
 
     # ---- recall --------------------------------------------------------------
 
@@ -2639,7 +2663,7 @@ class MemoryService:
                 # (which never nears 4,000) is byte-identical to before.
                 cand = self.conn.execute(
                     f"select m.id, m.scope, m.text, m.confidence, m.updated_at, m.class, m.hits,"
-                    f" m.ts::text"
+                    f" m.ts::text, coalesce(m.source, '')"
                     f" from memories m, to_tsquery('{FTS_CFG}', %s) q"
                     " where m.ts @@ q and m.invalid_at is null and m.scope in ("
                     + ",".join(["%s"] * len(scopes)) + ")" + shelf + bounds
@@ -2703,6 +2727,8 @@ class MemoryService:
                             confidence=r[3], hits=r[6],  # the memory_search tool shows both; they were
                             #   promised and came back null - confidence fed the blend then got dropped,
                             #   hits was never selected (everyday-use bug report, 2026-10-16)
+                            source=r[8],               # what wrote the row: the trust tier reads it
+                            #   (curation-<date> = derived by the harvest, see _trust_tier)
                             updated_at=round(self._ep(r[4]), 1),   # the Memory page prints a date per
                             #   row; r[4] was selected, fed the recency blend, and then dropped, so
                             #   every search row's meta line ended "· —" (audit 2026-11-07)
@@ -2711,6 +2737,7 @@ class MemoryService:
         if semantic and self.embedder is not None:
             out = self._semantic(out, query, scopes, classes, since, until, limit)
             out.sort(key=lambda x: -x["score"])
+        self._trust_tier(out)              # labels every derived row; multiplies only when d < 1.0
         if self.expose_step > 0.0 and self.expose_window > 0:
             # EXPOSURE-DECAY (see __init__): demote what the recent ledger already showed, AFTER
             # fusion (so it demotes the final claim to attention, whichever arm voted it there)
@@ -2732,6 +2759,31 @@ class MemoryService:
                                             # a DOC row is a MAP entry, and a hit that
                                             # cannot name its file cannot be expanded
         return hits
+
+    def _trust_tier(self, hits: list[dict]) -> None:
+        """Demote what the harvest DERIVED, in place, then re-sort.
+
+        One row per hit, one rule: a fact the engine extracted from a turn is a claim ABOUT that
+        turn, and the turn's own row is the territory. Today both ride at the same weight, so a
+        tidy paraphrase can beat the sentence it came from - the failure Mnemosyne names in its
+        own design (consolidation summaries default to tier 3 at 0.25x "so they don't enter
+        ranking at the same weight as the sources they paraphrase").
+
+        Multiplicative, not a filter: nothing is hidden, so the block's own score floor stays the
+        only cut, and `derived_weight=1.0` returns today's bytes exactly. Applied AFTER fusion
+        (whichever arm voted a row up, that is the score being weighed) and BEFORE the exposure
+        decay (which is conversational, this is structural: the shelf does not change mid-thread).
+        Each demoted hit says so - `derived` is provenance the Memory page and a probe can read,
+        the same law as `lex_rank` and `cos_rank`.
+        """
+        d = self.derived_weight
+        for h in hits:
+            if str(h.get("source", "")).startswith("curation-"):
+                h["derived"] = True
+                if d < 1.0:
+                    h["score"] = round(float(h["score"] or 0.0) * d, 6)
+        if d < 1.0:
+            hits.sort(key=lambda x: -x["score"])
 
     def _attach_provenance(self, hits: list[dict]) -> None:
         """Put each returned hit's provenance on it - one round trip, `limit` rows.
@@ -3072,7 +3124,8 @@ class MemoryService:
         if picked:
             with self.lock:
                 got = {r[0]: r for r in self.conn.execute(
-                    "select id, scope, text, coalesce(class,''), confidence, coalesce(hits, 0) "
+                    "select id, scope, text, coalesce(class,''), confidence, coalesce(hits, 0), "
+                    "coalesce(source,'') "
                     "from memories where id in ("
                     + ",".join(["%s"] * len(picked)) + ")", picked).fetchall()}
                 self.conn.commit()
@@ -3089,6 +3142,8 @@ class MemoryService:
                                   updated_at=round(float(meta["updated"][j]), 1),   # the page's date,
                                   #   both arms (audit 2026-11-07)
                                   confidence=r[4], hits=r[5],     # same promise as the lexical arm above
+                                  source=r[6],                    # the cosine arm's rows get a tier too -
+                                  #   a derived row the lexical pass never proposed is still derived
                                   **{"class": r[3]}))
         return cands
 
@@ -3479,6 +3534,9 @@ class MemoryService:
             doc_chunks = self.conn.execute(
                 "select count(*) from memories where invalid_at is null"
                 " and " + DOC_SOURCE_SQL).fetchone()[0]
+            derived_rows = self.conn.execute(
+                "select count(*) from memories where invalid_at is null"
+                " and " + DERIVED_SOURCE_SQL).fetchone()[0]
             by_scope = dict(self.conn.execute(
                 "select scope, count(*) from memories where invalid_at is null group by scope").fetchall())
             by_class = {(r[0] or "unclassified"): r[1] for r in self.conn.execute(
@@ -3495,6 +3553,7 @@ class MemoryService:
             self.conn.commit()
         out = {"version": self.version(), "memories": memories,
                 "facts": memories - doc_chunks, "doc_chunks": doc_chunks,
+                "trust_tier": {"weight": self.derived_weight, "derived_rows": derived_rows},
                 "by_scope": by_scope, "by_class": by_class,
                 "turns": turns, "turns_pending": pending, "inject": self.inject,
                 "max_memories": self.max_memories, "invalid": invalid,
@@ -4093,6 +4152,7 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         expose_cap=num("expose_cap", 3),
         route_shelves=flag("route_shelves"),
         route_demote=num("route_demote", 0.0, float),
+        derived_weight=num("derived_weight", 1.0, float),   # the trust tier: 1.0 = today's bytes
         block_position=str(mcfg.get("block_position") or "head"),
         cache_entries=num("cache_entries", 64),
         embedder=(embedder if embedder is not None else (mcfg.get("embedder") or None)),

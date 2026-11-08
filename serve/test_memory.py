@@ -4252,6 +4252,60 @@ class ManualCurationTrigger(unittest.TestCase):
 
 
 
+class PageControls2026_11_08(Mint):
+    """The audit's item 9: the four controls that needed a server leg. Reuses the mint harness -
+    a live server, a cartridge, a real slot vault. Run: -k PageControls2026_11_08"""
+
+    def test_links_ride_the_list_only_when_the_page_asks(self):
+        st, body = self.http("POST", "/memory", {"op": "remember", "scope": "user",
+                                                 "text": "The launch ritual is coffee before code"})
+        self.assertEqual(st, 200, body)
+        second = self.http("POST", "/memory", {"op": "remember", "scope": "user",
+                                               "text": "Code before coffee costs an hour"})
+        a, b = body["id"], second[1]["id"]
+        self.assertTrue(self.http("POST", "/memory", {"op": "link", "from": a, "to": b,
+                                                      "kind": "contradicts"})[1]["linked"])
+        _st, plain = self.http("GET", "/memory?limit=50")
+        self.assertNotIn("links", plain["memories"][0], "no query, no extra query")
+        _st, with_links = self.http("GET", "/memory?limit=50&links=1")
+        row = next(m for m in with_links["memories"] if m["id"] == a)
+        self.assertEqual(row["links"][0]["kind"], "contradicts", "the scar and the relation, on the page")
+
+    def test_the_tier_flip_switches_the_standing_text_in_one_call(self):
+        """memory.cartridges.facts was a config edit and a reboot; the page's toggle is one ask."""
+        src = os.path.join(self.tmp.name, "agent.md")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("The five standing texts: this one is the working laws.\n")
+        self.svc.cartridges.files_cfg = [src]
+        st, body = self.http("POST", "/memory", {"op": "cartridge", "facts": False})
+        self.assertEqual(st, 200, body)
+        self.assertIs(body["cartridge"]["facts"], False)
+        self.assertIn(body["cartridge"]["state"], ("seeded", "loaded"),
+                      "static mode stands the files, so the flip has bytes to seed")
+        self.assertFalse(self.svc.cartridges.facts, "the live object flipped, not just the reply")
+        st, body = self.http("POST", "/memory", {"op": "cartridge", "facts": True})
+        self.assertIs(body["cartridge"]["facts"], True)
+        self.assertIn(body["cartridge"]["state"], ("seeded", "loaded"))
+
+    def test_the_vault_purge_spares_the_warm_prefix(self):
+        vault = self.slots.name
+        old = os.path.join(vault, "MEM-CART-oldbench.bin")
+        new = os.path.join(vault, "MEM-CART-fresh.bin")
+        for f in (old, new):
+            with open(f, "wb") as fh:
+                fh.write(b"x" * 4096)
+        day = 86400.0
+        os.utime(old, (time.time() - 30 * day, time.time() - 30 * day))
+        st, body = self.http("POST", "/memory", {"op": "cartridge", "purge_older_than_s": 7 * day})
+        self.assertEqual(st, 200, body)
+        purged = body["cartridge"]["purged"]
+        self.assertEqual([f["name"] for f in purged["files"]], ["MEM-CART-oldbench.bin"],
+                         "one week is the bar; the fresh save stays")
+        self.assertTrue(os.path.exists(new))
+        self.assertTrue(os.path.exists(os.path.join(vault, self.svc.cartridges.applied)),
+                        "the applied file is the warm prefix: it never goes")
+
+
 class TestMintHasNoCapByDefault(unittest.TestCase):
     """"No cap shouldn't be opt in but default" - the owner's ruling, 2026-10-30.
 
@@ -4558,6 +4612,60 @@ class Audit2026_11_07(unittest.TestCase):
             self.assertEqual(m.stats()["facts"], 1)
         finally:
             m.close()
+
+
+class TrustTierTest(unittest.TestCase):
+    """THE TRUST TIER (2026-11-08, taken from mnemosyne-oss/mnemosyne's DERIVED rank, read in
+    mnemosyne/core/beam.py): a fact the harvest derived is a claim ABOUT a turn, and the turn's own
+    row is the territory. derived_weight moves the ORDER and filters nothing; 1.0 is today's bytes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _two_rows(self, **kw):
+        m = MemoryService(self.tmp.name + "/tt" + str(len(kw)), **kw)
+        self.addCleanup(m.close)
+        # Shared payload stays under the dedupe bar (intersection >= 4 collapses a paraphrase
+        # pair, serve/memory.py::_dedupe), so these are TWO facts that both answer the query.
+        stated = m.remember("the venue ledger records the exposure for every turn",
+                            scope="ops", source="manual")["id"]
+        derived = m.remember("a weekly stamp summarizes the venue ledger",
+                             scope="ops", source="curation-2026-11-08")["id"]
+        return m, stated, derived
+
+    def test_the_tier_labels_only_what_the_harvest_wrote(self):
+        m, stated, derived = self._two_rows()
+        by = {h["id"]: h for h in m.search("venue ledger exposure stamp", scope="ops", limit=5)}
+        self.assertEqual(set(by), {stated, derived}, "both rows match, neither is filtered")
+        self.assertTrue(by[derived].get("derived"), "source curation-<date> IS the derived tier")
+        self.assertNotIn("derived", by[stated], "a stated row carries no tier flag at all")
+
+    def test_demoting_derived_moves_the_order_and_nothing_else(self):
+        m, stated, derived = self._two_rows(derived_weight=0.5)
+        self.assertEqual(m.stats()["trust_tier"]["weight"], 0.5,
+                         "stats proves which arm boots - the activation-verify law")
+        hits = m.search("venue ledger exposure stamp", scope="ops", limit=5)
+        self.assertEqual(hits[0]["id"], stated, "the stated row outvotes the paraphrase of it")
+        self.assertEqual({h["id"] for h in hits}, {stated, derived}, "the demote filters nothing")
+        half = {h["id"]: h["score"] for h in hits}
+        m.derived_weight = 1.0                       # same store, same query, one knob moved
+        full = {h["id"]: h["score"] for h in m.search("venue ledger exposure stamp", scope="ops", limit=5)}
+        self.assertEqual(set(full), set(half), "the two arms return the same rows")
+        self.assertAlmostEqual(full[derived], 2 * half[derived], places=6,
+                               msg="the demote is multiplicative: half the score, none of the list")
+        self.assertEqual(full[stated], half[stated], "an undemoted row's score does not move")
+
+    def test_the_tier_defaults_to_todays_bytes(self):
+        m = MemoryService(self.tmp.name + "/tt0")
+        self.addCleanup(m.close)
+        m.remember("the sweep gate waits for four minutes of engine silence",
+                   scope="ops", source="curation-2026-11-01")
+        self.assertEqual(m.derived_weight, 1.0)
+        self.assertEqual(m.stats()["trust_tier"], {"weight": 1.0, "derived_rows": 1})
+        h = m.search("sweep gate engine silence", scope="ops", limit=3)[0]
+        self.assertTrue(h.get("derived"), "1.0 LABELS the tier; only the weight moves the order")
+        self.assertEqual(h["score"], 0.9818, "and at 1.0 the score is today's, untouched")
 
 
 if __name__ == "__main__":
