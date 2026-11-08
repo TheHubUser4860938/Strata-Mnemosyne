@@ -483,7 +483,8 @@ public:
     // checkpoints, or whose deepest checkpoint the outgoing chain does not hold (another conversation that only
     // shares the system prompt's root with it), is kept.  Returns how many were dropped.
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
-                           const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
+                           const std::vector<ConversationCheckpoint>& checkpoints, bool cvec,
+                           bool cart = false) {
         auto held = [&](const ConversationCheckpoint& c) {
             if (c.ids == ids && c.imgs == images) return true;
             for (const auto& k : checkpoints)
@@ -496,7 +497,12 @@ public:
             const ConversationCheckpoint* deepest = nullptr;
             for (const auto& c : e.checkpoints)
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-            if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest) &&
+            // The fence's third rule (audit 2026-11-07, static analysis): make_room and evict_oldest
+            // read the class and this one did not, so an ORDINARY park whose chain held a CART
+            // conversation's deepest checkpoint dropped the cart's copy - "only other cartridges
+            // evict other cartridges" is asymmetric in exactly this path.  With the fence off
+            // (cart_slots_ == 0) the predicate is true for every entry and nothing changes.
+            if (e.cvec == cvec && (!classed() || e.cart == cart) && deepest && !deepest->ids.empty() && held(*deepest) &&
                 !(guarded_ != 0 && serials_[i] == guarded_)) {
                 bytes_ -= e.bytes();
                 erase(i);

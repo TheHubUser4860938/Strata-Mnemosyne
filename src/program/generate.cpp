@@ -12222,7 +12222,8 @@ int main(int argc, char** argv) {
                     return strata::core::conversation_memory_admit(
                         mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor);
                 };
-                while (!admit() && conversations.size() > 0 && evicted < conversations.slots() &&
+                while (!admit() && conversations.size() > 0 &&
+                       evicted < conversations.slots() + conversations.cart_slots() &&
                        conversations.evict_oldest(src.cart))
                     ++evicted;
                 if (!admit()) {
@@ -14491,7 +14492,11 @@ int main(int argc, char** argv) {
             ParkSource src{sl.ids, no_imgs, sl.checks, sl.cvec, *bslot_ss[0][(size_t) b], {},
                            (n_st > 0 && !mtp_first) || !batch_mtp || batch_df2 ? nullptr : &slot_mtp[(size_t) b]->kv_state(),
                            batch_mtp && !batch_df2 && !mtp_first && n_st > 0 ? &slot_mtp[(size_t) b]->kv_state() : nullptr, false,
-                           " from slot " + std::to_string(b)};
+                           " from slot " + std::to_string(b),
+                           sl.cart};   // memory-core: the slot's OWN class (set at 17562/19870 from cart=1).
+                           // The aggregate stopped at `what`, so an idle batch slot parked a cart conversation into
+                           // the ordinary quota and --conversation-cache-cart-slots did not protect it (audit 2026-11-07,
+                           // static analysis: inert until --parallel is on the boot).
             for (size_t k = 1; k < bslot_ss.size(); ++k) src.stage_sessions.push_back(bslot_ss[k][(size_t) b].get());
             try {
                 if (park_source(src, 0)) return;
@@ -15925,7 +15930,8 @@ int main(int argc, char** argv) {
                 std::printf("ERR bad request: %s\n", pe.empty() ? "max_new" : pe.c_str());
                 continue;
             }
-            const int64_t n = (int64_t) ids.size();
+            int64_t n = (int64_t) ids.size();   // not const: a grafted read prepends the cart's ids and
+                                                // re-derives this (the const_cast it used to need was UB)
             // --draft auto: this request's drafter.  Without the DFlash2 drafter loaded every request uses the MTP, as before.
             uint64_t bandit_key = 0;
             if (use_df2 && o.draft_auto) {
@@ -16677,6 +16683,25 @@ int main(int argc, char** argv) {
             int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
             bool grafted_read = false;   // THIS read starts on a grafted snapshot (the virtual prefix)
             if (resume == 0) {
+                // ZERO FIRST, THEN MOUNT (audit 2026-11-07; static analysis, confirmed by the box's own
+                // measurement). The graft used to run above the zeroing, and session_zero wipes four of
+                // the five things a snapshot restores: the GDN state (all 36 recurrent layers, the
+                // ~117.7 MB floor), the PLE history, and the indexer's device window - idx_tail, idx_dead
+                // and idx_pooled. Only the 12 attention layers' HOST-pool K/V survived (kv_mode 1:
+                // conversation_snapshot.cpp hands out the host pools), so every cart cell scored the
+                // SAME zero key against the query and the one-block top-k broke the tie by index. That is
+                // the wall's shape: 92% inside the first 2,051 cells (where the selection is the identity
+                // and the score does not matter), 64% beyond it - the same as a wrong cart. A RESTORED
+                // parked conversation has no zeroing after its restore (the `else if (!from_live)` arm),
+                // which is why the same depths score 12/12 live.
+                strata::core::session_zero(ss, g, nullptr, main_cs);
+                cudaStreamSynchronize(main_stream);
+                for (auto& st : stages) {
+                    const strata::core::OnDevice on(st->dev);
+                    strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
+                    cudaStreamSynchronize(st->stream);
+                }
+                checks.clear();
                 // memory-core's graft (2026-10-28): the request asked to begin on a staged file and RAM proved no
                 // start of its own, so the file's state goes under it instead of a cold zero. conversation_graft.hpp
                 // owns the decision; today's path is the fall-through when no graft is in play.
@@ -16684,7 +16709,12 @@ int main(int argc, char** argv) {
                     const auto gd = strata::core::graft_decide(ids, true, std::string_view("staged"),
                                                                graft_image.live.ids, resume, true);
                     if (gd.applies()) {
-                        const int64_t need = (int64_t) graft_image.live.ids.size() + n + 256;
+                        // The graft's cells only go UNDER the request's own when the request does not
+                        // carry them (prepend). When the source is re-sent, `n` already counts them,
+                        // and this grew the elastic K/V by a whole graft more than the read needs -
+                        // VRAM taken from the expert cache (audit 2026-11-07, static analysis).
+                        const int64_t glen = (int64_t) graft_image.live.ids.size();
+                        const int64_t need = (gd.prepend ? glen : 0) + n + 256;
                         if (!kvg_ensure(need, adapt_quiesce)) {
                             std::printf("ERR the K/V cannot grow to the grafted conversation: no VRAM is left\n");
                             std::fflush(stdout);
@@ -16734,11 +16764,23 @@ int main(int argc, char** argv) {
                                              show(ids, 0, ids.size() > 10 ? 10 : ids.size()).c_str(), ids.size());
                             }
                             ids = std::move(merged);
-                            const_cast<int64_t&>(n) = (int64_t) ids.size();   // NOLINT: see the note above
+                            n = (int64_t) ids.size();   // the read's window follows the prepended graft
                         }
                         resume = gd.resume;
                         std::fprintf(stderr, "strata serve: conversation cache: grafted %lld tokens, prompt %lld, %s, tail batched (no verify windows)\n",
                                      (long long) resume, (long long) n, gd.prepend ? "ids prepended" : "source re-sent");
+                        // The staged bytes have done their work: the conversation is now an ordinary one in
+                        // RAM and the next turn resumes from there. The image used to sit beside the parked
+                        // pool until the NEXT GRAFT replaced it - 780 MB on the parity fixture's parent shape
+                        // (test_cart_parity.py:128), outside the cache's own budget (audit 2026-11-07, static).
+                        graft_image = strata::core::SavedConversation();
+                    } else if (gd.refused()) {
+                        // the header's rule: a request that asked for a cartridge and got none must not
+                        // answer as though it had. Only the empty-image refusal is reachable here (the
+                        // name and the path are the caller's own), and it used to fall through to a cold
+                        // read in silence.
+                        std::printf("ERR the staged graft cannot answer: %s\n", gd.reason);
+                        std::fflush(stdout);
                     }
                     graft_staged = false;
                     graft_wanted = false;
@@ -16748,14 +16790,6 @@ int main(int argc, char** argv) {
                     graft_wanted = false;
                     continue;
                 }
-                strata::core::session_zero(ss, g, nullptr, main_cs);
-                cudaStreamSynchronize(main_stream);
-                for (auto& st : stages) {
-                    const strata::core::OnDevice on(st->dev);
-                    strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
-                    cudaStreamSynchronize(st->stream);
-                }
-                checks.clear();
             } else if (!from_live) {
                 ConvCheckpoint* c = nullptr;
                 for (ConvCheckpoint& k : checks) if ((int64_t) k.ids.size() == resume) c = &k;
