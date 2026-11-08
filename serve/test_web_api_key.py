@@ -22,6 +22,10 @@ class WebApiKey(unittest.TestCase):
 const data = new Map(Object.entries({json.dumps(stored or {})}));
 const field = {{value: ""}};
 const notices = [];
+// headers() reads the page's sampling settings for the graft lever (app.js: `settings.graft`), and
+// `let settings` lives far below the slice this test extracts - so the sandbox declares the state
+// the function reads, exactly as it declares `field` and `localStorage`. Empty graft = today's bytes.
+let settings = {{graft: ""}};
 const $ = () => field;
 const toast = (...args) => notices.push(args);
 const localStorage = {{
@@ -93,6 +97,16 @@ console.log(JSON.stringify({before, kinds: notices.map(n => n[0])}));
     def test_server_without_key_keeps_json_header_only(self):
         got = self.run_js('console.log(JSON.stringify(headers(true)));')
         self.assertEqual(got, {"Content-Type": "application/json"})
+
+    def test_the_graft_lever_rides_a_json_ask(self):
+        # Settings > Graft names a cart, and every ask carries it so the answer starts on that
+        # cart's saved STATE (audit 2026-11-07, item 9). JSON asks only - a plain GET has no body
+        # to answer for. This pins the header the page sends, next to the key header's own tests.
+        got = self.run_js('settings.graft = "MEM-CRG-251dc37e.bin";'
+                          'console.log(JSON.stringify({json: headers(true), plain: headers()}));')
+        self.assertEqual(got, {"json": {"Content-Type": "application/json",
+                                        "X-Strata-Carts-Graft": "MEM-CRG-251dc37e.bin"},
+                               "plain": {}})
 
 
 if __name__ == "__main__":
