@@ -3057,7 +3057,9 @@ class EmbedderSwap2026_10_24(unittest.TestCase):
         self.mem.conn.execute("update embeddings set vec = %s", (np.zeros(768, np.float32).tobytes(),))
         self.mem.conn.commit()
         self.assertEqual(self.mem.foreign_vectors(), 1)               # 768-d under a 4-d stub
-        self.assertIsNone(self.mem._vec_matrix())                     # excluded, not exploded
+        meta = self.mem._vec_matrix()      # excluded, not exploded - and the empty matrix is
+        self.assertEqual(len(meta["ids"]), 0)   # PUBLISHED (2026-11-07) so a lexical store stops
+        self.assertIs(self.mem._vec_matrix(), meta)                    # rebuilding it every search
 
     def test_migrate_rewrites_vectors_stamps_and_meta(self):
         from serve.reembed import migrate
@@ -4399,6 +4401,132 @@ class CrossScopeDedupe(unittest.TestCase):
             self.assertEqual(m.stats()["memories"], 2)
         finally:
             m.close()
+class Audit2026_11_07(unittest.TestCase):
+    """The seven-day audit's fixes, one test each: every one of these was a live behaviour that
+    was wrong, not a style point. Run: python -m unittest serve.test_memory -k Audit2026_11_07"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def path(self, name="a"):
+        return self.tmp.name + "-" + name
+
+    def test_inject_false_declines_the_block_and_keeps_the_tool(self):
+        """memory.inject was advertised, banner-printed, round-tripped by stats() - and read by
+        nothing, so a box configured "inject": false paid the block every turn."""
+        m = MemoryService(self.path("inj"), inject=False)
+        try:
+            m.remember("The venue box runs on port 8009.", klass="POL")
+            msgs, ctx = request_state(m, [{"role": "user", "content": "what port does the venue run on?"}],
+                                      {}, {"model": "m"})
+            self.assertNotIn("<server_memory", msgs[0]["content"], "the block must not ride")
+            self.assertEqual(ctx["hits"], [], "the turn still journals")
+            self.assertFalse(m.stats()["inject"])
+            # the header still wins per request: "head" is the one arm that must inject
+            msgs2, ctx2 = request_state(m, [{"role": "user", "content": "what port does the venue run on?"}],
+                                        {"X-Strata-Memory-Block": "head"}, {"model": "m"})
+            self.assertIn("<server_memory", msgs2[0]["content"], "the header overrides the config")
+            self.assertEqual(len(ctx2["hits"]), 1)
+        finally:
+            m.close()
+
+    def test_a_fact_sharing_a_chunks_text_keeps_its_own_row_in_any_scope(self):
+        """One definition of a doc row: the write guard scoped on `scope not like 'doc%'` and the
+        read path on `source not like 'doc-index%'`, so a corpus indexed into scope "corpus1"
+        folded a fact into the chunk and the shelf answered DOC/C1."""
+        src = "We the People of the United States in Order to form a more perfect Union"
+        d = self.tmp.name + "-docs"
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "book.txt"), "w") as f:
+            f.write(src + ".\n")
+        m = MemoryService(self.path("scope"))
+        try:
+            m.docs.index(d, corpus="c1", scope="corpus1")
+            r = m.remember(src, klass="POL", scope="default")
+            self.assertFalse(r.get("deduped"), "a chunk is not the carrier for a fact")
+            row = m.conn.execute("select class, scope from memories where id=%s", (r["id"],)).fetchone()
+            self.assertEqual(row, ("POL", "default"))
+            st = m.stats()
+            self.assertEqual((st["facts"], st["doc_chunks"]), (1, 1))
+        finally:
+            m.close()
+
+    def test_search_hits_carry_the_date_the_page_prints(self):
+        m = MemoryService(self.path("date"))
+        try:
+            m.remember("The militia acts under state commission.", klass="POL")
+            for hits in (m.search("militia state commission", semantic=False),
+                         m.search("militia state commission", semantic=True)):
+                self.assertTrue(hits)
+                self.assertIn("updated_at", hits[0], "the Memory page's meta line needs it")
+                self.assertIsInstance(hits[0]["updated_at"], float)
+        finally:
+            m.close()
+
+    def test_a_pair_carries_one_edge_whichever_way_it_is_named(self):
+        """links keyed the DIRECTED pair, so (a,b) 'about' and (b,a) 'contradicts' both persisted
+        and links_of spent two of a row's four slots naming the same neighbour."""
+        m = MemoryService(self.path("link"))
+        try:
+            a = m.remember("The tariff of 1789 raised the revenue.", klass="POL")["id"]
+            b = m.remember("The tariff of 1789 angered the merchants.", klass="POL")["id"]
+            self.assertTrue(m.link(a, b, "about")["linked"])
+            self.assertTrue(m.link(b, a, "contradicts")["linked"])
+            got = m.links_of([a])[a]
+            self.assertEqual(len(got), 1, "one relation per pair")
+            self.assertEqual(got[0]["kind"], "contradicts", "the later call relabels the edge")
+        finally:
+            m.close()
+
+    def test_exposure_sees_a_turn_that_updated_in_place(self):
+        """A multi-round agent turn UPDATEs its row (same user text): the ledger's cache key was
+        (count, max id), so every fact the second round showed paid no demotion."""
+        m = MemoryService(self.path("expo"), expose_window=4, expose_step=0.1, expose_cap=3)
+        try:
+            a = m.remember("The gauge reads torque at the works.", klass="TECH")["id"]
+            b = m.remember("The gauge reads pressure at the mill.", klass="TECH")["id"]
+            m.journal_turn("default", "how is the gauge", "first", None, [a])
+            self.assertEqual(m._exposure().get(a), 1)
+            m.journal_turn("default", "how is the gauge", "settled", None, [a, b])
+            dem = m._exposure()
+            self.assertEqual(dem.get(b), 1, "the in-place UPDATE must move the ledger's stamp")
+        finally:
+            m.close()
+
+    def test_config_zeroes_are_values_not_absences(self):
+        """`or` swallowed 0 on five knobs, and `is not False` read the string "off" as ON."""
+        from serve.memory import service_from_config
+        m = service_from_config(self.path("cfg"), {
+            "max_block_chars": 0, "recall_limit": 0, "turn_block_chars": 0,
+            "turn_recall_limit": 0, "expose_cap": 0, "per_turn": "off",
+            "dedup_recall": "no", "inject": "off", "cache_entries": 7})
+        try:
+            self.assertEqual((m.max_block_chars, m.recall_limit, m.turn_block_chars,
+                              m.turn_recall_limit, m.expose_cap),
+                             (200, 1, 200, 1, 1), "0 reaches the constructor; its floors do the rest")
+            self.assertFalse(m.per_turn)
+            self.assertFalse(m.dedup_recall)
+            self.assertFalse(m.inject)
+            self.assertEqual(m._cache_entries, 7)
+        finally:
+            m.close()
+
+    def test_the_store_reopens_after_the_cluster_moves(self):
+        """A Postgres restart used to mean memory 503s until the server was rebooted: _heals rolled
+        back on a connection whose server was gone. One reconnect, one retry, answers."""
+        m = MemoryService(self.path("recon"))
+        try:
+            m.remember("The sweep waits for the engine to go quiet.", klass="OPS")
+            m.conn.close()
+            self.assertEqual(len(m.search("sweep engine quiet")), 1)
+            self.assertEqual(m.stats()["facts"], 1)
+        finally:
+            m.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

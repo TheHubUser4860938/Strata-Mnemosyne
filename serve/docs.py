@@ -28,13 +28,14 @@ so the embedder is the long pole when it is on.
 """
 from __future__ import annotations
 
+import codecs
 import hashlib
 import os
 import re
 import time
 from pathlib import Path
 
-from .memory import CLASS_MAX, class_name, scope_name
+from .memory import CLASS_MAX, DOC_SOURCE_SQL, class_name, scope_name
 
 DEFAULT_EXTS = (".txt", ".md")
 CHUNK_CAP = 3900          # remember()'s 4,000-char ceiling minus the whitespace-collapse slack
@@ -113,9 +114,12 @@ SECTION_RE = re.compile(
     r"THE\s+FEDERALIST\.?\s+No\.\s*[IVXLCDM]+\.?"      # Hamilton's Works: "THE   FEDERALIST.  No.  I."
     r"|FEDERALIST\s+No\.\s*(?:\d{1,3}|[IVXLCDM]+)\.?"   # the Gutenberg text: "FEDERALIST No. 10"
     r"|No\.\s*(?:\d{1,3}|[IVXLCDM]+)\.?(?:\s*[-\u2013]\s*\d{1,3}(?:\s*[-\u2013]\s*\d{1,3})?)?"
-    r"|#{1,6}\s+.*"
+    r"|#{1,6}[ \t]+\S[^\n]*"                                # markdown: horizontal space only, so a
     r")\s*$", re.M)        # \s*$ : a print line ends with trailing spaces, and a
                             # heading that is not recognized is a section nobody finds
+                            # bare "\s+" let a heading swallow the next three lines (audit
+                            # 2026-11-07: "#\n\n\nBody text…" filed a section whose label was
+                            # a paragraph, and 5,661 of the sections index's rows are markdown)
 
 ROMAN = re.compile(r"^(M{0,4})(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$")
 _ROMAN_VAL = (("M", 1000), ("CM", 900), ("D", 500), ("CD", 400), ("C", 100), ("XC", 90),
@@ -295,7 +299,7 @@ class Docs:
             # _PG_DDL runs, so the attach lane and the server leave the ledger identically indexed.
             self.svc.conn.execute(
                 "create index if not exists mem_doc_corpus on memories ((provenance->>'corpus'))"
-                " where source like 'doc-index%'")
+                " where " + DOC_SOURCE_SQL)
             self.svc.conn.commit()
 
     def index(self, folder, corpus: str, *, klass: str | None = None, scope: str | None = None,
@@ -400,11 +404,17 @@ class Docs:
                     pos = collapsed.find(chunk, cur)  # anchor it: a cut long word joins with no
                     off = pos if pos >= 0 else cur    # space and a packed paragraph with one, so
                     prov = {"file": rel, "corpus": corpus, "offset": off,
-                            "n": i, "sha256": doc_sha,
+                            "n": i, "n_chars": len(chunk), "sha256": doc_sha,
                             "chunk_sha256": hashlib.sha256(
                                 chunk.encode("utf-8")).hexdigest()}
                     if section:                      # THE PAPER, not the binding (sections mode)
                         prov["section"] = section[:80]
+                        # The paper number is parsed from the WHOLE heading, not the 80-char label
+                        # (audit 2026-11-07): a heading that names `No. 90` past char 80 used to
+                        # route to nothing, because the label was cut before section_paper saw it.
+                        paper = section_paper(section)
+                        if paper:
+                            prov["paper"] = paper
                     self.svc.remember(chunk, scope=scope, source=source, guard=guard,
                                       exact=False, klass=klass, provenance=prov)
                     cur = off + len(chunk)            # the next row starts here (a cut word) or
@@ -428,6 +438,11 @@ class Docs:
                 n_chunks += len(chunks)
                 n_skip += sum(1 for c in chunks if len(c) >= cap)   # a full row = a split paragraph
         removed = self._prune(corpus, seen)
+        # The cached reader follows the ROOT (audit 2026-11-07): reader() builds one DocReader per
+        # corpus and caches it, set_root pops it, and index() - the other verb that moves a
+        # corpus's address - did not. Re-index a corpus from a new folder and docs.read kept
+        # cutting passages out of the OLD one: ok:true, plausible text, match:false.
+        self._readers.pop(corpus, None)
         with self.svc.lock:                         # legacy ledger rows carried no scope: the
             blank = self.svc.conn.execute(           # pass that knows the answer fills them in
                 "update docs set scope=%s where corpus=%s and scope=''", (scope, corpus))
@@ -470,20 +485,22 @@ class Docs:
         report - on this store by 130 (the Gutenberg license tail, shared across books). The
         ledger is a cache of the truth, not the truth; this re-derives it. Returns files moved."""
         self._ensure()
-        where = "where invalid_at is null and provenance->>'corpus' is not null"
+        # Driven by the LEDGER, not by the live counts (audit 2026-11-07): the loop walked a
+        # `group by` over rows that EXIST, so a file whose last row was folded kept its stale count
+        # forever - and a fully-folded book is exactly what a reconciliation exists to catch. One
+        # UPDATE per ledger row; a file with no live rows now says 0.
         args: list = []
+        only = ""
         if corpus:
-            where += " and provenance->>'corpus'=%s"
+            only = " and d.corpus=%s"
             args = [corpus]
+        live = ("select count(*) from memories m"
+                " where m.invalid_at is null and m.provenance->>'corpus' = d.corpus"
+                "   and m.provenance->>'file' = d.path")
         with self.svc.lock:
-            live = self.svc.conn.execute(
-                f"select provenance->>'corpus', provenance->>'file', count(*)"
-                f" from memories {where} group by 1,2", args).fetchall()
-            moved = 0
-            for cp, fp, cnt in live:
-                moved += self.svc.conn.execute(
-                    "update docs set chunks=%s where corpus=%s and path=%s and chunks<>%s",
-                    (cnt, cp, fp, cnt)).rowcount
+            moved = self.svc.conn.execute(
+                f"update docs d set chunks = ({live}) where d.chunks <> ({live})" + only,
+                args).rowcount
             self.svc.conn.commit()
         return int(moved)
 
@@ -655,7 +672,9 @@ class Docs:
             return {"ok": False, "corpus": corpus, "file": str(path),
                     "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
         offset, n = int(offset), max(0, int(n))
-        lo = max(0, offset - int(before))
+        # Clamped at BOTH ends (audit 2026-11-07): an offset past EOF used to answer ok:true with a
+        # NEGATIVE n, so a caller that continues at `offset + n` walked backwards through the file.
+        lo = min(max(0, offset - int(before)), len(body))
         hi = (min(len(body), offset + n + int(after)) if n or after
               else min(len(body), lo + int(cap)))
         text, truncated = _clip(body[lo:hi], int(cap))
@@ -699,7 +718,20 @@ class Docs:
 
     @staticmethod
     def _read(p: Path) -> str:
-        for enc in ("utf-8", "utf-16", "latin-1"):       # the corpus is a library, not a schema
+        # The corpus is a library, not a schema (audit 2026-11-07): the old ladder tried utf-16
+        # second, and EVERY even-length latin-1 file decodes as utf-16 - "Café séjour déjà." (18
+        # bytes) came back as 慃\ue966猠櫩畯\ue06aਮ and got embedded that way, with a self-consistent
+        # spine, so nothing looked wrong. utf-16 is now chosen by its BOM, and utf-8-sig first so
+        # a BOM stops riding in row 0 and stoppering the first heading.
+        if p.stat().st_size >= 2:
+            with p.open("rb") as probe:
+                head = probe.read(2)
+            if head in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+                try:
+                    return p.read_text(encoding="utf-16")
+                except UnicodeDecodeError:
+                    pass
+        for enc in ("utf-8-sig", "latin-1"):
             try:
                 return p.read_text(encoding=enc)
             except UnicodeDecodeError:

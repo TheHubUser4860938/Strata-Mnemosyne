@@ -11,6 +11,8 @@ the P0 path; the semantic arm rides the same rows the embedder backfills later.
 """
 import http.client
 import json
+import os
+import shutil
 import tempfile
 import time
 import unittest
@@ -1013,6 +1015,116 @@ class AuditStore(unittest.TestCase):
         self.assertTrue(names[:3] and all(not n.startswith("DOC/") for n in names[:3]),
                         f"fact shelves lead the map: {names[:4]}")
         self.assertIn("DOC/BOOK0", names, "the corpus still shows, after the facts")
+
+
+class Audit2026_11_07(unittest.TestCase):
+    """The 2026-11-07 audit's document-index fixes, one test each: each of these produced an
+    ok:true answer that was the wrong bytes. Run: -k Audit2026_11_07"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mem = MemoryService(self.tmp.name)
+        self.docs = self.mem.docs
+        self.a = self.tmp.name + "-a"
+        self.b = self.tmp.name + "-b"
+        for d in (self.a, self.b):
+            os.makedirs(d, exist_ok=True)
+
+    def tearDown(self):
+        self.mem.close()
+        self.tmp.cleanup()
+
+    def write(self, folder, name, text):
+        with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_reindexing_from_a_moved_root_moves_the_reader(self):
+        """index() wrote the new root into the ledger and left the cached DocReader on the old
+        one: docs.read answered ok:true with the OLD folder's passage and match:false."""
+        self.write(self.a, "book.txt", "AAAA the first folder's opening line about faction.\n")
+        self.write(self.b, "book.txt", "BBBB the second folder's opening line about faction.\n")
+        self.docs.index(self.a, corpus="kb", scope="doc-kb")
+        self.assertEqual(self.docs.read("kb", "book.txt", 0, 4)["text"], "AAAA")
+        self.docs.index(self.b, corpus="kb", scope="doc-kb")
+        out = self.docs.read("kb", "book.txt", 0, 4)
+        self.assertEqual(out["text"], "BBBB", "the reader follows the root index() just stamped")
+        self.assertEqual(self.mem.conn.execute(
+            "select root from docs where corpus='kb'").fetchone()[0], self.b)
+
+    def test_an_even_length_latin1_file_stays_latin1(self):
+        """utf-16 is not a fallback ladder slot: EVERY even-byte latin-1 file decodes as utf-16,
+        so a whole book was indexed and embedded as CJK."""
+        text = "Caf\u00e9 s\u00e9jour d\u00e9j\u00e0. The wine list opens at noon, said the waiter.\n"
+        p = os.path.join(self.a, "cafe.txt")
+        with open(p, "w", encoding="latin-1") as f:
+            f.write(text)
+        self.assertEqual(len(open(p, "rb").read()) % 2, 0, "the probe needs an even byte count")
+        self.docs.index(self.a, corpus="kb2", scope="doc-kb2")
+        rows = self.docs.list("kb2")
+        got = self.docs.read("kb2", "cafe.txt", 0, 40)["text"]
+        self.assertEqual(got, text[:40], f"latin-1 decoded as latin-1: {got!r}")
+
+    def test_a_bom_does_not_swallow_the_first_heading(self):
+        self.write(self.a, "fed.txt", "\ufeffFEDERALIST No. 10\n\nThe sphere of the republic extends.")
+        self.docs.index(self.a, corpus="kb3", scope="doc-kb3", mode="sections")
+        rows = self.docs.list("kb3")
+        r0 = self.mem.conn.execute(
+            "select text, provenance from memories order by id limit 1").fetchone()
+        self.assertFalse(r0[0].startswith("\ufeff"), "the BOM is not part of row 0")
+        self.assertEqual(r0[1]["section"], "FEDERALIST No. 10", "the first heading is a heading")
+
+    def test_a_markdown_heading_is_one_line(self):
+        """`#{1,6}\s+.*` let \s+ cross newlines: a bare `#` filed a section whose label was the
+        next three body lines, and 5,661 rows of the sections index are markdown."""
+        from serve.docs import pack_sections
+        pairs = pack_sections("#\n\n\nBody text about faction and the sphere starts here.\n\nnext\n",
+                              cap=4000)
+        self.assertEqual([p[1] for p in pairs], [""], "a bare # opens no section")
+        joined = norm_text(" ".join(p[0] for p in pairs))
+        self.assertEqual(joined, norm_text("#\n\n\nBody text about faction and the sphere "
+                                           "starts here.\n\nnext\n"), "every character survives")
+        real = pack_sections("# The sphere\n\nA body about faction.\n", cap=4000)
+        self.assertEqual(real[0][1], "# The sphere", "a real heading keeps its label, one line")
+
+    def test_reconcile_zeroes_a_fully_folded_file(self):
+        self.write(self.a, "one.txt", "One sentence about the extent of the sphere and faction.\n")
+        self.write(self.b, "two.txt", "Two sentence about the extent of the sphere and faction.\n")
+        os.makedirs(self.a, exist_ok=True)
+        for f in os.listdir(self.b):
+            shutil.copy(os.path.join(self.b, f), os.path.join(self.a, f))
+        self.docs.index(self.a, corpus="kb4", scope="doc-kb4")
+        self.assertEqual(len(self.docs.list("kb4")), 2)
+        with self.mem.lock:
+            self.mem.conn.execute(
+                "update memories set invalid_at = now() where provenance->>'file' = 'two.txt'")
+            self.mem.conn.commit()
+        self.docs.reconcile("kb4")
+        self.assertEqual([d["chunks"] for d in self.docs.list("kb4")].count(0), 1,
+                         "a folded book's count follows the rows")
+
+    def test_a_window_past_eof_is_clamped_both_ends(self):
+        self.write(self.a, "tiny.txt", "Thirty characters, no more.\n")
+        self.docs.index(self.a, corpus="kb5", scope="doc-kb5")
+        out = self.docs.read("kb5", "tiny.txt", offset=10**9, n=100)
+        self.assertGreaterEqual(out["n"], 0, "a negative window walks the reader backwards")
+        self.assertLessEqual(out["offset"], out["total"])
+
+    def test_a_row_knows_its_own_length_and_paper(self):
+        """expand() derived the row's length from the hit's text, so a projected hit got a full
+        EXPAND_CAP window; and the paper number was parsed AFTER the label was cut to 80 chars."""
+        # A markdown heading long enough that its paper number sits PAST the 80-char label:
+        # the label is cut, and section_paper must have been run on the whole heading.
+        head = ("# A long title about the extent of the sphere and the multiplication of factions, "
+                "written for the Federalist No. 90")
+        body = head + "\n\n" + ("The sphere of the republic extends and faction multiplies. " * 30)
+        self.write(self.a, "long.txt", body)
+        self.docs.index(self.a, corpus="kb6", scope="doc-kb6", mode="sections")
+        rows = self.mem.conn.execute(
+            "select text, provenance from memories order by id").fetchall()
+        self.assertTrue(all(r[1].get("n_chars") == len(r[0]) for r in rows),
+                        "every row carries its own length")
+        self.assertEqual(rows[0][1].get("paper"), 90,
+                         f"the number past the label still routes: {rows[0][1].get('section')!r}")
 
 
 if __name__ == "__main__":

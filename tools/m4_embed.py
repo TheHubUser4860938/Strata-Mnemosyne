@@ -57,14 +57,9 @@ def main() -> int:
     def done_close():
         conn.close()
 
-    q = ("select id, text from memories where invalid_at is null and id not in"
-         " (select id from embeddings) order by id")
-    rows = conn.execute(q + (" limit %s" if a.limit else ""),
-                        [a.limit] if a.limit else ()).fetchall()
-    print(f"unembedded active rows: {len(rows)}")
-    if not rows:
-        done_close()
-        return 0
+    # The gap is (no vector) OR (a vector the LIVE model did not make) - audit 2026-11-07: the old
+    # query keyed on "no vector" alone, so a store embedded by bge and switched to embeddinggemma-2
+    # at the same width printed "unembedded active rows: 0" while the cosine arm excluded every row.
     stamp = conn.execute("select value from meta where key='embedder_model'").fetchone()
     model = a.model or str(data_dir(ROOT) / "embeddings" / (stamp[0] if stamp else "bge-small-en-v1.5"))
     print(f"embedder: {Path(model).name} (store stamp: {stamp[0] if stamp else 'none'})")
@@ -72,6 +67,15 @@ def main() -> int:
     # recipe is a class law (serve/embedder.py OUT) - the bge class against the gemma
     # files embeds with the wrong prefix and the wrong pooling, silently.
     name = getattr(emb, "model_name", Path(model).name)
+    q = ("select m.id, m.text from memories m left join embeddings e on e.id = m.id"
+         " where m.invalid_at is null and (e.id is null or e.model is distinct from %s)"
+         " order by m.id")
+    rows = conn.execute(q + (" limit %s" if a.limit else ""),
+                        ((name,) + ((a.limit,) if a.limit else ()))).fetchall()
+    print(f"unembedded active rows: {len(rows)}")
+    if not rows:
+        done_close()
+        return 0
     t0, done = time.time(), 0
     for i in range(0, len(rows), a.batch):
         chunk = rows[i:i + a.batch]
@@ -91,7 +95,15 @@ def main() -> int:
                 # socket - the store is the durable thing, the connection is not. The row
                 # query selects only unembedded ids, so a dropped batch costs a re-embed.
                 print(f"  reconnect after {type(exc).__name__} (attempt {attempt})")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
                 conn = attach(str(src))
+                if attempt == 2:
+                    # Both attempts spent: say so loudly (audit 2026-11-07 - the old loop fell
+                    # through and the batch was counted as written in the printed total).
+                    raise
         done += len(chunk)
         rate = done / max(time.time() - t0, 1e-6)
         eta = (len(rows) - done) / rate if rate else 0

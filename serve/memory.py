@@ -74,6 +74,14 @@ DEFAULT_PROJECT = "default"             # requests that name no scope land in th
 # rows 6585/6932 disagreeing with a cart's truth; `supports` is the receipt law turned into an edge -
 # a fact that stands because another fact does. No `relates_to`: a catch-all becomes a dumping ground.
 LINK_KINDS = ("about", "contradicts", "supports")
+# ONE DEFINITION OF "A DOCUMENT ROW", spelled once (audit 2026-11-07). It was spelled two ways:
+# the write guard asked for `scope not like 'doc%'` and the read path for `source not like
+# 'doc-index%'`, and a corpus indexed into a scope whose name does not start with "doc" (legal -
+# `m8_docs --scope corpus1`) answered to neither, so a fact whose text equals a chunk was folded
+# INTO the chunk: the fact got no row, the shelf showed DOC/C1, and stats() called it a chunk.
+# The source is the truth: Docs.index writes `doc-index-<date>` and nothing else does.
+DOC_SOURCE_SQL = "source like 'doc-index%'"
+DOC_FACT_SQL = "source not like 'doc-index%'"
 LINKS_PER_ROW = 4                       # the tool result rides the model's context; a traversal has
 LINK_TEXT_CHARS = 120                   # no floor, so the read is bounded like Mind's own read is
 WORD_RE = re.compile(r"\w{2,}", re.UNICODE)
@@ -879,7 +887,7 @@ _PG_DDL: tuple[str, ...] = (
     # rows that was a full scan (audit F15, 2026-11-03); this partial expression index covers
     # only the doc rows, so facts keep their lean heap.
     "create index if not exists mem_doc_corpus on memories ((provenance->>'corpus'))"
-    " where source like 'doc-index%'",
+    " where " + DOC_SOURCE_SQL,
     """create table if not exists carts(
          name text primary key,
          file text not null,
@@ -907,8 +915,39 @@ def _rollback_on_error(conn):
     try:
         yield
     except psycopg.Error:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:      # the connection itself is the casualty - the caller's retry reconnects
+            pass
         raise
+
+
+def _heals(fn):
+    """Decorator form of _rollback_on_error, on every statement the request path takes - reads since
+    the 2026-10-23 sweep, writes since the 2026-10-24 review found the write paths still naked.
+
+    The store serves on ONE psycopg connection, and psycopg opens an implicit transaction on the
+    first statement: a statement that raises leaves that transaction aborted, and until something
+    rolls back, EVERY later request on the connection dies with InFailedSqlTransaction - one bad
+    query wearing the costume of a dead store (measured 2026-10-23, the dict_snowball day). The
+    guard costs nothing on the success path and turns a store outage into one failed request.
+    Without it on a WRITE the bill came to two: the failed write itself, then the next request on
+    the connection, which was the first read to notice and roll back.
+
+    An OperationalError is the one class that a rollback cannot heal: the SERVER behind the socket
+    moved (a reboot, a Postgres restart, a socket path change), and the rolled-back connection is
+    dead for every later request - the 2026-11-07 audit found a Postgres restart meaning memory
+    503s until the whole server was rebooted. One reconnect, one retry, then the caller's 503."""
+    @functools.wraps(fn)
+    def inner(self, *args, **kwargs):
+        try:
+            with _rollback_on_error(self.conn):
+                return fn(self, *args, **kwargs)
+        except psycopg.OperationalError:
+            self._reconnect()
+            with _rollback_on_error(self.conn):
+                return fn(self, *args, **kwargs)
+    return inner
 
 
 StoreError = psycopg.Error      # the store's failure class, named for serve/server.py's HTTP clauses
@@ -967,24 +1006,6 @@ CART_SCAN_WHERE = """state = 'fresh' and (
         """
 CART_SCAN_SQL = ("update carts set state = 'stale', stale_reason = 'out-of-process write'"
                  " where " + CART_SCAN_WHERE + " returning name")
-
-
-def _heals(fn):
-    """Decorator form of _rollback_on_error, on every statement the request path takes - reads since
-    the 2026-10-23 sweep, writes since the 2026-10-24 review found the write paths still naked.
-
-    The store serves on ONE psycopg connection, and psycopg opens an implicit transaction on the
-    first statement: a statement that raises leaves that transaction aborted, and until something
-    rolls back, EVERY later request on the connection dies with InFailedSqlTransaction - one bad
-    query wearing the costume of a dead store (measured 2026-10-23, the dict_snowball day). The
-    guard costs nothing on the success path and turns a store outage into one failed request.
-    Without it on a WRITE the bill came to two: the failed write itself, then the next request on
-    the connection, which was the first read to notice and roll back."""
-    @functools.wraps(fn)
-    def inner(self, *args, **kwargs):
-        with _rollback_on_error(self.conn):
-            return fn(self, *args, **kwargs)
-    return inner
 
 
 class MemoryService:
@@ -1233,6 +1254,12 @@ class MemoryService:
             with psycopg.connect(self._uri, autocommit=True) as maker:
                 maker.execute('create database "%s"' % self._dbname)
         self.conn = psycopg.connect(self._uri, dbname=self._dbname)
+        # ONE CLOCK, PRINTED AND FILTERED (audit 2026-11-07): the bounds in time_bound() read a bare
+        # date as UTC midnight while psycopg renders timestamptz in the SESSION zone - on this box
+        # America/Indiana/Indianapolis, UTC-5 - so a row said at 20:30 local on the 6th answered a
+        # `?since=2026-11-07` asking and printed "when: 2026-11-06 20:30". The session now speaks UTC,
+        # so the filter, the shelf row and the memory_search tool agree.
+        self.conn.execute("set time zone 'UTC'")
         with self.lock:
             if not self.conn.execute("select 1 from pg_ts_config where cfgname = %s",
                                      (FTS_CFG,)).fetchone():
@@ -1248,6 +1275,17 @@ class MemoryService:
             row = self.conn.execute("select value from meta where key='version'").fetchone()
             if row is None:
                 self.conn.execute("insert into meta values('version','1')")
+                self.conn.commit()
+            # THE STAMP IS WRITTEN BY THE SERVICE, NOT ONLY BY THE MIGRATOR (audit 2026-11-07):
+            # tools/m4_embed.py picks its default model from meta.embedder_model, and before this
+            # only serve/reembed.py wrote it - a fresh store with a 768-d embedder carried no stamp
+            # and the backfill ran bge (384-d) into it, half the rows invisible to the cosine arm,
+            # the pass reporting success.
+            if self.embedder is not None and getattr(self.embedder, "model_name", None):
+                self.conn.execute(
+                    "insert into meta(key, value) values('embedder_model', %s)"
+                    " on conflict (key) do update set value = excluded.value",
+                    (str(self.embedder.model_name),))
                 self.conn.commit()
             # M2 job 7 (the Zep/Graphiti pattern): a correction SUPERSEDES the fact it replaces -
             # invalid_at + superseded_by turn every overwrite into a version chain the review list
@@ -1302,6 +1340,18 @@ class MemoryService:
             self.conn.commit()
 
     # ---- store ---------------------------------------------------------------
+
+    def _reconnect(self) -> None:
+        """Re-open the single store connection after an OperationalError (see _heals). The cluster
+        is the box's own, so a fresh connect is the whole repair; the caches are keyed by stamps,
+        not by the socket, so nothing else has to be re-made."""
+        with self.lock:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn = psycopg.connect(self._uri, dbname=self._dbname)
+            self.conn.execute("set time zone 'UTC'")
 
     @_heals
     def version(self) -> int:
@@ -1488,7 +1538,7 @@ class MemoryService:
             if exact:
                 same = self.conn.execute(
                     "select id, text, class from memories where invalid_at is null"
-                    " and coalesce(scope,'') not like 'doc%'").fetchall()   # every scope:
+                    " and " + DOC_FACT_SQL).fetchall()   # every scope:
                 hit = next((r for r in same if norm_text(r[1]) == norm_text(text)), None)
             else:
                 same, hit = [], None      # the document index: every chunk keeps its own row
@@ -1842,6 +1892,7 @@ class MemoryService:
             # (its fetch by id does not re-check invalid_at). correct() inherits this fix.
             return retired
 
+    @_heals
     def correct(self, text: str, old_id: int, scope: str = USER_SCOPE, source: str = "manual",
                 confidence: float | None = None, provenance: dict | None = None,
                 klass: str | None = None) -> dict:
@@ -1901,6 +1952,7 @@ class MemoryService:
             # (2026-10-16) were invisible to the cosine arm while the lexical arm was always right.
             return r.rowcount > 0
 
+    @_heals
     def pin_state(self, memory_id: int) -> bool:
         """Is this row pinned? One PK read, for the callers that must ANNOUNCE a refused
         automation rather than guess at it: op=invalidate answers {"invalidated": false,
@@ -1957,6 +2009,11 @@ class MemoryService:
             if missing:
                 self.conn.commit()
                 return {"linked": False, "missing": missing}
+            # The pair is the key, so the pair is normalized: (5,9) and (9,5) are ONE edge
+            # (audit 2026-11-07). links_of reads both directions, so an unnormalized table spent
+            # two of a row's four link slots naming the same neighbour, and a relabel of the
+            # reverse direction was a second edge rather than a change of the first.
+            a, b = (a, b) if a < b else (b, a)
             self.conn.execute(
                 "insert into links(a_id,b_id,kind,note,created_at) values(%s,%s,%s,%s,%s)"
                 " on conflict (a_id,b_id) do update set kind = excluded.kind,"
@@ -1966,6 +2023,7 @@ class MemoryService:
             self.conn.commit()
         return {"linked": True, "from": a, "to": b, "kind": kind}
 
+    @_heals
     def links_of(self, ids) -> dict[int, list[dict]]:
         """Direct relations of these rows, BOTH directions, BOUNDED. Mind's lifecycle states the law
         this copies and the reason for it: "bounded to direct relations and metadata, so it is safe
@@ -2198,6 +2256,7 @@ class MemoryService:
                 kept[kept.index(clash)] = h                 # the fact bumps its own question from the slot
         return kept
 
+    @_heals
     def cartridge_text(self, prefixes: list[str], max_chars: int = 4000) -> tuple[str, int, int]:
         """The standing text of the tier-2 cartridge (M3b, 2026-10-12): the rows of these shelf
         subtrees, confidence descending then id ascending - never by hits, because hits drift with
@@ -2478,6 +2537,7 @@ class MemoryService:
         scored.sort(key=lambda x: (-x[0], x[1][0]))   # score desc, id asc - the visible tiebreak
         return [r for _s, r in scored][:limit * 3]
 
+    @_heals
     def search(self, query: str, scope: str = DEFAULT_PROJECT, limit: int | None = None,
                classes: list[str] | None = None, since: float | None = None,
                until: float | None = None, semantic: bool = True,
@@ -2613,6 +2673,9 @@ class MemoryService:
                             confidence=r[3], hits=r[6],  # the memory_search tool shows both; they were
                             #   promised and came back null - confidence fed the blend then got dropped,
                             #   hits was never selected (everyday-use bug report, 2026-10-16)
+                            updated_at=round(self._ep(r[4]), 1),   # the Memory page prints a date per
+                            #   row; r[4] was selected, fed the recency blend, and then dropped, so
+                            #   every search row's meta line ended "· —" (audit 2026-11-07)
                             **{"class": r[5]}))        # re-sorting loses it and the blend is not the ranking
         out.sort(key=lambda x: -x["score"])
         if semantic and self.embedder is not None:
@@ -2773,6 +2836,7 @@ class MemoryService:
             args.append(str(stamp))
         return cond, tuple(args)
 
+    @_heals
     def foreign_vectors(self):
         """Vectors the LIVE embedder cannot use (foreign model stamp or wrong width) - the
         store's honest answer to "has the re-embed run?" (serve/reembed.py drives this number
@@ -2794,7 +2858,13 @@ class MemoryService:
         import numpy as np
         compat, cargs = self._vec_compat()
         with self.lock:
-            n = self.conn.execute("select count(*) from embeddings").fetchone()[0]
+            # The stamp is (all vectors, vectors the LIVE embedder can read). The count of ALL
+            # vectors alone missed a model swap: `python -m serve.reembed` rewrites the bytes under
+            # the same ids, the count is unchanged, and the server kept ranking on the OLD model's
+            # matrix while stats() reported the new one (audit 2026-11-07).
+            n = self.conn.execute(
+                "select count(*), count(*) filter (where true" + compat + ") from embeddings e",
+                cargs).fetchone()
             if self._vmeta is not None and not self._vdirty and n == self._ecount:
                 self.conn.commit()
                 return self._vmeta
@@ -2805,11 +2875,20 @@ class MemoryService:
                 + compat + " order by m.id", cargs).fetchall()
             self.conn.commit()
         if not rows:
+            # Publish an EMPTY matrix (audit 2026-11-07): the cache-hit test below is
+            # `self._vmeta is not None`, so a store with no usable vectors - a lexical box, a
+            # foreign-width swap mid-boot - rebuilt it on EVERY search, two full scans per ask.
+            empty = {"ids": np.array([], dtype=np.int64),
+                     "mat": np.zeros((0, getattr(self.embedder, "dims", 0) or 0), dtype=np.float32),
+                     "ix": {}, "scope": np.array([], dtype=f"U{SCOPE_MAX}"),
+                     "class": np.array([], dtype=f"U{CLASS_MAX}"),
+                     "created": np.array([], dtype=np.float64),
+                     "updated": np.array([], dtype=np.float64),
+                     "conf": np.array([], dtype=np.float32)}
             with self.lock:
-                self._vmeta, self._ecount = None, n
-                if not self._vdirty:
-                    self._vdirty = False
-                return None
+                self._vmeta, self._ecount = empty, n
+                self._vdirty = False
+            return empty
         mat = np.stack([np.frombuffer(r[1], dtype=np.float32) for r in rows])
         # FIXED-WIDTH COLUMNS ARE A LAW WITH A LENGTH: a numpy 'U24' silently cuts a longer string
         # in half, and the mask below compares the CUT value against the caller's full scope/class -
@@ -2977,6 +3056,8 @@ class MemoryService:
                                               float(meta["updated"][j]), float(meta["conf"][j])),
                                   cos_rank=cos_rank.get(rid),     # the cosine arm found it, bm25 never did
                                   lex_rank=None,
+                                  updated_at=round(float(meta["updated"][j]), 1),   # the page's date,
+                                  #   both arms (audit 2026-11-07)
                                   confidence=r[4], hits=r[5],     # same promise as the lexical arm above
                                   **{"class": r[3]}))
         return cands
@@ -2990,7 +3071,13 @@ class MemoryService:
         touches hits/last_seen_at - exposure demotes recall, it does not feed the feedback
         counter back on itself (the pin-cache law, applied to the new input)."""
         with self.lock:
-            key = self.conn.execute("select count(*), coalesce(max(id),0) from turns").fetchone()
+            # The stamp is (count, max id, newest created_at). A multi-round agent turn UPDATEs the
+            # newest row in place (journal_turn keeps one row per user text), so count and max id do
+            # not move - and every fact that turn's block showed paid no demotion at all (audit
+            # 2026-11-07: the exposure ledger is the lever the stuffing complaint bought).
+            key = self.conn.execute(
+                "select count(*), coalesce(max(id),0),"
+                " coalesce(extract(epoch from max(created_at)),0.0) from turns").fetchone()
             if self._expo is not None and self._expo[0] == tuple(key):
                 self.conn.commit()
                 return self._expo[1]
@@ -3038,7 +3125,7 @@ class MemoryService:
         with self.lock:
             n_active = self.conn.execute(
                 "select count(*) from memories where invalid_at is null"
-                " and source not like 'doc-index%'").fetchone()[0]   # facts, not the routing map
+                " and " + DOC_FACT_SQL).fetchone()[0]   # facts, not the routing map
             self.conn.commit()
         v, instruction = self.version(), (
             "Long-term memory of this user, kept by the inference server and shared by all their"
@@ -3361,7 +3448,7 @@ class MemoryService:
             # and the block header count facts; the chunks get a tile of their own.
             doc_chunks = self.conn.execute(
                 "select count(*) from memories where invalid_at is null"
-                " and source like 'doc-index%'").fetchone()[0]
+                " and " + DOC_SOURCE_SQL).fetchone()[0]
             by_scope = dict(self.conn.execute(
                 "select scope, count(*) from memories where invalid_at is null group by scope").fetchall())
             by_class = {(r[0] or "unclassified"): r[1] for r in self.conn.execute(
@@ -3725,7 +3812,12 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
     # journals and the tool stays offered, because ctx is built. The mute header X-Strata-Memory: off
     # cannot do this: it kills the tool with the block (mem_ctx is not None is the tool gate's first
     # condition), which is why "browsed" needed its own word. Absent header: every byte as before.
-    if (headers.get("X-Strata-Memory-Block") or "").strip().lower() in ("off", "mute", "0"):
+    # The config default for the same switch is memory.inject (audit 2026-11-07: it was advertised
+    # in docs/MEMORY_CORE.md, printed in the boot banner and round-tripped by stats(), and read by
+    # NOTHING - a box configured with "inject": false paid the block every turn). The header still
+    # wins per request; the config is the box-wide default, so it rides the same arm.
+    bhead = (headers.get("X-Strata-Memory-Block") or "").strip().lower()
+    if bhead in ("off", "mute", "0") or (bhead not in ("head", "tail") and not mem.inject):
         if not last_user.strip():
             return messages, None
         # BROWSE NOTICE (pilot v1 2026-10-24; the prompt-side fix the signed contract pre-authorized
@@ -3930,33 +4022,39 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         if isinstance(v, str):
             return v.strip().lower() in ("1", "on", "true", "yes")
         return bool(v)
+    def num(key, default, cast=int):
+        # `or` is not a default operator (audit 2026-11-07): it swallows the value 0, and 0 MEANS
+        # something on most of these knobs - recall_limit 0, expose_cap 0, turn_block_chars 0.
+        # The file already does this for tool_rounds and block_doc_cap; now every knob does.
+        v = mcfg.get(key)
+        return cast(default if v is None else v)
     return MemoryService(
         directory,
         pg_uri=pg_uri,
-        max_block_chars=mcfg.get("max_block_chars") or 6000,
-        recall_limit=mcfg.get("recall_limit") or 8,
-        per_turn=mcfg.get("per_turn") is not False,
-        turn_recall_limit=mcfg.get("turn_recall_limit") or 8,
-        turn_block_chars=mcfg.get("turn_block_chars") or 2000,
-        max_memories=mcfg.get("max_memories") or 0,
-        dedup_recall=mcfg.get("dedup_recall") is not False,
+        max_block_chars=num("max_block_chars", 6000),
+        recall_limit=num("recall_limit", 8),
+        per_turn=flag("per_turn", True),
+        turn_recall_limit=num("turn_recall_limit", 8),
+        turn_block_chars=num("turn_block_chars", 2000),
+        max_memories=num("max_memories", 0),
+        dedup_recall=flag("dedup_recall", True),
         encrypt=mcfg.get("encrypt") not in (None, False, 0, "", "off"),
         key_file=str(mcfg.get("key_file") or ""),
         passphrase_env=str(mcfg.get("passphrase_env") or ""),
-        inject=mcfg.get("inject") is not False,
+        inject=flag("inject", True),
         tool=flag("tool"),
-        tool_rounds=int(mcfg.get("tool_rounds") if mcfg.get("tool_rounds") is not None else 3),
-        floor_cosine=float(mcfg.get("floor_cosine") or 0.0),
+        tool_rounds=num("tool_rounds", 3),
+        floor_cosine=num("floor_cosine", 0.0, float),
         auto_shelve=flag("auto_shelve"),
-        block_min_score=float(mcfg.get("block_min_score") or 0.0),
-        block_doc_cap=int(mcfg.get("block_doc_cap")
-                          if mcfg.get("block_doc_cap") is not None else 1200),
-        expose_window=int(mcfg.get("expose_window") or 0),
-        expose_step=float(mcfg.get("expose_step") or 0.0),
-        expose_cap=int(mcfg.get("expose_cap") or 3),
+        block_min_score=num("block_min_score", 0.0, float),
+        block_doc_cap=num("block_doc_cap", 1200),
+        expose_window=num("expose_window", 0),
+        expose_step=num("expose_step", 0.0, float),
+        expose_cap=num("expose_cap", 3),
         route_shelves=flag("route_shelves"),
-        route_demote=float(mcfg.get("route_demote") or 0.0),
+        route_demote=num("route_demote", 0.0, float),
         block_position=str(mcfg.get("block_position") or "head"),
+        cache_entries=num("cache_entries", 64),
         embedder=(embedder if embedder is not None else (mcfg.get("embedder") or None)),
     )
 
