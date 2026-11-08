@@ -4816,6 +4816,70 @@ class RankTermsTest(unittest.TestCase):
         self.assertIn("camping trip", t)
 
 
+class WalkCursorTest(unittest.TestCase):
+    """The walk has a cursor, and a shown row carries its address (2026-11-08).
+
+    Why: `limit` 1-20 with no offset made a walk a PAGE - DOC/FOUNDING/GROTI1 holds 1,577 rows and
+    a caller could read 20 of them, so "walk the shelves until found" had no second step. And the
+    block showed a fact with no hint of where it lives, so a dive had no destination. The owner's
+    ask, and the venue panel's evidence: 64 of 147 lines dove zero rounds, and the live tool ledger
+    reads 155 searches against 12 walks.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _svc(self, name, **kw):
+        m = MemoryService(self.tmp.name + "/" + name, **kw)
+        self.addCleanup(m.close)
+        for i in range(5):
+            m.remember(f"the {i}th ledger entry of the drawer", scope="ops", klass="USR/PREF")
+        m.remember("a shelf map is a card catalog of drawers", scope="ops", klass="MEM/CAT")
+        return m
+
+    def test_a_walk_pages_to_the_bottom_of_a_drawer(self):
+        m = self._svc("wc1")
+        pages = [m.browse("ops", prefixes=["USR/PREF"], limit=2, offset=o)["rows"] for o in (0, 2, 4, 6)]
+        ids = [[r["id"] for r in pg] for pg in pages]
+        self.assertEqual([len(x) for x in ids], [2, 2, 1, 0],
+                         "five rows, three pages of two, then the honest zero")
+        self.assertEqual(len(set(ids[0]) | set(ids[1])), 4, "page 2 repeats nothing from page 1")
+        self.assertNotIn(ids[2][0], ids[0] + ids[1], "page 3 is a row the earlier pages never showed")
+        self.assertEqual(pages[1] and m.browse("ops", prefixes=["USR/PREF"], limit=2,
+                                               offset=2)["offset"], 2,
+                         "the answer says which page it answered")
+
+    def test_the_map_pages_its_sorted_shelf_list(self):
+        m = self._svc("wc2")
+        one = m.browse("ops", limit=1)
+        two = m.browse("ops", limit=1, offset=1)
+        self.assertEqual([r["shelf"] for r in one["shelves"]], ["USR/PREF", "MEM/CAT"],
+                         "biggest-first, so a walk starts at the fat drawer")
+        self.assertEqual([r["shelf"] for r in two["shelves"]], ["MEM/CAT"],
+                         "the cursor moves the SHELF window too - a 200-drawer map is pageable")
+        self.assertEqual(two["offset"], 1, "and the payload names the cursor it answered")
+        self.assertEqual(one["rows"][0]["id"] != two["rows"][0]["id"], True, "the rows page as well")
+
+    def test_the_tool_dialect_carries_the_cursor(self):
+        m = self._svc("wc3")
+        out = json.loads(tool_result(m, {"class": "USR/PREF", "limit": 2, "offset": 2},
+                                     scope="ops")["text"])
+        self.assertEqual(out["mode"], "walk", "a class with no words walks, as always")
+        self.assertEqual(len(out["rows"]), 2, "...and the cursor pages the walk through the tool")
+        self.assertEqual(out["offset"], 2)
+
+    def test_a_shown_row_names_the_drawer_it_lives_in(self):
+        on = self._svc("wc4", block_shelf_tags=True)
+        off = self._svc("wc5")
+        msgs = [{"role": "user", "content": "what was the third ledger entry"}]
+        block, shown, _q = on.block_for(msgs, "ops")
+        self.assertIn("@USR/PREF:5", block, "the line ends with its drawer and that drawer's row count")
+        plain, _, _q2 = off.block_for(msgs, "ops")
+        self.assertNotIn("@USR/", plain, "off is today's bytes exactly")
+        self.assertLess(len(plain), len(block), "and the address costs characters, measured not free")
+
+
 class GlossaryVoteTest(unittest.TestCase):
     """The Auto Ontology port (2026-11-08): the curated MEM/CAT label is a GLOSSARY, and a glossary
     word in the question votes for the shelf it names.
