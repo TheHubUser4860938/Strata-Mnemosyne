@@ -3480,9 +3480,10 @@ class MemoryService:
             return pick
         tally: dict[str, float] = {s: ROUTE_W[i] for i, s in enumerate(pick) if i < len(ROUTE_W)}
         for w in words:
-            for shelf, ws in by_word.items():
-                if any(g[:4] == w[:4] for g in ws):
-                    tally[shelf] = tally.get(shelf, 0.0) + self.route_glossary * ROUTE_W[0]
+            for word, shelves in by_word.items():      # by_word is keyed by the LABEL WORD
+                if word[:4] == w[:4]:                  # the plurals rule coverage_gap uses
+                    for shelf in shelves:              # and its value is the shelves it names
+                        tally[shelf] = tally.get(shelf, 0.0) + self.route_glossary * ROUTE_W[0]
         return [x for x, _ in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))[:ROUTE_TOP]]
 
     def _route(self, query: str, scope: str) -> list[str] | None:

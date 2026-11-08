@@ -4864,6 +4864,27 @@ class GlossaryVoteTest(unittest.TestCase):
         self.assertEqual(off.stats()["glossary"], {"weight": 0.0, "shelves": 0},
                          "0.0 is the router of today")
 
+    def test_the_vote_lands_on_the_shelf_the_label_names(self):
+        """The label word votes; the LABEL'S SHELF gets the weight (2026-11-08).
+
+        The loop that merged the vote was written `for shelf, ws in by_word.items()` over a map
+        keyed by WORD and valued by SHELVES, so it compared each query word's 4-prefix against
+        SHELF NAMES ("HUM", "DOC/FOUNDING") and credited the LABEL WORD as if it were a class.
+        Lowercase query words against uppercase shelf names never match, so the vote was inert on
+        the live store, and the 0.25/0.6 panel arms (2026-11-08, row_coverage 0.698 in both) were
+        sampling the same distribution. A key that is a class is the assertion the old test could
+        not make: rows on the label's own shelf are what a `classes=` filter reads.
+        """
+        m = MemoryService(self.tmp.name + "/glok", route_shelves=True, route_glossary=0.6)
+        self.addCleanup(m.close)
+        m.remember("the ledger counts 4,228 facts on 226 shelves", scope="ops", klass="OPS/COUNT")
+        m.remember("HUM/ELOQ - eloquence, the gift of the pause", scope="ops", klass="MEM/CAT")
+        m.remember("the advocate closed on the same line she opened", scope="ops", klass="HUM/ELOQ")
+        pick = m._glossary_vote("eloquence won the argument", ["OPS/COUNT"])
+        self.assertIn("HUM/ELOQ", pick, "the vote must name a shelf the caller can filter on")
+        self.assertTrue(all("/" in x or x.isupper() for x in pick),
+                        f"every key is a class, not a label word: {pick}")
+
     def test_coverage_is_the_number_beside_the_gap_list(self):
         m = MemoryService(self.tmp.name + "/covnum", block_cover_terms=3)
         self.addCleanup(m.close)
