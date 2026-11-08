@@ -31,9 +31,11 @@ def migrate(svc, emb, fill: bool = False, log=print) -> dict:
     trouble - a half-written migration rolls back whole, it does not warn."""
     name = getattr(emb, "model_name", "unknown")
     conn = svc.conn
+    # Active rows only, and the stamp query too (audit 2026-11-07): --fill filtered by invalid_at
+    # and this one did not, so every pass re-embedded the retired rows beside the live ones.
     rows = conn.execute(
         "select e.id, m.text from embeddings e join memories m on m.id = e.id"
-        " where e.model is distinct from %s", (name,)).fetchall()
+        " where e.model is distinct from %s and m.invalid_at is null", (name,)).fetchall()
     if fill:
         rows += conn.execute(
             "select m.id, m.text from memories m left join embeddings e on e.id = m.id"
