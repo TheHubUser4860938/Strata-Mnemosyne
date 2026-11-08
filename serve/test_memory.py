@@ -4750,6 +4750,72 @@ class BlockCoverageTest(unittest.TestCase):
         self.assertEqual(m.stats()["block_cover_terms"], 0)
 
 
+class RankTermsTest(unittest.TestCase):
+    """The two ranking terms and the aggregation cap (2026-11-08), each default-off.
+
+    The founding panel's failures are not search failures: four topics return containment 1.00 at
+    rank 2-8 - the right row is FOUND and loses the top-1 race. At RRF_K=1 the two arms' rank-1
+    votes are exactly equal, so the winner is decided by a 1e-5 recency epsilon. `cover_weight` asks
+    a question the blend never asked: does this row carry the words the QUERY used. `proof_weight`
+    asks how many turns back the fact up - the merge path counts them, the ranking has never read it.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _pair(self, **kw):
+        m = MemoryService(self.tmp.name + "/rt" + str(abs(hash(str(sorted(kw.items())))) % 9999), **kw)
+        self.addCleanup(m.close)
+        loose = m.remember("the workshop on time management was held last saturday morning",
+                           scope="ops")["id"]
+        tight = m.remember("the time management workshop covered inbox zero and calendar blocking",
+                           scope="ops")["id"]
+        return m, loose, tight
+
+    def test_coverage_breaks_the_tie_toward_the_row_that_uses_the_query_words(self):
+        m, loose, tight = self._pair(cover_weight=0.5)
+        hits = m.search("time management workshop calendar blocking", scope="ops", limit=5)
+        self.assertEqual(hits[0]["id"], tight, "the row carrying 'calendar blocking' wins the slot")
+        self.assertEqual(m.stats()["rank_terms"], {"cover": 0.5, "proof": 0.0},
+                         "stats proves which arm boots")
+
+    def test_coverage_off_is_today_bytes(self):
+        m, loose, tight = self._pair()
+        self.assertEqual(m.stats()["rank_terms"], {"cover": 0.0, "proof": 0.0},
+                         "the shipped default is both terms off")
+        on = [h["id"] for h in m.search("time management workshop calendar blocking", scope="ops",
+                                        limit=5)]
+        m.cover_weight = 0.5
+        m2 = [h["id"] for h in m.search("time management workshop calendar blocking", scope="ops",
+                                         limit=5)]
+        self.assertEqual(len(on), len(m2), "both arms return the pair; only the order may move")
+        self.assertEqual(set(on), set(m2), "the term re-orders, it never filters")
+
+    def test_a_fact_said_thrice_outranks_a_fact_said_once(self):
+        m, loose, tight = self._pair(proof_weight=0.2)
+        with m.lock:
+            m.conn.execute("update memories set provenance = '{\"proof\": 3}'::jsonb where id = %s",
+                           (loose,))
+            m.conn.commit()
+        hits = m.search("time management workshop", scope="ops", limit=5)
+        self.assertEqual(hits[0]["id"], loose, "proof 3 beats proof 1 on an equal match")
+        self.assertEqual(m._proofs([loose, tight]), {loose: 3, tight: 1},
+                         "a row with no count reads as 1, not 0")
+
+    def test_a_counting_question_gets_a_wider_tail(self):
+        m = MemoryService(self.tmp.name + "/agg", turn_recall_limit=2, turn_recall_agg=4)
+        self.addCleanup(m.close)
+        for i in range(6):
+            m.remember(f"the camping trip number {i + 1} lasted four days in {2020 + i}", scope="ops")
+        msgs = [{"role": "user", "content": "list all the camping trips I have taken"},
+                {"role": "user", "content": "how many camping trips in total did I take"}]
+        t, tshown = m.turn_block_for(msgs, "ops")
+        self.assertEqual(len(tshown), 4, "the counting shape gets the wider cap")
+        self.assertGreater(len(tshown), 2, "wider than turn_recall_limit")
+        self.assertIn("camping trip", t)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

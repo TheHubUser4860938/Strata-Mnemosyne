@@ -94,6 +94,9 @@ DERIVED_SOURCE_SQL = "source like 'curation-%'"
 LINKS_PER_ROW = 4                       # the tool result rides the model's context; a traversal has
 LINK_TEXT_CHARS = 120                   # no floor, so the read is bounded like Mind's own read is
 WORD_RE = re.compile(r"\w{2,}", re.UNICODE)
+AGG_RE = re.compile(r"\b(how many|how much|all the|every|in total|altogether|list (all|my|the)"
+                    r"|which .*(first|last|earliest|latest)|first .*(came|arrived|attended|bought)"
+                    r"|count (the|my|all))\b", re.I)   # counting shapes: the tail shows more rows
 MAX_QUERY_WORDS = 12                    # a MATCH over more words than these stops being a query and becomes noise
 AGE_SCALE_DAYS = 90.0                   # recency half-life-ish: exp(-age_days / this) feeds the ranking blend
 RRF_K = 1.0                             # reciprocal-rank fusion constant, a module constant so a probe can
@@ -497,6 +500,23 @@ MEMORY_OFF_NOTICE = (
     "seen. RULE: before answering \"I don't know\" about anything the user might have said - or "
     "you might have been told - call memory_search at least once: ask with words (q), or call "
     "catalog:true to read the map of shelves.")
+
+
+def content_words(query: str, cap: int = 12) -> list[str]:
+    """The query's CONTENT words, once, in order: >= 4 characters, not STOP, deduplicated, capped.
+    The same vocabulary `coverage_gap` uses, so the block header, the tool payload and the ranking
+    term all mean the same thing by "what the query asked for"."""
+    return list(dict.fromkeys(w for w in WORD_RE.findall((query or "").lower())
+                              if len(w) >= 4 and w not in STOP))[:cap]
+
+
+def term_cover(text: str, words: list[str]) -> float:
+    """Fraction of `words` this row's text uses - 4-character prefix, the plurals rule from
+    coverage_gap. 1.0 means the row carries everything the question named."""
+    if not words:
+        return 1.0
+    t = (text or "").lower()
+    return sum(1 for w in words if w[:4] in t) / len(words)
 
 
 def coverage_gap(query: str, texts, limit: int = 3) -> str:
@@ -1062,7 +1082,9 @@ class MemoryService:
                  block_doc_cap: int = 1200,
                  expose_window: int = 0, expose_step: float = 0.0, expose_cap: int = 3,
                  route_shelves: bool = False, route_demote: float = 0.0,
-                 derived_weight: float = 1.0, block_cover_terms: int = 0):
+                 derived_weight: float = 1.0, block_cover_terms: int = 0,
+                 cover_weight: float = 0.0, proof_weight: float = 0.0,
+                 turn_recall_agg: int = 0):
         self.directory = memory_dir(directory)      # absolute, created 0700 - same rules as slot_save_path
         # STORAGE (ADR-002 native rebase, 2026-10-16): PostgreSQL, no SQLite anywhere. Production
         # OWNS its cluster under <dir>/pgdata - a unix socket inside the data dir, so the store
@@ -1120,6 +1142,18 @@ class MemoryService:
         # query's words that NO row in the list uses, so a two-entity question whose second entity is
         # absent stops being a licence to invent it. 0 = off = today's bytes; 3 is the measured arm.
         self.block_cover_terms = max(0, int(block_cover_terms))
+        # COVERAGE AND EVIDENCE, AS RANKING TERMS (2026-11-08, the Grok-judged packet + the panel
+        # shape). The panel's failures are not search failures: four topics return containment 1.00
+        # at rank 2-8 - the right row is FOUND and loses the top-1 race, and at RRF_K=1 the two arms'
+        # rank-1 votes tie exactly, so the winner is decided by a 1e-5 recency epsilon. Two terms the
+        # blend does not currently ask about: does the row carry the words the QUESTION used
+        # (cover_weight), and how many turns back this fact up (proof_weight, written by the merge
+        # path). Both default 0.0 = today's bytes.
+        self.cover_weight = max(0.0, float(cover_weight))
+        self.proof_weight = max(0.0, float(proof_weight))
+        # AGGREGATION-AWARE TAIL (2026-11-08): counting questions want every row, lookups want the
+        # best one. 0 = the tail cap is turn_recall_limit for every shape, exactly today.
+        self.turn_recall_agg = max(0, int(turn_recall_agg))
         self._route_stats = {"tries": 0, "picks": 0, "fallbacks": 0, "picked": {}}  # observability, see stats()
         # BROWSE LEDGER (2026-10-24, the venue-day scar): tool prints rode server stdout into the
         # double-click terminal and died with the window, so whether the model browsed at all became
@@ -1617,7 +1651,9 @@ class MemoryService:
                 if verdict and verdict[0] == "suppress":
                     self.conn.execute(
                         "update memories set updated_at=%s, confidence=greatest(confidence,%s), "
-                        "class=coalesce(nullif(class,''),%s) where id=%s",
+                        "class=coalesce(nullif(class,''),%s), "
+                        "provenance=jsonb_set(coalesce(provenance,'{}'::jsonb),'{proof}',"
+                        " to_jsonb(coalesce((provenance->>'proof')::int,1) + 1)) where id=%s",
                         (self._dt(now), conf, klass, verdict[1]))
                     self.conn.execute(
                         "insert into embeddings(id, vec, model) values(%s,%s,%s)"
@@ -2693,6 +2729,8 @@ class MemoryService:
                 bounds += f" and m.created_at {cmp_op} %s"
                 bparams.append(self._dt(float(v)))
         rows: list = []
+        cwords: list[str] = []
+        proofs: dict[int, int] = {}
         if match:
             # bm25 must SEE every candidate to RANK them - the old arm's limit*3 cut the candidate
             # set BY RANK, which only made sense while the rank was itself the law. The GIN probe
@@ -2753,6 +2791,12 @@ class MemoryService:
                 self.conn.commit()
             rows = self._bm25(cand, qtoks, dfm,
                               *self._bm25_stats(scopes, shelf, prefixes), limit)
+            if rows and (self.cover_weight or self.proof_weight):
+                # One round trip over the KEPT rows (limit*3), not the 4,000 candidates: the same
+                # law as _attach_provenance - read the decoration for what gets shown, not for
+                # everything the GIN probe proposed.
+                cwords = content_words(query) if self.cover_weight else []
+                proofs = self._proofs([r[0] for r in rows]) if self.proof_weight else {}
         if not rows and self.embedder is None:
             return []
         k = len(rows)
@@ -2760,6 +2804,8 @@ class MemoryService:
         out = []
         for pos, r in enumerate(rows):
             fresh = math.exp(-max(0.0, now - self._ep(r[4])) / 86400.0 / AGE_SCALE_DAYS)
+            cover = term_cover(r[2], cwords) if cwords else 1.0
+            proof = proofs.get(r[0], 1)
             # SCALED TO THE FUSION (audit 2026-11-07): the block floor is ONE number read by both
             # arms, and the two scales disagreed - for k=8 the lexical blend ran 1.07..0.41 across
             # ranks 1-8 while the fused arm ran 0.500..0.111, so block_min_score 0.15 (this box)
@@ -2768,6 +2814,10 @@ class MemoryService:
             # Dividing by the blend's own ceiling (0.75 + 0.25 + 0.10) puts rank 1 near 1.0 on both
             # scales; the ORDER is untouched, so every block's bytes are stable.
             score = (0.75 * ((k - pos) / k) + 0.25 * fresh + 0.10 * r[3]) / 1.10
+            if self.cover_weight:
+                score *= 1.0 + self.cover_weight * cover
+            if self.proof_weight and proof > 1:
+                score *= 1.0 + self.proof_weight * min(3.0, proof - 1.0)
             out.append(dict(id=r[0], scope=r[1], text=r[2], score=round(score, 4),
                             lex_rank=pos + 1,          # position in the bm25 list, BEFORE the blend
                             confidence=r[3], hits=r[6],  # the memory_search tool shows both; they were
@@ -2830,6 +2880,19 @@ class MemoryService:
                     h["score"] = round(float(h["score"] or 0.0) * d, 6)
         if d < 1.0:
             hits.sort(key=lambda x: -x["score"])
+
+    def _proofs(self, ids: list[int]) -> dict[int, int]:
+        """{row id: proof count} - how many turns this fact is backed by. The merge path writes it
+        (a suppressed near-dupe and a supersede both add one), so a belief the user said five times
+        is not the same claim as one the harvest inferred once. Rows with no count read as 1."""
+        if not ids:
+            return {}
+        with self.lock, _rollback_on_error(self.conn):
+            got = self.conn.execute(
+                "select id, coalesce((provenance->>'proof')::int, 1) from memories"
+                " where id = any(%s)", (ids,)).fetchall()
+            self.conn.commit()
+        return {r[0]: int(r[1] or 1) for r in got}
 
     def _attach_provenance(self, hits: list[dict]) -> None:
         """Put each returned hit's provenance on it - one round trip, `limit` rows.
@@ -3491,7 +3554,10 @@ class MemoryService:
         # INSIDE the helper so the tail's fail-open fires on "nothing NEW", exactly as the
         # 2026-10-17 law worded it.
         hits = self._router_search(q, scope, classes, semantic, exclude=set(seen))
-        hits = hits[:self.turn_recall_limit]
+        cap = self.turn_recall_limit
+        if self.turn_recall_agg > self.turn_recall_limit and AGG_RE.search(q or ""):
+            cap = self.turn_recall_agg      # a counting question is shown more rows, not better ones
+        hits = hits[:cap]
         if not hits:
             self._pin(key, ("", []))                # the miss is pinned too: same message, same nothing
             return None, []
@@ -3615,6 +3681,8 @@ class MemoryService:
                 "facts": memories - doc_chunks, "doc_chunks": doc_chunks,
                 "trust_tier": {"weight": self.derived_weight, "derived_rows": derived_rows},
                 "block_cover_terms": self.block_cover_terms,
+                "rank_terms": {"cover": self.cover_weight, "proof": self.proof_weight},
+                "turn_recall_agg": self.turn_recall_agg,
                 "by_scope": by_scope, "by_class": by_class,
                 "turns": turns, "turns_pending": pending, "inject": self.inject,
                 "max_memories": self.max_memories, "invalid": invalid,
@@ -4215,6 +4283,9 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         route_demote=num("route_demote", 0.0, float),
         derived_weight=num("derived_weight", 1.0, float),   # the trust tier: 1.0 = today's bytes
         block_cover_terms=num("block_cover_terms", 0),      # 0 off, 3 = the coverage line
+        cover_weight=num("cover_weight", 0.0, float),       # the coverage ranking term
+        proof_weight=num("proof_weight", 0.0, float),       # the evidence-count ranking term
+        turn_recall_agg=num("turn_recall_agg", 0),          # the tail cap for counting questions
         block_position=str(mcfg.get("block_position") or "head"),
         cache_entries=num("cache_entries", 64),
         embedder=(embedder if embedder is not None else (mcfg.get("embedder") or None)),
