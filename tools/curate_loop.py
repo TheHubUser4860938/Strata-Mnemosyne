@@ -801,8 +801,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8005")
     ap.add_argument("--limit", type=int, default=0, help="max turns this run (0 = all pending)")
-    ap.add_argument("--window", type=int, default=60,
-                    help="turns per extract-score-mark window (card and crash radius advance one window at a time)")
+    ap.add_argument("--window", type=int, default=150,
+                    help="turns per extract-score-mark window (card and crash radius advance one window at a time). "
+                         "60 was the 2026-10-24 unit of work; a 1,200-turn day outruns 2 windows x 60 at one tick "
+                         "per 30 min (the median said->written is 6.92 h), and the window's own cost is one extract "
+                         "ask per turn plus 3 cold passes per candidate, so the ceiling is the engine's quiet, not the loop")
     ap.add_argument("--passes", type=int, default=3, help="cold passes per candidate (>= 3 protocol)")
     ap.add_argument("--max-facts", type=int, default=2, help="candidate facts extracted per turn")
     ap.add_argument("--sweep", action="store_true", help="idle-gated batches (hot-loop shape)")
@@ -1265,6 +1268,11 @@ def main():
             n = 0
             new_facts: list[str] = []
             for ln in ans.splitlines():
+                if n >= a.max_facts:
+                    # --max-facts was ADVISORY (audit 2026-11-07): the prompt says "up to k" and the
+                    # loop capped nothing, so the live histogram ran 0..4 against a default of 2 and
+                    # the sweep's cost per turn was the model's mood, not the setting.
+                    break
                 c = parse_extract_line(ln, t["user"], t["assistant"])
                 if c is None:
                     continue

@@ -12314,6 +12314,17 @@ int main(int argc, char** argv) {
                 return true;
             }
         };
+        // The grid is ABSOLUTE (audit 2026-11-07): a checkpoint lands at each multiple of
+        // prompt_cache_every counted from token 0, so the next turn of one conversation reads a
+        // prefix whose checkpoint list is a SUPERSET of the turn before it - which is exactly what
+        // drop_superseded compares. On the old resume-relative grid the two turns' deepest
+        // checkpoints almost never matched, so `dropped superseded copy` fired 0 times across 202
+        // parks and 4 of 6 slots held copies of ONE conversation; --conversation-cache-park-gain
+        // reads the same equality and was inert for the same reason. Cost: at most one extra
+        // checkpoint per turn, at the boundary the turn's own read crosses.
+        auto pp_next_grid = [](int64_t at, int64_t every) {
+            return every > 0 ? (at / every + 1) * every : INT64_MAX;
+        };
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
         bool pp_tail_saved = false;
         // #471: the position the prompt pass has read up to (a chunk's or a window's end): what a request cancelled
@@ -12623,7 +12634,15 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: checkpoint at %lld skipped: its state could not be copied out (see "
                                          "above); the request goes on without it\n", (long long) done);
                 }
-                if (periodic_checkpoint) pp_next_check = done + o.prompt_cache_every;
+                // The ABSOLUTE grid: the next multiple of prompt_cache_every counted from token 0,
+                // not from where this request resumed (audit 2026-11-07). A resume-relative grid
+                // shifted by however much the conversation grew, so turn N+1's checkpoint ids were
+                // almost never turn N's, drop_superseded's equality never matched, and the pool kept
+                // several copies of ONE conversation - 4 of 6 slots on the 2026-11-07 diagnosis, and
+                // `dropped superseded copy` fired 0 times on a 202-park boot. Each dropped copy is
+                // ~16.3 KiB/token of window. Cost: at most one extra checkpoint per turn.
+                if (periodic_checkpoint)
+                    pp_next_check = pp_next_grid(done, o.prompt_cache_every);
                 if (tail_checkpoint) pp_tail_saved = true;
             }
             return true;
@@ -16915,7 +16934,7 @@ int main(int argc, char** argv) {
             pp_reached = read_from;
             pp_exact = true;   // a restore, a checkpoint mount or a zeroed session: the state is exactly at read_from
             pp_t0 = r0;
-            pp_next_check = reread_to > 0 || !req_ckpt ? INT64_MAX : resume + o.prompt_cache_every;   // ckpt=0: none
+            pp_next_check = reread_to > 0 || !req_ckpt ? INT64_MAX : pp_next_grid(resume, o.prompt_cache_every);   // ckpt=0: none
             pp_tail_saved = reread_to > 0 || !req_ckpt;   // ckpt=0 (#861): no tail checkpoint either
             {
                 std::lock_guard<std::mutex> lk(part_mu);

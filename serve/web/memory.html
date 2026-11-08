@@ -52,6 +52,9 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
     <input id="klass" placeholder="class (POL,USR)" style="width:140px" list="shelves">
     <button id="search" class="primary">Search</button>
     <button id="browse">Browse recent</button>
+    <label class="small" style="display:flex;align-items:center;gap:6px;margin-left:auto">
+      <input type="checkbox" id="inval" style="width:auto"> superseded
+    </label>
   </div>
   <datalist id="scopes"></datalist>
   <datalist id="shelves"></datalist>
@@ -77,12 +80,13 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
 <div class="cards">
   <div class="card"><div class="label">Cartridge</div><div class="value" id="c-state">-</div><div class="small" id="c-sub"></div></div>
   <div class="card"><div class="label">Carts</div><div class="value" id="c-carts">-</div><div class="small" id="c-cartsub"></div></div>
-  <div class="card"><div class="label">Standing text</div><div class="value" id="c-facts">-</div><div class="small" id="c-factsub"></div></div>
+  <div class="card"><div class="label">Standing text</div><div class="value" id="c-facts">-</div><div class="small" id="c-factsub"></div>
+    <div class="small" style="margin-top:8px"><button id="tierflip" title="tier-2 carries the five standing files; tier-3 carries the shelved facts as text">Switch tier</button></div></div>
   <div class="card"><div class="label">Index</div><div class="value" id="c-index">-</div><div class="small" id="c-indexsub"></div></div>
   <div class="card"><div class="label">Re-seed window</div><div class="value" id="c-window">-</div><div class="small" id="c-windowsub"></div></div>
 </div>
 <div class="panel">
-  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Slot vault</h2><button id="reseed" hidden>Reseed cartridge</button><span class="small" id="vaultnote">one standing cartridge per engine pin; the rest are bench slot saves</span></div>
+  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Slot vault</h2><button id="reseed" hidden>Reseed cartridge</button><button id="purge" hidden title="Delete bench slot saves older than 7 days; the standing cart and the applied file stay">Clear old saves</button><span class="small" id="vaultnote">one standing cartridge per engine pin; the rest are bench slot saves</span></div>
   <ul class="facts" id="files"><li class="empty">Loading...</li></ul>
 </div>
 <div class="panel">
