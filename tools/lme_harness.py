@@ -332,7 +332,7 @@ def load_map(map_path: str) -> dict[str, dict[int, tuple[bool, str]]]:
 def run(url: str, data: list[dict], out_path: str, repeats: int, k: int, types: set,
         skip_ingest: bool, use_judge: bool, muted_control: bool, limit: int,
         style: str = "direct", map_path: str | None = None, no_embedder: bool = False,
-        browse: bool = False, log=print) -> dict:
+        browse: bool = False, per_type: int = 0, log=print) -> dict:
     done, map_path = {}, map_path or out_path + ".map"
     try:
         for line in open(out_path):
@@ -355,9 +355,12 @@ def run(url: str, data: list[dict], out_path: str, repeats: int, k: int, types: 
                 qtype = "abstention"
             if types and qtype not in types:
                 continue
+            if per_type and seen_type.get(qtype, 0) >= per_type:
+                continue
             scope = f"lme_{qid}"
             if len(done.get(qid, ())) >= repeats:
                 continue
+            seen_type[qtype] = seen_type.get(qtype, 0) + 1
             if qid in maps:
                 where = maps[qid]
             elif skip_ingest:
@@ -460,6 +463,9 @@ def main(argv=None) -> int:
     ap.add_argument("--skip-ingest", action="store_true", help="rows already in the store")
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--muted-control", action="store_true", help="also ask each question cold")
+    ap.add_argument("--per-type", type=int, default=0,
+                    help="take the first N of EVERY question_type (7 covers all 7 types: a stratified"
+                         " 49-question panel; --limit alone reads one type all the way down)")
     ap.add_argument("--no-embedder", action="store_true",
                     help="the LEXICAL arm (arm C1): sends X-Strata-Memory-Embedder: off on every "
                          "recall and ask, so both arms run against ONE store, ONE vector set and "
@@ -488,7 +494,7 @@ def main(argv=None) -> int:
               "on a dedicated venue store - the oracle set alone is ~6k rows", file=sys.stderr)
     got = run(a.url, data, a.out, a.repeats, a.recall_k, {t.strip() for t in a.types.split(",")
             if t.strip()}, a.skip_ingest, not a.no_judge, a.muted_control, a.limit, a.style, a.map_path,
-                   no_embedder=a.no_embedder, browse=a.browse)
+                   no_embedder=a.no_embedder, browse=a.browse, per_type=a.per_type)
     with open(a.out + ".metrics.json", "w") as f:                  # the venue record
         json.dump({"data": a.data, "url": a.url, "repeats": a.repeats, "recall_k": a.recall_k,
                    "muted_control": a.muted_control, "style": a.style, "browse": a.browse,
