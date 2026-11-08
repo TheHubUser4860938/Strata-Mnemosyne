@@ -60,7 +60,12 @@ YES_NO = re.compile(r"\b(yes|no)\b", re.I)
 RATE = {"grok-4.7": (2.0, 6.0), "grok-4.6": (2.0, 6.0), "grok-4.3": (1.25, 2.50),
         "grok-4.20-0309-non-reasoning": (1.25, 2.50), "grok-4.20-0309-reasoning": (1.25, 2.50)}
 # The packet's one-line instruction per group: the paper's core rule, verbatim, above its items.
-RULE_ONLY = re.compile(r"^I will give you.*?Answer yes or no only\.", re.S)
+# The template is `core + tail`, and the tail begins with a blank line then "Question:" - so that
+# is the seam. (The first version matched `^I will give you.*?Answer yes or no only\.`: that
+# sentence sits at the END of every template, so the non-greedy match swallowed the whole prompt
+# and each item kept only the bytes past the FIRST item's length - item 1 rendered empty, item 2
+# rendered "it earlier than the time management workshop...", and Grok judged exactly that.)
+RULE_SEAM = "\n\nQuestion: "
 
 
 def verdict(text: str) -> tuple[bool, bool]:
@@ -135,31 +140,42 @@ def emit_packet(items: list, path: Path) -> None:
            "the Correct Answer under the rules of its group, else `no`. Reply with one line per "
            "item, numbered, and nothing else - `<number>. yes` or `<number>. no`.", ""]
     for t in sorted(by, key=lambda k: -len(by[k])):
-        head = RULE_ONLY.match(by[t][0]["prompt"])
-        out += [f"## {t}  ({len(by[t])} items)", "",
-                head.group(0) if head else "Answer yes if the response contains the correct answer.",
-                ""]
+        rule, _, _ = by[t][0]["prompt"].partition(RULE_SEAM)
+        out += [f"## {t}  ({len(by[t])} items)", "", rule.strip(), ""]
         for it in by[t]:
-            body = it["prompt"][head.end():].strip() if head else it["prompt"]
-            out += [f"{it['n']}. {body.replace(chr(10), ' ')}", ""]
+            _, seam, body = it["prompt"].partition(RULE_SEAM)   # the tail only: Question/Answer/Response
+            out += [f"{it['n']}. {seam.strip()} {body.strip().replace(chr(10), ' ')}", ""]
     path.write_text("\n".join(out), encoding="utf-8")
     Path(str(path) + ".items.json").write_text(
         json.dumps([{k: it[k] for k in ("n", "question_id", "repeat", "type", "gold_row")}
                     for it in items], indent=1))
 
 
-def parse_reply(path: Path) -> dict[int, bool]:
+def parse_reply(path: Path, n_items: int = 0) -> dict[int, bool]:
     """{item number: verdict} from a saved chat reply. Last yes/no on the line wins, so
     "3. yes, because the answer names the webinar" reads as yes and a self-correcting line
-    ("7. no - yes") reads as the correction."""
+    ("7. no - yes") reads as the correction.
+
+    Two shapes a judge really produces: numbered lines (what the packet asks for) and a BARE list
+    of yes/no in item order - Grok answered that way on 2026-11-08. When no line carries a number,
+    the list is read positionally, which is exactly why the packet numbers its items in one global
+    sequence and the sidecar records them in the same order."""
     got: dict[int, bool] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for i, line in enumerate(lines):
         m = re.match(r"\s*(?:\*\*)?(\d{1,4})\s*(?:[.):]\s*)?(.+)$", line)
         if not m:
             continue
         v, _ = verdict(m.group(2))
         got[int(m.group(1))] = v
-    return got
+    if got or not n_items:
+        return got
+    # a bare list: every line that says yes or no, in order, read against the packet's own sequence
+    seq = [verdict(l)[0] for l in lines if YES_NO.search(l)]
+    if len(seq) < n_items:
+        print(f"[rejudge] reply has {len(seq)} verdicts for {n_items} items - the short tail counts no",
+              file=sys.stderr)
+    return {i + 1: v for i, v in enumerate(seq[:n_items])}
 
 
 def main() -> int:
@@ -216,7 +232,7 @@ def main() -> int:
                   file=sys.stderr)
             return 2
         want = {it["n"]: it for it in json.loads(side.read_text())}
-        got = parse_reply(Path(a.parse_reply))
+        got = parse_reply(Path(a.parse_reply), len(want))   # a bare yes/no list is read in order
         miss = sorted(set(want) - set(got))
         for n, ok in got.items():
             it = want.get(n)
@@ -328,8 +344,9 @@ def main() -> int:
     }
     Path(str(dest) + ".metrics.json").write_text(json.dumps(rep, indent=1))
     print(json.dumps(rep, indent=1))
-    if not a.parse_reply:
-        dest.write_text("\n".join(json.dumps(o, ensure_ascii=False) for o in done.values()) + "\n")
+    dest.write_text("\n".join(json.dumps(o, ensure_ascii=False) for o in done.values()) + "\n")
+    # the web arm's record IS the reply, so the merged verdicts are written too: a reader can check
+    # any number against the line it came from without re-reading the chat.
     return 0
 
 
