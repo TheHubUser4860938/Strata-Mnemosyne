@@ -93,6 +93,10 @@ function headers(json = false) {
   const h = {};
   if (apiKey) h.Authorization = "Bearer " + apiKey;
   if (json) h["Content-Type"] = "application/json";
+  // The graft lever, on the page at last (audit 2026-11-07, item 9): a cart name in
+  // Settings > Graft rides every ask, and the answer starts on that cart's saved STATE instead of
+  // re-reading its text into the prompt. Empty (the default): every byte as today.
+  if (json && settings && settings.graft) h["X-Strata-Carts-Graft"] = settings.graft;
   return h;
 }
 $("api-key").value = apiKey;
@@ -825,6 +829,7 @@ function markdown(text) {
 // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
 // values untouched counts as "not set" too.
 const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: false,
+                  graft: "",
                   chatList: false, chatEdit: false, whileBusy: "wait"};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {
@@ -1471,11 +1476,26 @@ function openDrawer(open) {
   if (open) { loadDrawer(); loadShared(); loadMcp(); }
 }
 const checked = (id) => $(id).getAttribute("aria-checked") === "true";
+async function loadGraftNames() {
+  // The datalist offers what the LEDGER holds; a store that is off, or a page that cannot reach it,
+  // leaves the box free-typed rather than empty (an absent thing is never silently "not enough").
+  try {
+    const r = await fetch("memory?limit=1", {headers: headers(), cache: "no-store"});
+    if (!r.ok) return;
+    const carts = ((await r.json()).stats || {}).carts || [];
+    $("graft-names").innerHTML = carts.filter(c => c.state !== "retired" && c.file_exists !== false)
+      .map(c => `<option value="${esc(c.name)}"></option>`).join("");
+  } catch (e) { /* the store is off: the field still takes a typed name */ }
+}
 const segValue = (id) => { const b = [...$(id).children].find((x) => x.getAttribute("aria-checked") === "true"); return b ? b.dataset.v : null; };
 function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
+  if ($("s-graft")) $("s-graft").value = s.graft || "";   // the graft lever (memory-core): a cart
+  // name here rides X-Strata-Carts-Graft, so the ask STARTS on that cart's saved state instead of
+  // its text - the one lever with no UI until now (audit 2026-11-07, item 9). Empty = today.
+  if ($("graft-names") && !$("graft-names").children.length) loadGraftNames();
   $("s-math").setAttribute("aria-checked", String(!!s.math));
   $("s-show").setAttribute("aria-checked", String(!!s.show));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
@@ -1548,6 +1568,7 @@ $("s-apply").onclick = async () => {
   settings = {thinking: segValue("s-thinking") || "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
+              graft: ($("s-graft") ? $("s-graft").value.trim() : ""),
               chatList: locked ? !!prev.chatList : checked("s-list"), chatEdit: locked ? !!prev.chatEdit : checked("s-edit"),
               whileBusy: segValue("s-busy") || "wait"};
   store.set("sampling", settings);

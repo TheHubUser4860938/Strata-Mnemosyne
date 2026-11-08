@@ -40,7 +40,12 @@ function factRow(m) {
   const cls = m.class ? `<span class="chip cls">${esc(m.class)}</span>` : `<span class="chip">wild</span>`;
   li.innerHTML = `<div class="body"><div class="txt">${esc(readable(m.text, m.class))}</div>
     <div class="meta">#${m.id} · ${cls}<span class="chip">${esc(m.scope || "default")}</span>
-      conf ${Number(m.confidence ?? 1).toFixed(2)} · ${m.hits || 0} recall${m.hits === 1 ? "" : "s"} · ${when(m.updated_at || m.created_at)}</div></div>`;
+      conf ${Number(m.confidence ?? 1).toFixed(2)} · ${m.hits || 0} recall${m.hits === 1 ? "" : "s"} · ${when(m.updated_at || m.created_at)}</div>
+    ${m.invalid_at ? `<div class="meta"><span class="chip stale">superseded ${when(m.invalid_at)}</span>${
+        m.superseded_by ? `by <a href="#fact-${m.superseded_by}" style="color:inherit">#${m.superseded_by}</a>` : ""
+      }</div>` : ""}
+    ${m.links ? `<div class="meta">${m.links.map(l =>
+        `<span class="chip${l.kind === "contradicts" ? " stale" : " cls"}">${esc(l.direction === "incoming" ? "←" : "→")}${esc(l.kind)} #${l.id}</span>`).join("")}</div>` : ""}</div>`;
   const btn = document.createElement("button");
   btn.textContent = "Forget";
   btn.onclick = async () => {
@@ -66,7 +71,8 @@ async function show(q, repeat) {
       render(d.hits || [], `${(d.hits || []).length} hit${(d.hits || []).length === 1 ? "" : "s"} for “${q}”`,
              d.scope);
     } else {
-      const p = new URLSearchParams({ limit: "50", docs: "1" });   // the ledger rides the stats card
+      const p = new URLSearchParams({ limit: "50", docs: "1", links: "1" });   // the ledger rides the stats card
+      if ($("inval") && $("inval").checked) p.set("include_invalid", "1");      // the scar, on demand
       if ($("scope").value.trim()) p.set("scope", $("scope").value.trim());
       if ($("klass").value.trim()) p.set("class", $("klass").value.trim());
       const d = await api(`/memory?${p}`);
@@ -299,6 +305,36 @@ $("reseed").onclick = async () => {
   catch (e) { note(e.message, true); }
   $("reseed").disabled = false;
 };
+// The vault's pen (audit 2026-11-07, item 9): the C-series and the venue days left ~500 MB of bench
+// slot saves in the vault and nothing on any page could clear them. Seven days: older than a working
+// week, newer than the pins that would want them.
+$("purge").onclick = async () => {
+  if (!confirm("Delete the vault's bench slot saves older than 7 days?\nThe standing cart and the file this engine applied stay.")) return;
+  $("purge").disabled = true;
+  try {
+    const r = await api("/memory", { op: "cartridge", purge_older_than_s: 7 * 86400 });
+    const g = ((r.cartridge || {}).files) || [];
+    note("");
+    $("addnote").textContent = g.length
+      ? `cleared ${g.length} save${g.length === 1 ? "" : "s"} · ${(r.cartridge.freed_mb || 0).toFixed(0)} MB freed`
+      : "nothing older than 7 days";
+    const d = await api(`/memory?limit=1`); STATS = d.stats || STATS; renderCart();
+  } catch (e) { note(e.message, true); }
+  $("purge").disabled = false;
+};
+// tier-2 as a flip switch, not a config edit: facts:false stands the five files, facts:true stands
+// the shelved facts. One call re-seeds; the config write beside it is what survives a reboot.
+$("tierflip").onclick = async () => {
+  const want = !(STATS.cartridges && STATS.cartridges.facts_mode === true);
+  $("tierflip").disabled = true;
+  try {
+    await api("/memory", { op: "cartridge", facts: want });
+    try { await api("/config", { set: { "memory.cartridges.facts": want } }); } catch (_) { /* no config file: the live flip stands */ }
+    const d = await api(`/memory?limit=1`); STATS = d.stats || STATS; renderCart();
+  } catch (e) { note(e.message, true); }
+  $("tierflip").disabled = false;
+};
+$("inval").onchange = () => show(lastView.q);
 $("key").onclick = () => {
   const k = prompt("API key for this server (blank for none):", apiKey);
   if (k === null) return;

@@ -8342,6 +8342,33 @@ class Cartridges:
             print(f"[strata] carts: row zero not registered ({type(e).__name__}: {str(e)[:80]})",
                   flush=True)
 
+    def purge(self, older_than_s: float) -> dict:
+        """Delete the vault's bench slot saves older than `older_than_s` (the page's vault control,
+        audit 2026-11-07 item 9). The standing cart and the file THIS engine has applied always
+        survive: they are the warm prefix, and deleting the applied file costs a re-seed on the next
+        request. Returns what went and what it freed."""
+        vault = self.svc.slot_save_path or ""
+        cut = time.time() - max(0.0, float(older_than_s))
+        gone, freed = [], 0
+        with self.lock:
+            try:
+                entries = [e for e in os.scandir(vault) if e.is_file(follow_symlinks=False)]
+            except OSError:
+                return {"files": [], "freed_mb": 0, "error": "the vault is not readable"}
+            for e in sorted(entries, key=lambda e: e.stat().st_mtime):
+                if e.name in (self.applied, self.file):
+                    continue                     # the warm prefix and the cart that makes it
+                st = e.stat()
+                if st.st_mtime > cut:
+                    continue
+                try:
+                    os.remove(e.path)
+                except OSError:
+                    continue
+                gone.append({"name": e.name, "mb": round(st.st_size / 1048576, 1)})
+                freed += st.st_size
+        return {"files": gone, "freed_mb": round(freed / 1048576, 1)}
+
     def reseed(self):
         with self.lock:
             self.build()
@@ -10555,7 +10582,8 @@ def make_handler(svc: Service):
                              "memories": svc.memory.list_memories(scope=memory_api.scope_name(scope, "") or None,
                                                                   limit=limit, include_invalid=inv not in ("", "0"),
                                                                   klass=(prefixes or [None])[0],
-                                                                  before_id=(qs.get("before_id") or [""])[0] or None)})
+                                                                  before_id=(qs.get("before_id") or [""])[0] or None,
+                                                                  links=(qs.get("links") or [""])[0] not in ("", "0"))})
 
         def _reason_get(self):
             """The fork's reason modes (server-side steering of the DavidAU template): what THIS
@@ -10826,7 +10854,19 @@ def make_handler(svc: Service):
             elif op == "cartridge":                               # M3b: rebuild the standing text and re-seed now
                 if svc.cartridges is None:
                     raise ValueError("cartridges are off (memory.cartridges.enabled in the config)")
-                r = {"cartridge": svc.cartridges.reseed()}
+                # The page's two levers (audit 2026-11-07, item 9): the tier toggle and the vault.
+                # `facts` is the SAME switch as memory.cartridges.facts - it flips the live object
+                # and re-seeds in one call, so the box does not need a reboot to change tiers; the
+                # page writes the config beside it so the choice survives. `purge_older_than_s`
+                # deletes the bench slot saves the C-series and the venue days left behind: the
+                # standing cart and the file currently applied always survive.
+                res = {}
+                if req.get("facts") is not None:
+                    svc.cartridges.facts = bool(req["facts"])
+                    res["facts"] = svc.cartridges.facts
+                if req.get("purge_older_than_s") is not None:
+                    res["purged"] = svc.cartridges.purge(float(req["purge_older_than_s"] or 0))
+                r = {"cartridge": {**svc.cartridges.reseed(), **res}}
             elif op == "docs":            # the document index (2026-10-31): a folder of text files
                 # becomes chunk rows on a DOC/<CORPUS> shelf - text + routing, the file stays the
                 # territory, the store keeps the map, and a rescan re-chunks only what moved.
@@ -13214,7 +13254,13 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                 print("[strata] memory: cartridges need slot_save_path - staying off", flush=True)
             else:
                 svc.cartridges = Cartridges(svc, cart_cfg)
-                if not _memory_switch_off(cart_cfg.get("minted", True)):   # S3 (2026-10-25):
+                if not _memory_switch_off(cart_cfg.get("minted", False)):   # S3 (2026-10-25):
+                    # The default is OFF on this branch (the owner's ruling, 2026-10-30: episode carts
+                    # cost 6,981x their text to hold and 2,048 cells to read). The standing cart is
+                    # untouched by this; a box that wants the mint pipeline says `"minted": true`.
+                    # (The `retire-episode-carts` branch carries the same ruling with two extra
+                    # commits; merging it costs three conflicts, so the ruling landed here - the
+                    # branch stays as the record.)
                     svc.carts = CartMinter(svc, cart_cfg)   # the mint pipeline stands WITH the
                                                            # cart; minted:false opts out by any
                                                            # honest spelling (audit finding 13)
