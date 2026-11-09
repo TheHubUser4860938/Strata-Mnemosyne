@@ -6,28 +6,30 @@ itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one s
 harness ever has to re-send history. The server remembers, and it remembers the same way no
 matter which app is knocking.
 
-This fork is based on upstream Strata 0.2.11 — app and Terminal at 0.2.11, Control and every
-engine package at 0.1.57. Upstream's own headline list for this round: **Unsloth's Dynamic v3.1
-Qwen3.8-Flash-Next files** — seven new sets from 68 GB (UD-IQ1_M) to 93.7 GB (UD-IQ4_XS-v31), each
-checked by size and SHA-256 against Unsloth's revision d9620119, with a new Q5_0 expert format whose
-dot math Strata computes closer to exact than llama.cpp's (the difference from the exact result fell
-from 2.6-3.0% to 1.2-1.3%); **prompts 22 to 38% faster on NVIDIA cards of compute capability 8.0 and
-up** (the K-quant prompt kernels are the default for the UD-Q4/Q5/Q6_K_XL files: RTX PRO 6000 +32.6%
-at a 32K prompt, decode unchanged, first-token KL 0.024), and a bare `--prefill auto` now reads in
-chunks of up to 32768 tokens (+21 to +43% on a streamed A6000); **the all-cards split engine +32.7%
-at eight users on four Radeon R9700 cards** (1 user +6.9%, a 103K prompt 8.1% sooner, 8 request slots
-by default, no `librccl` needed); **the FP16 weight cache for parallel requests** (+6.6% at eight
-users on an RTX PRO 5000, output bit-for-bit the same — 100 of 100 test combinations equal);
-**small multi-card starts walk down a list** (trim, step the KV window, spill the output head:
-2 x 8 GB now starts where 0.2.10 stopped after 71 s) **and chats are files** — each chat a
-`chats/<id>.json` in Strata's data folder with atomic temp-and-rename writes, no 5 MB limit, two
-windows seeing each other's changes. A privacy fix matters to a server that serves several clients
-at once: a reply could go to the wrong request when a model runs in more than one copy — 30 of 30
-forced hand-overs crossed on the old code, 30 of 30 clean on the new (#2892). The security bump:
-Pillow 13.0.0 (the JPEG 2000 decoder, GHSA-78g4-xqwv-q3g8). Going back to 0.2.10 is one step:
-`strata components rollback` returns the 0.1.56 engine, and Control stays 0.1.57. Every number in
-this paragraph is upstream's, from the
-[0.2.11 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.11). This fork adds the
+This fork is based on upstream Strata 0.2.13 — app and Terminal at 0.2.13, Control and every
+engine package at 0.1.59 (the 0.2.13.1 hotfix moves Control to 0.1.59.1 on Linux only, for Intel
+Arc). Upstream's own headline list for this round: **DFlash2 drafting, new defaults per card** —
+Strix Halo on UD-Q4_K_XL 46.6 to 49.1 tokens per second (+5.2%), RTX PRO 5000 72 GB on IQ3_S
+256-261 to 263-265 (+2.8%), the app's Load fetching the tuned drafter Auto picks (on an RTX PRO
+5000, 3 rounds of 12 prompts per kind: agent +10.1%, chat +4.8%, all +6.1%, output identical 72
+of 72); **the Strix Halo Terminal launch fixed** — UD-Q4_K_XL with pictures off was not ready
+after 308 s (and 594.8 s in a second test), it now starts in 60 to 85 s, on 22,991 expert-cache
+slots against 17,556; **Intel Arc output is now repeatable** — 50 of 50 runs identical on an A750
+against 3 to 5 different answers in 5 runs, at 0.995 to 1.004 of the old prompt speed; **the app
+starts in about half the time** — the main file 3.12 MB to 0.76 MB, the start screen 248.5 ms to
+143.4 ms (headless Chrome, median of 10); **on Linux the expert store loads again when free
+memory, the file cache or a reserved huge-page pool can hold it** (#5327, PR #5531 by pjgmobile —
+their 1M-context run went from 47 to 124 tokens per second); and **Qwen4 groundwork** — the signed
+feed can carry a model list, a model of a new shape gets its own engine download
+(`strata-q4-<shape>`), and `strata --geometry` prints the shape the kernels are built for.
+Settings the launcher used to write are now the engine's own defaults, so a plain engine start
+matches the app and the Terminal. Building an engine needs no llama.cpp download: the ggml sources
+are vendored in `third_party/strata-ggml` and `CMakeLists.txt` is split by backend. Eight finished
+experiments' `STRATA_*` switches are retired. Known: a first launch of a fresh install can take
+about 5.5 minutes in the one-time "Preparing your model" step; upstream did not find the cause.
+Going back is one step: `strata components rollback` returns the 0.1.58 engine, and Control stays
+0.1.59. Every number in this paragraph is upstream's, from the
+[0.2.13 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.13). This fork adds the
 memory system and the reason-mode steering described below.
 
 <p align="center">
@@ -59,6 +61,49 @@ git clone -b memory-core https://github.com/TheHubUser4860938/Strata-Mnemosyne.g
 cd Strata
 ```
 
+<details>
+<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.8-Flash-Next</b></summary>
+
+| Provider | Choices |
+| --- | --- |
+| **ISTA-DASLab · recommended** | Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S. [Coder: IQ1\_M](docs/MODELS.md#coder) for coding. |
+| **Unsloth** | UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0 |
+| **Gyro · agentionai** | [Gyro-S, Gyro-M](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF). Lower memory use but slower. |
+| **Other options** | [Swift 1.5](docs/MODELS.md#swift-15), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
+
+[Compare sizes, memory needs and compatibility](docs/MODELS.md).
+
+</details>
+
+<details>
+<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
+
+**Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. These are the currently documented packs for this model.
+
+[Model guide and compatibility](docs/QWEN36.md).
+
+</details>
+
+<details>
+<summary><img src="docs/media/models/deepseek.svg" width="22" alt="" align="middle"> &nbsp;<b>DeepSeekV4.1-Flash-1017</b></summary>
+
+In the **desktop app** and the **Terminal**. What does not fit in memory is read from your SSD, so it needs a lot of free
+disk space.
+
+| Set (ISTA-DAS) | Download | Free disk needed |
+| --- | ---: | ---: |
+| 1.75 bpw | 239 GB | about 245 GB |
+| 2.00 bpw | 257 GB | about 265 GB |
+| 2.25 bpw | 274 GB | about 280 GB |
+| ISTA-DAS Coder (half of the experts removed) | 191 GB | about 197 GB |
+
+Runs on NVIDIA RTX 30, 40 and 50 series (Windows and Linux), AMD Radeon AI PRO R9700 (Linux), AMD Ryzen AI Max — Strix Halo
+(Windows), and Apple Silicon Macs with 64 GB or more ([Mac](docs/DEEPSEEK_MAC.md)). Setup downloads the files and the DeepSeek engine, then starts the model.
+
+```sh
+strata launch --family deepseek41 --model ist-das-2.00bpw --plan
+```
+
 - **Runs on a gaming PC.** 32 GB of RAM and graphics memory together is enough to start.
 - **Works with your tools.** Claude Code, Codex CLI, OpenCode and other agents connect through the OpenAI and Anthropic APIs.
 - **Reads pictures**, on by default.
@@ -72,7 +117,7 @@ cd Strata
 
 <img width="1265" height="542" alt="image" src="https://github.com/user-attachments/assets/238eb87c-45f2-4be4-8cb8-91d922efbda8" />
 
-Version 0.2.11 (app and Terminal 0.2.11, Control and every engine package 0.1.57)
+Version 0.2.13 (app and Terminal 0.2.13, Control and every engine package 0.1.59)
 
 Two things arrive switched **on**, and everything else stays byte-identical to upstream Strata:
 
@@ -147,15 +192,17 @@ Download the file for your computer, open it, and press install on the model it 
 
 **Windows 10 / 11**
 
-[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.11-windows-x64-setup.exe)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.13-windows-x64-setup.exe)
+
+<sub>Files: `Strata-0.2.13-windows-x64-setup.exe` · `Strata-0.2.13-linux-x86_64.AppImage` · `Strata-0.2.13-macos-arm64.dmg`</sub>
 
 **Linux**
 
-[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.11-linux-x86_64.AppImage)
+[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.13-linux-x86_64.AppImage)
 
 **Mac** (Apple Silicon, macOS 15 or newer)
 
-[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.11-macos-arm64.dmg)
+[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.13-macos-arm64.dmg)
 
 The app picks the right engine for your graphics card by itself. All files are on the [releases page](https://github.com/Niko1221/Strata/releases/latest).
 

@@ -4,7 +4,7 @@
  * `capabilities.dflash2`; Metal and Intel engines and PCs without a supported card have none). Every other model has no dropdown at all: DeepSeek has no
  * MTP (its own DSpark drafter is chosen by the engine), and the other families have the MTP and nothing to pick against it (Settings > Draft layer turns it off).
  */
-export const DRAFTING_FAMILIES = ['qwen', 'gyro', 'unsloth'];
+export const DRAFTING_FAMILIES = ['qwen', 'gyro', 'unsloth', 'heretic'];
 
 /** The drafter a choice means for a family (one per run; strata_control/drafting.py choice_of): Auto is DFlash2 where the engine has it (`served`) and the family is one it was made for, else the MTP. */
 export function resolveDrafter(choice: string | null | undefined, family: string | null | undefined, served: boolean | null | undefined, split?: boolean | null): 'dflash2' | 'mtp' | 'off' {
