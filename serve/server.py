@@ -2304,7 +2304,7 @@ class StrataEngine:
         return f" pen_from={orig_len - 1}"
 
     @staticmethod
-    def sampling_keys(sampling: dict) -> str:
+    def sampling_keys(sampling: dict, split: bool = False) -> str:
         keys = ""
         t = sampling.get("temperature")
         if isinstance(t, (int, float)) and float(t) > 0.0:
@@ -2377,12 +2377,12 @@ class StrataEngine:
         # "strata_cart" (set by stand_on when a cart set rode the prompt): memory-core's fence (2026-10-28).
         # The engine parks THIS conversation in --conversation-cache-cart-slots, where only another cart can
         # evict it.  Absent = the shared pool, exactly as before; an engine without the fence skips the key.
-        if sampling.get("strata_cart"):
+        if sampling.get("strata_cart") and not split:      # the split engine's parser has no cart fence: dropped for it
             keys += " cart=1"
         # "strata_graft" (set by stand_on when X-Strata-Carts-Graft named a minted cart): the file's STATE is
         # staged ahead of this prompt and the request begins on it, where RAM proved no start of its own.
         # Absent = no graft, exactly as before; an engine without the lever skips the unknown key.
-        if sampling.get("strata_graft"):
+        if sampling.get("strata_graft") and not split:     # as the cart fence: the split engine's parser does not know it
             keys += " graft=1"
         # restore points (Service.prepare puts them in `_restore`; only the DeepSeek engine gets them)
         keys += StrataEngine.restore_keys(sampling)
@@ -2921,7 +2921,7 @@ class StrataEngine:
             raise EngineDied("the engine is unavailable; this request was not sent")
         self.progress, self.progress_ms, self.reused = None, 0, 0
         born = self.gen                                 # the engine process this request is sent to
-        keys = self.sampling_keys(sampling or {})
+        keys = self.sampling_keys(sampling or {}, split=self.split_engine)
         # logprobs: only an admission's token can have an LP line here (the slot's "BT" lines carry none), so the
         # server refuses these requests unless max_tokens is 1.  The lines go to the request itself, through its
         # cancel Event: several requests read control lines at once, and the engine's lp_lines is one attribute.
@@ -3462,13 +3462,13 @@ class StrataEngine:
         carry = NO_LINE                  # a line read for a token's LP line, held until it is used
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         rid_key = f" rid={rid}" if rid is not None else ""
-        head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key} {embeddings}" if embeddings else \
-            f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key}"
+        head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {}, split=self.split_engine)}{rid_key} {embeddings}" if embeddings else \
+            f"GEN {int(max_new)}{self.sampling_keys(sampling or {}, split=self.split_engine)}{rid_key}"
         if prefill_only:                                 # split serving (serve/split.py): read the prompt, make no token
             if int(max_new) != 0:
                 raise ValueError("prefill_only is a text prompt and max_new 0")
-            head = (f"GENI 0 prefill=1{self.sampling_keys(sampling or {})}{rid_key} {embeddings}" if embeddings
-                    else f"GEN 0 prefill=1{self.sampling_keys(sampling or {})}{rid_key}")
+            head = (f"GENI 0 prefill=1{self.sampling_keys(sampling or {}, split=self.split_engine)}{rid_key} {embeddings}" if embeddings
+                    else f"GEN 0 prefill=1{self.sampling_keys(sampling or {}, split=self.split_engine)}{rid_key}")
         try:
             if (sampling or {}).get("strata_graft"):
                 # stage and generate in ONE turn of the pipe: the FIFO is held here, so no other request can

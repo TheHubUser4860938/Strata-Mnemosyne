@@ -405,6 +405,18 @@ class DeleteModelTests(unittest.TestCase):
         self.root = base / "install"
         self.root.mkdir()
         self.data = base / "Strata-data"
+        # memory-core: the one-data-folder resolver (strata_control/datafolder.py, and Strata.data_dir's twin here)
+        # prefers the REMEMBERED settings.json, so on a dev box with a real data folder the scratch pack folder falls
+        # outside the allowed roots and the delete plan keeps it. Pin the settings file to this scratch tree: the
+        # plan is then the same on every PC (the fixtures-stop-reading-the-machine law, upstream 118e20757).
+        self.data.mkdir(parents=True, exist_ok=True)
+        settings = base / "xdg" / "strata" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({"data_dir": str(self.data)}), encoding="utf-8")
+        pinned = mock.patch.dict(os.environ, {"STRATA_SETTINGS_FILE": str(settings),
+                                              "XDG_CONFIG_HOME": str(base / "xdg"), "APPDATA": str(base / "appdata")})
+        pinned.start()
+        self.addCleanup(pinned.stop)
         spec = importlib.util.spec_from_file_location("strata_mcp_for_delete", ROOT / "tools" / "strata_mcp.py")
         self.mcp = importlib.util.module_from_spec(spec)
         with mock.patch.dict(os.environ, {"STRATA_CONTROL_INSTALL": "1", "STRATA_INSTALL_DIR": str(self.root)}):
