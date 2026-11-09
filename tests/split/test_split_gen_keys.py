@@ -16,7 +16,7 @@ ACCEPTED = {"temperature", "top_p", "top_k", "min_p", "penalty_repeat", "penalty
             "pcie_frac", "spec_min_p", "pipe", "aux_cpus", "cvec", "img_keys"}
 # keys the server does not send to a split engine: pen_from is dropped (StrataEngine.pen_from_key), logprobs / allowed / logit_bias are refused with a 400 first
 # (refuse_for_split, logit_bias.validate_request)
-DROPPED = {"pen_from"}
+DROPPED = {"pen_from", "cart", "graft"}   # memory-core: the cart fence and the graft ride the single-card engine; the split parser has no keys for them
 REFUSED = {"logprobs", "allowed", "logit_bias"}
 # keys only other engines are sent: the DeepSeek engine's restore points (STRATA_DS4_RESTORE_POINTS), the prefill-only request of serve/split.py, rid for several writers
 OTHER_ENGINES = {"marks", "tail", "shared", "prefill", "rid"}
