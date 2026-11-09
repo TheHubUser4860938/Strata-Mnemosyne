@@ -334,6 +334,12 @@ SET_DEFAULTS = {
     ("metal", "iq3_s"): SetDefault("mtp"),
     ("cuda", "iq3_s"): SetDefault("dflash2", True, None, "resident", big_blackwell_conf=0.55),
     ("cuda", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", True, None, "resident"),
+    # memory-core (the owner, 2026-11-09): this box's set — the Heretic v2 Swift 1.5 build (IQ4_NL) on a 4090 that
+    # streams its experts.  No upstream cell covers it, so the pack is UNMEASURED here: `where` "" (every CUDA card,
+    # not just the resident class) is the switch, and the conf stays the box's own (0.7) because tuned_conf is None.
+    # Measured on other cells: CUDA IQ3_S l620 x1.021, DGX Spark x1.032/x1.048, UD-IQ4_XS-v31 Spark x1.050, Metal
+    # +4.5%/+3.4% (tuned@0.7 vs stock@0.5), CUDA ids identical.  One line to remove if the A/B says otherwise.
+    ("cuda", "swift-1.5-flash-next-heretic-iq4_nl"): SetDefault("dflash2", True, None, ""),
     ("hip", "iq3_s"): SetDefault("dflash2", True, None, "gfx1151"),
     ("hip", "unsloth-ud-q4_k_xl"): SetDefault("dflash2", True, None, "gfx1151"),
     ("hip", "unsloth-ud-iq4_xs"): SetDefault("dflash2", True, None, "gfx1151"),
