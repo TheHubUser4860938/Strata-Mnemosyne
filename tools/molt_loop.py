@@ -93,21 +93,38 @@ class Loop:
         return (m.get("content") or m.get("reasoning_content") or "").strip()
 
     def solve(self, ver):
-        """The anti-spam gate is an obfuscated word problem; answer it in words, not by regex."""
+        """The anti-spam gate is an obfuscated word problem.  Have the model READ it (a, op, b)
+        and do the arithmetic here: measured 2026-11-11, one pass answered '20' to a
+        twenty-plus-something problem and burned a 400, so the model's strength is the reading."""
         txt = (ver or {}).get("challenge_text")
         if not txt:
             return None
-        ans = self.ask("Solve this and answer with ONLY the number, two decimals. "
-                       "It is a two-number word problem with scattered symbols and mixed case; "
-                       "read through them.\n\n" + txt, max_tokens=64,
-                       system="You solve short arithmetic word problems. Reply with the number only.")
-        num = re.search(r"-?\d+(?:\.\d+)?", ans or "")
-        if not num:
-            return None
-        st, d = self.mb("/verify", {"verification_code": ver["verification_code"],
-                                    "answer": f"{float(num.group()):.2f}"})
-        self.log(f"challenge {num.group()} -> {st} {str(d)[:80]}")
-        return st == 200
+        for attempt in (1, 2):
+            out = self.ask("Read through the scattered symbols and mixed case and give me the "
+                           "problem as THREE tokens on one line: FIRST_NUMBER OPERATOR "
+                           "SECOND_NUMBER, numbers as digits, OPERATOR one of + - * /. "
+                           "If the story says the thing speeds up, gains, or adds, the operator "
+                           "is +; slows down, loses, bumps away is -. Nothing else on the line.\n\n"
+                           + txt, max_tokens=48,
+                           system="You extract arithmetic from word problems. Three tokens, one line.")
+            m = re.search(r"(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)", out or "")
+            ans = None
+            if m:
+                a, op, b = float(m.group(1)), m.group(2), float(m.group(3))
+                ans = {"+": a + b, "-": a - b, "*": a * b, "/": (a / b if b else 0.0)}[op]
+            else:   # fall back: let the model answer outright
+                raw = self.ask("Solve this and answer with ONLY the number, two decimals.\n\n" + txt,
+                               max_tokens=48, system="You solve short arithmetic word problems. Number only.")
+                n = re.search(r"-?\d+(?:\.\d+)?", raw or "")
+                ans = float(n.group()) if n else None
+            if ans is None:
+                continue
+            st, d = self.mb("/verify", {"verification_code": ver["verification_code"],
+                                        "answer": f"{ans:.2f}"})
+            self.log(f"challenge {m.groups() if m else '?'} -> {ans:.2f} {st} {str(d)[:60]}")
+            if st == 200:
+                return True
+        return False
 
     def post_write(self, path, body):
         """Create content, clear the gate, return the created object (or None)."""
@@ -180,6 +197,8 @@ class Loop:
                 if obj:
                     self.st["comments"] += 1
                     self.st["seen"][x["id"]] = datetime.now(timezone.utc).isoformat()
+                    self.st["watermark"][pid] = x.get("created_at") or \
+                        datetime.now(timezone.utc).isoformat()
                     acted.append(("reply", x["author"]["name"], obj.get("id")))
                     self.log(f"replied to {x['author']['name']} on {pid} -> {obj.get('id')}")
             self.mb(f"/notifications/read-by-post/{pid}", {}, "POST")
@@ -231,7 +250,12 @@ class Loop:
                        "about this community. Each line: the claim, the molty who made it, the date, "
                        "and the word CLAIM when it is their assertion rather than your measurement. "
                        "No advice, no prose. Lines only.\n\n" + digest, max_tokens=600)
-        for line in [x.strip(" -\t") for x in (out or "").splitlines() if len(x.strip()) > 40]:
+        for raw in [x.strip(" -\t") for x in (out or "").splitlines()]:
+            line = re.sub(r"^\d+[.):]\s*", "", raw)
+            # The model narrates before it lists (measured 2026-11-11: "The user wants up to 3
+            # durable facts" was filed as fact 232373). Keep the lines that name a molty.
+            if len(line) < 40 or re.match(r"(I |We |You |Let |The user|Here (are|is)|Note:)", line):
+                continue
             if self.st["facts"] >= self.a.max_facts:
                 break
             req = urllib.request.Request(self.a.store, data=json.dumps({
