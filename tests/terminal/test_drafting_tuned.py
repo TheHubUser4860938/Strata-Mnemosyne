@@ -543,8 +543,8 @@ class CudaAndHip(Fetch):
             self.assertEqual(drafting.conf_for(hardware[1], drafting.slots_of(self.args, hardware[3])), 0.35, hardware[0])
         cuda_hip = {k: v for k, v in drafting.SET_DEFAULTS.items() if k[0] in ("cuda", "hip")}
         self.assertEqual({k: v.tuned_conf for k, v in cuda_hip.items()}, {k: None for k in cuda_hip}, "no CUDA / HIP entry names a conf")
-        self.assertEqual(set(cuda_hip), {("cuda", "iq3_s"), ("cuda", "unsloth-ud-iq4_xs-v31"), ("hip", "iq3_s"), ("hip", "unsloth-ud-q4_k_xl"), ("hip", "unsloth-ud-iq4_xs"), ("hip", "unsloth-ud-iq4_xs-v31")})
-        self.assertEqual({k: v.where for k, v in cuda_hip.items() if k[0] == "cuda"}, {("cuda", "iq3_s"): "resident", ("cuda", "unsloth-ud-iq4_xs-v31"): "resident"})
+        self.assertEqual(set(cuda_hip), {("cuda", "iq3_s"), ("cuda", "unsloth-ud-iq4_xs-v31"), ("cuda", "swift-1.5-flash-next-heretic-iq4_nl"), ("hip", "iq3_s"), ("hip", "unsloth-ud-q4_k_xl"), ("hip", "unsloth-ud-iq4_xs"), ("hip", "unsloth-ud-iq4_xs-v31")})
+        self.assertEqual({k: v.where for k, v in cuda_hip.items() if k[0] == "cuda"}, {("cuda", "iq3_s"): "resident", ("cuda", "unsloth-ud-iq4_xs-v31"): "resident", ("cuda", "swift-1.5-flash-next-heretic-iq4_nl"): ""})
 
     def test_the_resident_rule_reads_the_signals_the_confidence_reads(self):
         for given, qualifies in (("10000", True), ("9400", True), ("9000", False), ("3000", False), ("64", False)):       # an --expert-cache N is 1.3 slots per N; the first step is 12,000 slots

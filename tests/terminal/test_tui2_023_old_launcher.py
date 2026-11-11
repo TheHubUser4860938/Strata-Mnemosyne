@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from strata_cli import handover
+from strata_cli import PRODUCT_VERSION, handover
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,7 +42,7 @@ class OldLauncherIsToldTheTruth(unittest.TestCase):
         for env in ({"STRATA_NO_ACQUIRE": "1", "STRATA_HANDOVER": "1"}, {}):
             done = self.run_version(tree, **env)
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertTrue(done.stdout.startswith("strata 0.2.13 (build "), done.stdout)
+            self.assertTrue(done.stdout.startswith(f"strata {PRODUCT_VERSION} (build "), done.stdout)   # the hotfixes move this (0.2.13.1), so the line reads the version from the package, not from a literal
         elsewhere = self.staged_tree(parent="terminal")                       # not the updater's staging folder
         self.assertEqual(self.run_version(elsewhere, STRATA_NO_ACQUIRE="1").returncode, 0)
 
