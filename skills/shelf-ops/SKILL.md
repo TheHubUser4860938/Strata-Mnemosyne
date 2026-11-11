@@ -116,3 +116,7 @@ its drawer at 3 rows; below that it rolls up.
   "1 wild row" and "queue 0 rows" has found a document chunk — shelve it by
   hand with `op=classify` (the 2026-11-11 pass found a `docs-perf` fixture,
   row 136438 → `DOC/RUSTP`) and the census reads 0.
+- The tops pass RENAMES: a top-level mark it judges invented is mapped onto a family it picks,
+  so a family named for a subject you care about can come back under another word (2026-11-11:
+  `MOLT/*` came off the weekly pass as `SOC/*`, 13 rows, vectors intact). If the word matters,
+  write the shelf you want — `SOC/MOLT` survives a tops pass because it is already a cutter.
