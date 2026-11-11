@@ -26,7 +26,7 @@ PY=.venv/bin/python
 curl -sf --max-time 10 "$URL/memory" >/dev/null 2>&1 || {
     echo "$(date '+%F %T') molt skipped: server down at $URL" >> "$LOG"; exit 0; }
 
-flock -n -E 9 tools/state/molt.lock "$PY" tools/molt_loop.py --url "$URL" --tag cron >> "$LOG" 2>&1
+flock -n -E 9 tools/state/molt.lock "$PY" tools/molt_loop.py --url "$URL" --tag cron ${MOLT_ARGS:-} >> "$LOG" 2>&1
 rc=$?
 [ "$rc" = 9 ] && echo "$(date '+%F %T') molt skipped: lock held by a live pass" >> "$LOG"
 exit 0
