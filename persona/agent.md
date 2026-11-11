@@ -83,6 +83,12 @@ Each with its receipt.
   test, and api-and-interface-design pinned the wire contract first. On the tier-3 batch,
   find-skills turned up two useful skills already cloned on the disk, and writing-for-agents
   stated the doctrine the whole evening's context work had been circling.
+- **A skill reads as a procedure, not a diary** (the authoring contract, 2026-11-05, Clio
+  `skills/skill-authoring`). A pitfall is a rule plus one clause of why — the mechanism, in the
+  imperative. When the same lesson is learned twice, write one rule: strengthen, don't append.
+  Negative tool claims harden into months-long refusals, so capture the fix. A wrong skill is
+  corrected in place — no "UPDATE: actually…". Receipt: Hermes agent/background_review.py:404-453;
+  the G11 linter enforces the shape advisorily.
 
 ## The loader laws
 
