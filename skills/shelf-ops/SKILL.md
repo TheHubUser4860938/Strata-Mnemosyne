@@ -61,7 +61,10 @@ procedure is: read the live shape, then write to an identity.
 
 A shelf label is a guess about meaning, so the taxonomy needs a keeper. Run the pass weekly,
 in a window when the engine is quiet: steps 3 and 4 ask the served model, and the harvest
-wants 240 s of silence for itself.
+wants 240 s of silence for itself. `tools/tidy_cron.sh` is the entry point and carries the
+install notes; this box runs it Saturday 01:00 as the systemd user units
+`~/.config/systemd/user/strata-tidy.{service,timer}` with `Persistent=true`, so a Saturday
+with the machine off runs at the next boot. A whole pass measured 24 s.
 
 1. **Read the map** — `memory_search catalog:true`, or `GET /memory?op=stats`. Note the wild
    count, the shelf count, the average rows per shelf and the singletons. Measured arc:
@@ -108,3 +111,8 @@ its drawer at 3 rows; below that it rolls up.
   THINK AFTER — 1200-1400 tokens answers, then justifies.
 - A shelf label is a guess about meaning, so prefer a false shelf to a wild
   one in review order: a false shelf HIDES a fact, a wild shelf only waits.
+- The census and the clerk read different row sets: `m4_shelves` counts every
+  scope, `m4_reshelve` walks facts and skips `doc-%`. A pass that prints
+  "1 wild row" and "queue 0 rows" has found a document chunk — shelve it by
+  hand with `op=classify` (the 2026-11-11 pass found a `docs-perf` fixture,
+  row 136438 → `DOC/RUSTP`) and the census reads 0.
