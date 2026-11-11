@@ -61,21 +61,20 @@
     "lib_dirs": [],
     "port": 8080,
     "memory": {
-     "dir": "/home/eugene/Strata-data/memory-eval",
+     "dir": "/home/eugene/Strata-data/venue2",
      "recall_limit": 96,
      "max_block_chars": 48000,
-     "per_turn": false,
-     "turn_recall_limit": 20,
+     "per_turn": true,
+     "turn_recall_limit": 12,
      "turn_block_chars": 24000,
      "tool_rounds": 0,
      "encrypt": 1,
      "tool": true,
      "auto_shelve": true,
-     "soul": "soul.md",
+     "soul": "persona/soul.md",
      "embedder": {
-      "name": "embeddinggemma-2",
-      "dir": "/home/eugene/Strata-data/embeddings/embeddinggemma-2",
-      "threads": 6
+      "dir": "/home/eugene/Strata-data/embeddings/bge-small-en-v1.5",
+      "threads": 8
      },
      "cartridges": {
       "enabled": true,
@@ -83,31 +82,13 @@
        "USR",
        "DEC"
       ],
-      "max_chars": 12000,
-      "attach_mode": "anchor",
-      "facts": false,
-      "files": [
-       "persona/agent.md",
-       "persona/skill.md",
-       "persona/user.md",
-       "persona/always.md"
-      ]
+      "max_chars": 12000
      },
-     "inject": false,
-     "block_position": "head",
-     "block_cover_terms": 3,
-     "cover_weight": 0.15,
-     "proof_weight": 0.15,
-     "derived_weight": 0.7,
-     "turn_recall_agg": 20,
-     "route_glossary": 1.0,
-     "route_top": 5,
-     "block_shelf_tags": true,
      "max_memories": 0,
      "route_shelves": true,
-     "route_demote": 0.7,
+     "route_demote": 0.5,
      "block_min_score": 0.15,
-     "floor_cosine": 0.57,
+     "floor_cosine": 0.3,
      "expose_window": 12,
      "expose_step": 0.05,
      "expose_cap": 3
