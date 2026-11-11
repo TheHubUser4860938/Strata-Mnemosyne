@@ -1,7 +1,8 @@
 # persona/ — the standing texts
 
-Clio's prompt is assembled from static files. `soul.md` rides at the repo
-root (its boot path is old and load-bearing); the rest live here:
+Clio's prompt is assembled from five static files, all of them in this
+folder; `memory.soul` names `persona/soul.md` and `memory.cartridges.files` names
+the other four:
 
 | file         | role                  | git                      |
 |--------------|-----------------------|--------------------------|
