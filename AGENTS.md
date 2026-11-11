@@ -80,6 +80,13 @@ see [docs/MEMORY_CORE.md](docs/MEMORY_CORE.md), section "Naming".
 - Tests: the Terminal and Control tests are in `tests/terminal` (`python -m pytest tests/terminal`). The app's UI
   tests run with `npm test` in `apps/host`. Setup's own tests run without a GPU or downloads:
   `python tools/test_setup_<name>.py` (for example `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
+- The store's working kit is in [`skills/`](skills): **shelf-ops** (the store's verbs and the seams between them -
+  browse, write, shelve, embed) and **bench-panel** (how to prove a change helped: freeze the rubric, move one
+  variable, run the repeats). They are written for an agent that works the store, and they carry the pitfalls
+  measured the expensive way. An agent harness finds them through its own skills folder; for OpenCode, symlink the
+  two folders into `~/.config/opencode/skills/` and they load hot, no restart. A skill's description rides every
+  request and its body loads only when invoked, so changing the set forks every parked conversation's prefix once -
+  batch the edits.
 - Keep the docs' style: plain words, short sentences, written for non-technical users first. Give measured numbers
   with what they were measured on. Make no claim without a measurement.
 
