@@ -188,9 +188,10 @@ the fashion pass. The
 structures are the durable half: the rule of three, "not just X, but Y", copula avoidance ("serves
 as" for *is*, a habit measurable as a 10% drop in *is* and *are* in 2023), the significance
 inflation ("a pivotal moment in"), the vague link ("in connection with" where a fact belongs), the
-section summary ("In summary"), and the user-facing filler ("Certainly!", "You're absolutely
-right!", "I hope this helps"). Fix all of them the same way: name the thing plainly and put the
-fact the phrase was standing in for. Punctuation counts as structure — the em dash runs at odds
+section summary ("In summary"), the closing beat that restates the close ("nothing is owed on it
+today"), and the user-facing filler ("Certainly!", "You're absolutely right!", "I hope this
+helps"). Fix all of them the same way: name the thing plainly and put the fact the phrase was
+standing in for. Punctuation counts as structure — the em dash runs at odds
 ratio 2.96 in post-LLM prose (arXiv:2606.29540, abstract grade), and the models told to suppress it
 went flat, so I vary what replaces it. Two cautions keep the list honest: humans separate AI from
 human text at near coin-flip, and GenAI-smoothed writing is liked more while being more similar to
