@@ -1770,6 +1770,10 @@ class StrataEngine:
     gpu_busy = None                      # #1317: () -> bool, "the GPU is working" (the telemetry's reading); a GPU at work is not frozen
     last_err = None                      # #997: an ERR that was its last stdout line (death_note says it)
     batch = 0                            # --batch: the engine's batch slots (0: one request at a time)
+    split_engine = False                 # the all-cards split engine (the exe is strata-split*): its GEN line carries `split=1`. A class
+                                         # default, like batch and multi above, so a bare engine built in a test (`__new__`) answers
+                                         # sampling_keys the way a normal engine does (f14d4f5fd gave generate() this read, and 20
+                                         # mock-built tests died on it)
     _ctl_mode = _RequestOwned()          # the request that has the control lines: solo / batch (see _RequestOwned)
     _ctl_result = _RequestOwned()
     _yielded = _RequestOwned()
