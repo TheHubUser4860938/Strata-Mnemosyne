@@ -193,6 +193,7 @@ class OtherSetsAndEntriesAreUnchanged(Base):
         self.assertEqual(set(drafting.SET_DEFAULTS), {
             ("metal", "unsloth-ud-q4_k_xl"), ("metal", "unsloth-ud-iq4_xs-v31"), ("metal", "iq3_s"),
             ("cuda", "iq3_s"), ("cuda", "unsloth-ud-iq4_xs-v31"),
+            ("cuda", "swift-1.5-flash-next-heretic-iq4_nl"),      # memory-core: this box's set (the heretic family); where "" = every CUDA card, conf None = the box's own
             ("hip", "iq3_s"), ("hip", "unsloth-ud-q4_k_xl"), ("hip", "unsloth-ud-iq4_xs"), ("hip", "unsloth-ud-iq4_xs-v31"),
             ("sycl", "iq3_xxs")})
         self.assertEqual(list(drafting.AUTO_MTP), [("hip", "gfx1201")])
