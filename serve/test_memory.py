@@ -4981,6 +4981,75 @@ class GlossaryVoteTest(unittest.TestCase):
         self.assertAlmostEqual(payload["coverage"], 0.25, places=2)
 
 
+class BlockHarvestTest(unittest.TestCase):
+    """HOW FAR THE HARVEST HAS GOT (2026-11-13, from fieldnotes_ai's Moltbook question). The header
+    already says how much of the store is in view (`shown="3 of 2,106 active"`); nothing said how
+    fresh it was, so a miss and a not-yet-filed fact looked identical to the reader. Four buckets,
+    because the block is PINNED per conversation and an exact queue count would churn the cache
+    every filing. Off is today's bytes exactly."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self._n = iter(range(1, 10_000))
+
+    def _svc(self, **kw):
+        m = MemoryService(self.tmp.name, **kw)
+        self.addCleanup(m.close)
+        return m
+
+    def _pending(self, m, n: int):
+        m.conn.execute("delete from turns")
+        for i in range(n):
+            m.conn.execute(
+                "insert into turns(scope,user_text,assistant_text,model,created_at,processed)"
+                " values('ops','a question','an answer','m', now() - interval '1 hour', 0)",)
+        m.conn.commit()
+
+    def _head(self, m, topic="the flibber gauge reading"):
+        # A NEW conversation per read: the block is pinned by its first message with no TTL, so the
+        # word describes the block - the same contract as the facts under it. Same conversation
+        # replays byte-identically (see test_pin_stable_inside_a_bucket).
+        block, _, _ = m.block_for([{"role": "user", "content": f"{topic} {next(self._n)}"}], "ops")
+        return block.splitlines()[0]
+
+    def test_off_is_todays_bytes(self):
+        m = self._svc()
+        m.remember("the flibber gauge reads torque in newton meters", scope="ops")
+        self.assertNotIn("harvest=", self._head(m), "opt-in: the default path keeps its bytes")
+
+    def test_four_buckets(self):
+        m = self._svc(block_harvest=True)
+        m.remember("the flibber gauge reads torque in newton meters", scope="ops")
+        for n, word in ((0, "current"), (3, "fresh"), (7, "lagging"), (60, "backlog")):
+            self._pending(m, n)
+            self.assertIn(f'harvest="{word}"', self._head(m), f"{n} pending should read {word}")
+
+    def test_pin_stable_inside_a_bucket(self):
+        m = self._svc(block_harvest=True)
+        m.remember("the flibber gauge reads torque in newton meters", scope="ops")
+        self._pending(m, 1)
+        msgs = [{"role": "user", "content": "the flibber gauge torque units"}]
+        first, _, _ = m.block_for(msgs, "ops")
+        self._pending(m, 4)
+        again, _, _ = m.block_for(msgs, "ops")
+        self.assertEqual(first, again, "1 and 4 pending are both `fresh`: the pin does not churn")
+        self.assertIn('harvest="fresh"', first.splitlines()[0])
+
+    def test_a_filed_fact_moves_the_word(self):
+        # the whole point: the reader can price a miss. Backlog today, fresh once the clerk drains.
+        m = self._svc(block_harvest=True)
+        m.remember("the flibber gauge reads torque in newton meters", scope="ops")
+        self._pending(m, 90)
+        self.assertIn('harvest="backlog"', self._head(m))
+        m.conn.execute("update turns set processed=1 where id <= 70")   # 90 -> 20 queued
+        m.conn.commit()
+        self.assertIn('harvest="lagging"', self._head(m), "the clerk drained most of the queue")
+        m.conn.execute("update turns set processed=1")
+        m.conn.commit()
+        self.assertIn('harvest="current"', self._head(m), "drained is a word, not a number")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
