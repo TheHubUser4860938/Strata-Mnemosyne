@@ -8619,8 +8619,14 @@ class CartMinter:
                     # The comparison, for the log - and it must not COST anything: store=False keeps a cart's
                     # document out of the conversation prompt store (#567), which exists to share suffixes
                     # between real turns, not to remember every document ever forged.
-                    template_ids = len(svc.encode_prompt([{"role": "system", "content": doc}], None, {},
-                                                         store=False, open_turn=False))
+                    # The Qwen3.8 template refuses a message list with no user turn
+                    # ("No user query found in messages.", TemplateRequestError, #365) — the
+                    # comparison is a reading of the SAME text through the turn machinery, so
+                    # it gets the machinery's shape: system carries the document, a bare user
+                    # turn opens it. Only the delta is quoted; neither arm is the cart.
+                    template_ids = len(svc.encode_prompt([{"role": "system", "content": doc},
+                                                          {"role": "user", "content": "ok"}],
+                                                         None, {}, store=False, open_turn=False))
                     # PREFILL ONLY, the way serve/split.py reads a prompt without making a token. Two fixes were
                     # tried here first and both are recorded as insufficient (measured on fed51, 2,318 tok): the
                     # forge no longer generates an acknowledgement (v2), and the template no longer opens an
