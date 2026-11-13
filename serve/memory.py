@@ -4471,6 +4471,10 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         route_glossary=num("route_glossary", 0.0, float),  # the glossary vote weight
         route_top=num("route_top", ROUTE_TOP),             # shelves the pick keeps (3 = today)
         block_shelf_tags=flag("block_shelf_tags"),         # @SHELF:n on each shown line
+        block_harvest=flag("block_harvest"),               # harvest="current|fresh|lagging|backlog"
+        # in the header (2026-11-13; the seam lists every knob explicitly, so a new one that is not
+        # threaded here reads as the constructor default no matter what the config says — the live
+        # header proved this the minute after the boot that was supposed to turn it on)
         block_position=str(mcfg.get("block_position") or "head"),
         cache_entries=num("cache_entries", 64),
         embedder=(embedder if embedder is not None else (mcfg.get("embedder") or None)),
