@@ -1158,7 +1158,8 @@ class MemoryService:
                  derived_weight: float = 1.0, block_cover_terms: int = 0,
                  cover_weight: float = 0.0, proof_weight: float = 0.0,
                  turn_recall_agg: int = 0, route_glossary: float = 0.0,
-                 route_top: int = ROUTE_TOP, block_shelf_tags: bool = False):
+                 route_top: int = ROUTE_TOP, block_shelf_tags: bool = False,
+                 block_harvest: bool = False):
         self.directory = memory_dir(directory)      # absolute, created 0700 - same rules as slot_save_path
         # STORAGE (ADR-002 native rebase, 2026-10-16): PostgreSQL, no SQLite anywhere. Production
         # OWNS its cluster under <dir>/pgdata - a unix socket inside the data dir, so the store
@@ -1244,6 +1245,15 @@ class MemoryService:
         # offset pages it. Cost is ~13 characters per shown line plus one instruction clause -
         # measured on the panel, not guessed. False = today's bytes exactly.
         self.block_shelf_tags = bool(block_shelf_tags)
+        # HOW FAR THE HARVEST HAS GOT (2026-11-13, fieldnotes_ai's question on Moltbook). The header
+        # already says how much of the store is IN VIEW (`shown="3 of 2,106 active"`) and never says
+        # how fresh it is, so a miss and a not-yet-filed fact look identical to the reader. Turn
+        # ledger on this box: 40,132 turns, median said-to-written 6.92 h, and the sweep fires only
+        # on 240 s of engine silence - so the queue is 1 at midnight and 1,300 on a heavy day.
+        # QUANTIZED ON PURPOSE: the block is pinned per conversation (see block_for), so an exact
+        # count would churn the pin on every filing and spend the prefill we keep the cache for.
+        # Four buckets = at most three byte changes per queue crossing. False = today's bytes exactly.
+        self.block_harvest = bool(block_harvest)
         self._glo = None                       # (census stamp, (shelf->words, word->shelves))
         self._route_stats = {"tries": 0, "picks": 0, "fallbacks": 0, "picked": {}}  # observability, see stats()
         # BROWSE LEDGER (2026-10-24, the venue-day scar): tool prints rode server stdout into the
@@ -3424,6 +3434,8 @@ class MemoryService:
             n_active = self.conn.execute(
                 "select count(*) from memories where invalid_at is null"
                 " and " + DOC_FACT_SQL).fetchone()[0]   # facts, not the routing map
+            pending = (self.conn.execute("select count(*) from turns where processed=0").fetchone()[0]
+                       if self.block_harvest else 0)    # the partial index turns_pending serves this
             tags: dict[str, int] = {}
             if self.block_shelf_tags:      # the drawer sizes for the shelves this block cites,
                 # one grouped pass over the classes present - the block is PINNED per
@@ -3450,6 +3462,12 @@ class MemoryService:
             # `shown="3 of 2071 active"` says how much is read; only a TERM list says what the
             # reading leaves out. Empty = today's bytes exactly.
             h = f'<server_memory version="{v}" scope="{scope}" shown="{n} of {n_active} active"'
+            if self.block_harvest:      # one word, four buckets: the queue depth is a DEPTH, not a
+                # lag, and the word says which - "current" is the midnight store, "backlog" is the
+                # day the clerk livelocked. A reader model can price a miss with that.
+                bucket = ("current" if pending == 0 else "fresh" if pending <= 5
+                          else "lagging" if pending <= 50 else "backlog")
+                h += f' harvest="{bucket}"'
             return (h + f' missing="{missing}">' if missing else h + ">")
 
         def show(h: dict) -> str:     # the block shows a document row's head, not its 3,900
