@@ -56,7 +56,11 @@ if [ "${pressure:-0}" = "1" ] || [ "${pending:-0}" -gt "$PENDING_MAX" ]; then
     # re-curation into the existing rows instead of doubling them (measured: the 57-row
     # username policy is what lands WITHOUT that guard).
     flock -n -E 9 tools/state/sweep.lock \
-        .venv/bin/python tools/curate_loop.py --sweep --batches 2 --tag cron >> tools/state/cron.log 2>&1
+        .venv/bin/python tools/curate_loop.py --sweep --batches 2 --idle-window 90 --tag cron >> tools/state/cron.log 2>&1
+# 2026-11-13 gate experiment: 240 -> 90 s of engine silence. One variable; the two numbers that
+# move against each other are facts filed per hour (this log) and REUSED tokens per request
+# (strata-heretic-iq4_nl.log). Baseline 2026-11-13: 240 s, median said->written 6.92 h, 14 of 22
+# requests reusing. Prediction on the record: reuse falls by more than the harvest rises.
     rc=$?
     if [ "$rc" = 9 ]; then
         echo "$(date '+%F %T') sweep skipped: lock held by a live sweep"
