@@ -24,6 +24,7 @@ struct WindowRuleIn {
     int start = 1;               ///< the width before any rule (CLI: cap; serve: cap with the MTP, 1 without)
     double spec_min_p = 0.0;     ///< --spec-min-p: stop at the first draft whose probability is below it (0: off)
     double draft_conf = 0.0;     ///< --draft-conf: DFlash2's window ends where the product of the probabilities falls below it (0: off)
+    double conf_stair = 0.0;     ///< the per-position price ratio (STRATA_DRAFT_CONF_STAIR); 0: read the variable, whose default is 1.0
     const float* dprob = nullptr;   ///< the drafts' probabilities, dprob[j] for draft j (the row j + 1 of the window)
 };
 
@@ -54,6 +55,26 @@ inline int df2_lookup_skip_min(int build_default) {
     return v;
 }
 
+/// STRATA_DRAFT_CONF_STAIR (default 1.0): how the acceptance bar moves along the chain.
+///
+/// The rule below keeps row T+1 while the PREFIX PRODUCT of the drafts' probabilities stays at or above
+/// `--draft-conf`. That product is the marginal expected token that row brings, so the flat bar is already
+/// a price per row - a constant one. At batch 1 the rows of an open window are verified in parallel, so the
+/// marginal cost of one more row is small (DFlash2's own profile: verifying 100% vs 50% of a 16-row block
+/// costs +0.2 ms), and a constant price charges the last row of an 8-row window exactly what it charges the
+/// first. A staircase prices them apart: < 1 makes late rows cheaper to admit (the window widens), > 1
+/// tightens the tail. 1.0 leaves the rule exactly as it was, so a build without the variable is the build
+/// that measured conf 0.6 as this box's bar.
+inline double draft_conf_stair() {
+    static const double v = [] {
+        const char* e = std::getenv("STRATA_DRAFT_CONF_STAIR");
+        if (e == nullptr || e[0] == '\0') return 1.0;
+        const double x = std::atof(e);
+        return x > 0.0 && x <= 4.0 ? x : 1.0;
+    }();
+    return v;
+}
+
 inline int choose_window(const WindowRuleIn& in) {
     int T = in.start;
     if (cost_window_applies(in.use_mtp, in.spec_cost, in.df2_active, in.first_window)) {
@@ -65,7 +86,12 @@ inline int choose_window(const WindowRuleIn& in) {
     if (in.df2_active && in.draft_conf > 0.0 && in.dprob != nullptr) {   // DFlash2's own confidence: every draft so far holds
         T = 1;
         double chain = 1.0;
-        while (T < in.cap && (chain *= (double) in.dprob[T - 1]) >= in.draft_conf) ++T;
+        const double stair = in.conf_stair > 0.0 ? in.conf_stair : draft_conf_stair();   // 1.0: the flat bar this rule has always used
+        double bar = in.draft_conf;                // the price of extending the window to row T + 1
+        while (T < in.cap && (chain *= (double) in.dprob[T - 1]) >= bar) {
+            ++T;
+            bar *= stair;                          // a staircase: late rows are priced, not penalised uniformly
+        }
     }
     return T;
 }

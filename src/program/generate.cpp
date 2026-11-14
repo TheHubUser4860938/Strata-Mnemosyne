@@ -1406,6 +1406,29 @@ struct Drive {
     std::FILE* routing = nullptr;
 };
 
+namespace {
+/// Per-position acceptance, cumulative across the boot: the curve the window rule's staircase is priced on
+/// (`STRATA_DRAFT_CONF_STAIR`, include/strata/spec/window_rule.hpp). The serve loop runs one serial window,
+/// so plain counters are enough - no atomics. Printed every 500 windows, beside the tier's own ledger lines.
+/// Position j is the (j+1)-th draft of the window: offered by every window wide enough to hold it, accepted
+/// by every window that committed at least j + 1 drafts.
+int64_t g_pos_offered[strata::kernels::kVerifyMaxT] = {};
+int64_t g_pos_accepted[strata::kernels::kVerifyMaxT] = {};
+int64_t g_pos_windows = 0;
+void note_window_positions(int T, int a) {
+    for (int j = 0; j + 1 < T && j < strata::kernels::kVerifyMaxT; ++j) ++g_pos_offered[j];
+    for (int j = 0; j < a && j < strata::kernels::kVerifyMaxT; ++j) ++g_pos_accepted[j];
+    if (++g_pos_windows % 500 == 0) {
+        std::fprintf(stderr, "strata serve: acceptance per position, %lld windows: ", (long long) g_pos_windows);
+        for (int j = 0; j + 1 < strata::kernels::kVerifyMaxT; ++j)
+            if (g_pos_offered[j] > 0)
+                std::fprintf(stderr, " %d:%.3f(%lld)", j, (double) g_pos_accepted[j] / (double) g_pos_offered[j],
+                             (long long) g_pos_offered[j]);
+        std::fprintf(stderr, "\n");
+    }
+}
+}  // namespace
+
 void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd, int64_t k,
                 float* out) {
     Drive* t = (Drive*) user;
@@ -19673,6 +19696,7 @@ int main(int argc, char** argv) {
                 if (!merged) {   // (a merged window's rows are prompt tokens, not drafts)
                     draft_offered += T - 1;
                     draft_accepted += a;
+                    note_window_positions(T, a);   // the per-position curve, every 500 windows
                 }
                 const bool initial_round = first_window;   // a single-row window: no proposal to learn from
                 first_window = false;

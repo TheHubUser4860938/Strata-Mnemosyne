@@ -103,6 +103,32 @@ int main() {
         check(!mtp_q_applies(true, false, false, false, false, 4), "greedy / mode off: no q");
         check(!mtp_q_applies(false, false, true, false, false, 4), "no MTP: no q");
     }
+    {   // 4. the per-position staircase (STRATA_DRAFT_CONF_STAIR).  The flat bar prices the last row of an open
+        // window what it prices the first; at batch 1 the rows verify in parallel, so the tail is cheaper than that.
+        // Same probabilities as the table above: 0.9 * 0.8 = 0.72, * 0.3 = 0.216.
+        WindowRuleIn in;
+        in.draft_on = true; in.df2_active = true; in.cap = 6; in.start = 6; in.dprob = p; in.draft_conf = 0.35;
+        in.conf_stair = 1.0;
+        check(choose_window(in) == 3, "stair 1.0 is today's rule: the chain product stops at the weak draft");
+        in.conf_stair = 0.5;   // late rows are priced at half the flat bar
+        check(choose_window(in) == 6, "stair 0.5 widens: 0.216 clears the 0.0875 bar for the tail, so the cap is taken");
+        const float r[8] = {0.9f, 0.45f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f};
+        in.dprob = r;
+        in.conf_stair = 1.0;
+        check(choose_window(in) == 4, "flat bar on 0.9*0.45*0.9*0.9: the product stays over 0.35 to row 4");
+        in.conf_stair = 1.5;
+        check(choose_window(in) == 2, "stair 1.5 narrows the same chain to 2 (row 2 must clear 0.525, and 0.405 does not)");
+        in.conf_stair = 0.0;   // 0 = read the environment, whose default is 1.0
+        in.dprob = p;
+        check(choose_window(in) == 3, "conf_stair 0 falls through to the variable, and the variable's default is the flat bar");
+        // the shape the staircase is for: a long tail of individually-weak drafts. Product 0.9^5 = 0.59 > 0.6? no.
+        const float q[8] = {0.95f, 0.9f, 0.85f, 0.8f, 0.75f, 0.7f, 0.7f, 0.7f};
+        in = WindowRuleIn{}; in.draft_on = true; in.df2_active = true; in.cap = 8; in.start = 8; in.dprob = q;
+        in.draft_conf = 0.6; in.conf_stair = 1.0;
+        const int flat = choose_window(in);
+        in.conf_stair = 0.9;
+        check(choose_window(in) >= flat, "on a confident chain a relaxing staircase never shortens the window");
+    }
     std::printf("%s\n", g_fail == 0 ? "window_rule_test: ok" : "window_rule_test: FAILED");
     return g_fail == 0 ? 0 : 1;
 }
