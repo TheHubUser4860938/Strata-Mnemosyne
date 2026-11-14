@@ -115,6 +115,11 @@ DIMENSIONS: tuple[Dimension, ...] = (
               "Device memory left free for other programs. NVIDIA/AMD only."),
     Dimension("pcie_frac", ("--pcie-frac",), (0.0, 0.25, 0.5, 0.75, 0.95),
               ("cuda", "hip"), "Share of PCIe bandwidth the expert streamer may use. NVIDIA/AMD only."),
+    Dimension("adapt_predict", ("--adapt-predict",), (0, 2, 4, 8, 16, 32),
+              ("cuda", "hip", "sycl"),
+              "How many of a layer's expert-cache admissions the router look-ahead's votes may lead; 0 is the "
+              "decayed-count rule alone. The votes name what the near future routes, so the cap buys hit share "
+              "with copies - it moves with the card's VRAM, which is why setup sweeps it."),
     Dimension("prompt_cache_tail", ("--prompt-cache-tail",), (False, True),
               ("cuda", "hip", "sycl"),
               "Prompt-cache tail retention. BENCHMARK ONLY: measured, never exported.",

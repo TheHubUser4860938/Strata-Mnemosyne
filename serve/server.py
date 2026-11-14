@@ -2299,6 +2299,40 @@ class StrataEngine:
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
 
+    def conf(self, draft_conf: float | None, timeout: float = 60.0) -> dict:
+        with self._exclusive_control():
+            return self._conf(draft_conf, timeout)
+
+    def _conf(self, draft_conf: float | None, timeout: float = 60.0) -> dict:
+        """`CONF [P]` between requests (the caller holds the service's FIFO): the live --draft-conf, the bar where
+        the product of the selector's probabilities ends a DFlash2 window.  None asks for the value in force.
+        The next window is drafted at the new bar; no CUDA graph is touched, which is what --spec cannot say.
+        -> {"draft_conf": the bar now in force}; raises ValueError with the engine's reason, EngineDied when it ended."""
+        if not self.alive():
+            raise EngineDied("the engine is not running")
+        self.proc.stdin.write("CONF" + ("" if draft_conf is None else f" {float(draft_conf):g}") + "\n")
+        self.proc.stdin.flush()
+        deadline = time.time() + timeout
+        while True:
+            try:
+                line = self.lines.get(timeout=max(0.1, deadline - time.time()))
+            except queue.Empty:
+                raise EngineDied("the engine did not answer the CONF command") from None
+            if line is None:
+                raise EngineDied("the engine ended")
+            line = line.strip()
+            if line.startswith("ERR"):
+                raise ValueError(line[4:].strip() or "the engine refused the CONF command")
+            if line.startswith("CONF "):
+                try:
+                    v = float(line.split()[1])
+                except (IndexError, ValueError):
+                    raise EngineDied("the engine answered the CONF command with garbage") from None
+                self.info["draft_conf"] = v          # what the engine says it is drafting at
+                return {"draft_conf": v}
+            if time.time() > deadline:
+                raise EngineDied("the engine did not answer the CONF command")
+
     def pen_from_key(self, orig_len: int, prompt_len: int) -> str:
         """` pen_from=N` for a leg that continues a request (prompt + what it generated): where the reply began, Strata's penalty window start. The all-cards split engine
         (sFNX) counts its penalty window over the last penalty_last_n tokens of the whole context, so the continued prompt gives it the same window and the engine refuses the
@@ -6186,6 +6220,28 @@ class Service:
             if ctl is not None:
                 self.engine._ctl_held = False
                 ctl.release()
+            self.fifo.release()
+
+    conf_wait_s = 60.0                                   # how long POST /v1/conf waits for a running request to end
+
+    def conf(self, draft_conf: float | None) -> dict:
+        """POST /v1/conf: move the DFlash2 selector's bar on the running engine - the window ends where the product
+        of the proposed probabilities falls below it, and the rule is read every window, so the next window is
+        drafted at the new bar (this is what --spec cannot do: each row count is its own captured graph).
+        None asks for the bar in force.  Applied between requests; an unloaded engine answers with the config's.
+        -> {"status": ..., "draft_conf": the bar the engine is using}."""
+        if not hasattr(self.engine, "conf"):
+            raise ValueError("this engine cannot change its draft confidence")
+        if not self.fifo.acquire(timeout=self.conf_wait_s):
+            raise ModelBusy("a request is still running; try again when it has finished")
+        try:
+            if not self.loaded():
+                return {"status": "not loaded", "draft_conf": draft_conf,
+                        "note": "the engine takes --draft-conf from the run config when it starts"}
+            out = self.engine.conf(draft_conf)
+            print(f"[strata] CONF: the drafter's bar is now {out.get('draft_conf')}", flush=True)
+            return {"status": "ok", **out}
+        finally:
             self.fifo.release()
 
     def _say_died(self, e: Exception) -> None:
@@ -10371,6 +10427,17 @@ def make_handler(svc: Service):
                         raise ValueError("reserve_mib: a whole number of MiB (0 or more), or null for the start's")
                     try:
                         self._json(200, svc.vram(r))
+                    except EngineDied as e:
+                        self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                    return
+                if path == "/v1/conf":                       # the drafter's bar, live: a sweep costs no reboots
+                    if not self._own_page("the draft confidence can be changed"):
+                        return
+                    c = req.get("draft_conf")
+                    if c is not None and (isinstance(c, bool) or not isinstance(c, (int, float)) or not 0.0 <= float(c) <= 1.0):
+                        raise ValueError("draft_conf: a probability from 0 to 1, or null to ask for the bar in force")
+                    try:
+                        self._json(200, svc.conf(c))
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return

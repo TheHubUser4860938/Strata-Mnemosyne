@@ -1256,4 +1256,11 @@ def engine_info(args: list[Any], log_text: str = "", note: str = "") -> dict[str
     if asked_dflash2 and not fell_back:
         drafter = "dflash2"
     text = fell_back or (line(drafter, note) if note else "")
-    return {"drafting": drafter, "drafting_note": text}
+    out = {"drafting": drafter, "drafting_note": text}
+    # The bar the start was given (a POST /v1/conf overwrites this key in the engine's info with the live one).
+    # Only when the args carry it: the keys above are the whole dict for a start that set no bar.
+    if "--draft-conf" in items:
+        i = items.index("--draft-conf")
+        if i + 1 < len(items):
+            out["draft_conf"] = items[i + 1]
+    return out

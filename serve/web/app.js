@@ -141,6 +141,7 @@ const METRICS = [
   {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info"},
   {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
   {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
+  {key: "drafts", label: "Drafts", icon: "activity", unit: "%", series: "draft_rate", tone: "info"},
 ];
 $("metrics").innerHTML = METRICS.map((m) => `
   <div class="st-card metric-card"><div class="st-metric">
@@ -546,6 +547,18 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   }
   spark("sp-disk", h.disk_read_mb);
 
+  // the drafting ledger: what the drafter proposed, what the target accepted, this run.  A window commits its
+  // accepted drafts plus the token every window commits for free, so tokens/step = 1 + acceptance x (rows - 1).
+  // The sparkline is per request (newest at the right), which is where a conf sweep shows its shape.
+  const dAcc = (totals && totals.drafts_accepted) || 0, dOff = (totals && totals.drafts_offered) || 0;
+  const dRate = dOff ? dAcc / dOff : null;
+  setMetric("drafts", dRate == null ? null : fmt(dRate * 100, 1), "%",
+            dRate == null ? "no drafts this run"
+            : `${fmt(dAcc)} of ${fmt(dOff)} accepted` +
+              (eng.spec ? ` · ${(1 + dRate * Math.max(0, eng.spec - 1)).toFixed(2)} tok/step` : "") +
+              (eng.drafting ? ` · ${eng.drafting === "dflash2" ? "DFlash2" : eng.drafting}` : ""));
+  spark("sp-drafts", requests.map((r) => (r.drafts_offered ? (r.drafts_accepted / r.drafts_offered) * 100 : null)).reverse(), 100);
+
   // context fill: the running request, else the last one
   const ctx = eng.max_context || 0;
   let used = 0;
@@ -618,7 +631,12 @@ function renderAbout(eng, hw, st) {
     ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
     ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
     ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
-    ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
+    // The drafter's name and the window it captured: `spec` is the engine's resolved width (the build clamps it),
+    // `mtp_max` is the requested one - they differ on an 8-row CUDA build asked for 12.  MTP keeps its own field.
+    // The drafter's name and the window it captured: `spec` is the engine's resolved width (the build clamps it),
+    // `mtp_max` is the requested one - they differ on an 8-row CUDA build asked for 12.  MTP keeps its own field.
+    // `draft_conf` is the bar in force: the config's at a start, a POST /v1/conf's afterwards.
+    ["Speculation", eng.spec ? `${eng.drafting === "dflash2" ? "DFlash2" : eng.drafting === "mtp" ? "MTP" : "MTP"} drafts up to ${Math.max(0, ((eng.drafting === "mtp" && eng.mtp_max) || eng.spec) - 1)} tokens${eng.draft_conf != null ? `, conf ${eng.draft_conf}` : ""}${eng.lookup ? ", prompt lookup on" : ""}` : null],
     ["Images", eng.images ? "on" : "off"],
     ["Experimental speed projection", projectionText(eng.cvec)],
   ]);
