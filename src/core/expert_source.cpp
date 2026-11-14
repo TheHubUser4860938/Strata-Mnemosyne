@@ -3118,14 +3118,34 @@ void RouterLookahead::submit(int64_t layer, const float* x, int64_t n_tok, const
     cv_.notify_one();
 }
 
-void RouterLookahead::enable_stats(int64_t n_layers) {
-    words_ = (n_expert_ + 63) / 64;
-    pmask_.reset(new std::atomic<uint64_t>[(size_t) (n_layers * 3 * words_)]);
+void RouterLookahead::enable_votes(int64_t n_layers) {
+    if (votes_on_) return;
     pstamp_.reset(new std::atomic<uint64_t>[(size_t) n_layers]);
-    for (int64_t i = 0; i < n_layers * 3 * words_; ++i) pmask_[(size_t) i].store(0, std::memory_order_relaxed);
     for (int64_t i = 0; i < n_layers; ++i) pstamp_[(size_t) i].store(0, std::memory_order_relaxed);
     pvote_.reset(new std::atomic<int32_t>[(size_t) (n_layers * kVoteN)]);
     for (int64_t i = 0; i < n_layers * kVoteN; ++i) pvote_[(size_t) i].store(0, std::memory_order_relaxed);
+    votes_on_ = true;
+}
+
+/// The layer's consensus, nearest-future first, as published by the predictor thread (expert + 1; 0 = the slot
+/// is empty).  The adapt tier reads it between windows, so it reads the list the last window's routers agreed on.
+int RouterLookahead::take_votes(int64_t layer, int32_t* out, int max) const {
+    if (!votes_on_ || layer < 0 || max <= 0) return 0;
+    const int n = std::min(max, kVoteN);
+    int got = 0;
+    for (int i = 0; i < n; ++i) {
+        const int32_t v = pvote_[(size_t) (layer * kVoteN + i)].load(std::memory_order_relaxed);
+        if (v <= 0) break;
+        out[got++] = v - 1;
+    }
+    return got;
+}
+
+void RouterLookahead::enable_stats(int64_t n_layers) {
+    enable_votes(n_layers);   // the stats arm reports the votes, so it publishes them too
+    words_ = (n_expert_ + 63) / 64;
+    pmask_.reset(new std::atomic<uint64_t>[(size_t) (n_layers * 3 * words_)]);
+    for (int64_t i = 0; i < n_layers * 3 * words_; ++i) pmask_[(size_t) i].store(0, std::memory_order_relaxed);
     stats_on_ = true;
 }
 
@@ -3302,7 +3322,7 @@ void RouterLookahead::run() {
                         if (j < ks[s]) sm[(size_t) (s * words_ + (e >> 6))] |= 1ull << (e & 63);
             }
         }
-        if (stats_on_ && dj == 0) {
+        if (votes_on_ && dj == 0) {
             // votes: how many tokens put each non-resident expert in their top k_
             std::vector<std::pair<int, int32_t>> votes;   // (sum of 64 - rank, expert)
             for (int64_t t = 0; t < nt; ++t) {
@@ -3322,8 +3342,9 @@ void RouterLookahead::run() {
             for (int i = 0; i < kVoteN; ++i)
                 pvote_[(size_t) (layer * kVoteN + i)].store(i < (int) votes.size() ? votes[(size_t) i].second + 1 : 0,
                                                             std::memory_order_relaxed);
-            for (int64_t i = 0; i < 3 * words_; ++i)
-                pmask_[(size_t) (layer * 3 * words_ + i)].store(sm[(size_t) i], std::memory_order_relaxed);
+            if (stats_on_)
+                for (int64_t i = 0; i < 3 * words_; ++i)
+                    pmask_[(size_t) (layer * 3 * words_ + i)].store(sm[(size_t) i], std::memory_order_relaxed);
             pstamp_[(size_t) layer].store(sgen + 1, std::memory_order_release);
         }
         if (scored) src_->warm_scored(layer, want.data(), wconf.data(), (int64_t) want.size(), dj + 1);

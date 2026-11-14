@@ -80,6 +80,7 @@
 #include "strata/core/native_head.hpp"
 #include "strata/core/spill_gate.hpp"
 #include "strata/core/pcie_share_rule.hpp"
+#include "strata/core/adapt_predict.hpp"   // boot 4: the vote-led admission order in the adapt tier
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/gated_proposal.hpp"
@@ -1018,6 +1019,11 @@ struct Options {
     bool draft_mtp_spec_set = false;   ///< --draft-mtp-spec was given: it is also the window the MTP runs when --draft dflash2 falls back to it (the wider --spec was for DFlash2)
     double draft_mtp_min_p = -1.0;   ///< --draft-mtp-min-p P: the MTP requests' --spec-min-p under --draft auto (-1 = --spec-min-p)
     int draft_cap = 0;   ///< --draft-cap N: the widest verify window with --draft dflash2 (0 = by card class, see where the drafter loads)
+    /// Boot 4 (2026-11-14): --adapt-predict N: how many of one layer's adaptive admissions the router look-ahead's
+    /// votes may lead (0 = today's rule, the decayed routing count alone).  A cache-shape knob, swept at setup: the
+    /// trace replay on this box put the count rule at 0.7220 of the miss stream against 0.8224 with a 16-swap cap
+    /// (+10.0 pts, saturating there) for 47 -> 132 swaps/window, so the best N moves with the card's VRAM.
+    int adapt_predict = 0;
     /// A control vector on the residual stream (strata/kernels/cvec.hpp), with llama.cpp's flags: the
     /// `experimental-speed-projection` profile passes `--control-vector-scaled FILE:1.0 --control-vector-layer-range
     /// 4 44 --cvec-mode project --cvec-dir per-layer`.  None by default; --serve switches a loaded one per request.
@@ -1180,6 +1186,7 @@ void usage() {
                  "                       mtp = load both, the MTP drafts if DFlash2 cannot start (--draft auto always loads both)\n"
                  "                       (the MTP layer's ~0.9 GiB of VRAM goes to the expert cache; --mtp DIR is still needed for DIR/draft_vocab.bin)\n"
                  "  --draft-conf P       with --draft dflash2: end the window where the product of the selector's probabilities falls below P (default 0 = --spec-min-p)\n"
+                 "                       a running server changes it between requests with the `CONF <P>` command (the server's POST /v1/conf); the next window uses it\n"
                  "  --draft auto         (serve) both drafters stay current; a request picks one: draft=mtp|dflash2, else --draft-rule df2|mtp|learn;\n"
                  "                       MTP requests use --draft-mtp-spec N (default 4) and --draft-mtp-min-p P\n"
                  "  --draft-cap N        the widest verify window with --draft dflash2 (default by card: 8 on Strix Halo / iGPU and on Blackwell cc 12.0 with 48 GB or more, 6 on other Blackwell, --spec as given elsewhere)\n"
@@ -1309,6 +1316,9 @@ void usage() {
                  "                       it fits.  STRATA_RESIDENT_HEADROOM_GIB, when set, decides the headroom instead.\n"
                  "  --adapt-min-gain F  the adaptive tier swaps an expert in only when its decayed routing count beats\n"
                  "                       the one it replaces by more than F (default 1.5; higher = fewer, surer swaps)\n"
+                 "  --adapt-predict N    the adaptive tier lets the router look-ahead's votes lead up to N admissions per\n"
+                 "                       layer (default 0 = the decayed routing count alone).  A cache-shape knob that buys\n"
+                 "                       hit share with copies, so the best N moves with the card: setup sweeps it.\n"
                  "  --adapt-async 0|1    --serve with the resident RAM mode or the arena (one GPU): the adaptive\n"
                  "                       tier's swaps advance between verify windows instead of a window waiting for a\n"
                  "                       whole round (the arena: copy-in only).  Not bit-exact run to run.  Without the flag,\n"
@@ -3697,6 +3707,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--draft-conf") o.draft_conf = std::clamp(std::atof(next("--draft-conf")), 0.0, 1.0);
         else if (a == "--draft-cap") o.draft_cap = std::max(0, std::atoi(next("--draft-cap")));
+        else if (a == "--adapt-predict") o.adapt_predict = std::clamp(std::atoi(next("--adapt-predict")), 0, 64);
         else if (a == "--control-vector") o.cvec_files.push_back({next("--control-vector"), 1.0f});
         else if (a == "--control-vector-scaled") {
             // FILE:SCALE, comma-separated; the LAST colon splits, so a Windows path (C:\...) keeps its drive
@@ -9006,7 +9017,8 @@ int main(int argc, char** argv) {
                           [] { const char* v = std::getenv("STRATA_FS_AHEAD"); return v == nullptr || std::atoi(v) != 0; }();
     // STRATA_LOOKAHEAD_STATS=1 (measurement only): run the predictor on any tier and score it against the real routing
     const bool la_stats = srcp != nullptr && [] { const char* v = std::getenv("STRATA_LOOKAHEAD_STATS"); return v != nullptr && std::atoi(v) != 0; }();
-    if (srcp != nullptr && ((srcp == &src && src.warms()) || fs_ahead || la_stats) &&
+    const bool la_predict = srcp != nullptr && o.adapt_predict > 0;   // --adapt-predict: the adapt tier admits in the votes' order
+    if (srcp != nullptr && ((srcp == &src && src.warms()) || fs_ahead || la_stats || la_predict) &&
         (la_env == nullptr || std::atoi(la_env) != 0)) {
         std::vector<std::vector<uint16_t>> routers((size_t) g.n_layers);
         bool ok = true;
@@ -9019,15 +9031,16 @@ int main(int argc, char** argv) {
             ok = cudaMemcpy(routers[(size_t) l].data(), w->data, (size_t) w->bytes, cudaMemcpyDeviceToHost) == cudaSuccess;
         }
         const char* kv = std::getenv("STRATA_LOOKAHEAD_K");
-        if (ok && lookahead.start(std::move(routers), g.n_embd, g.n_expert, kv ? std::atoi(kv) : 10, srcp, err, fs_ahead || la_stats)) {
+        if (ok && lookahead.start(std::move(routers), g.n_embd, g.n_expert, kv ? std::atoi(kv) : 10, srcp, err, fs_ahead || la_stats || la_predict)) {
             drive.d.lookahead = &lookahead;
             if (la_stats) lookahead.enable_stats(g.n_layers);
+            else if (la_predict) lookahead.enable_votes(g.n_layers);   // the consensus, published without the stats' masks
             if (const char* dv = std::getenv("STRATA_IO_PREFETCH_DEPTH"); dv != nullptr && std::atoi(dv) > 0)
                 lookahead.set_depth(std::atoi(dv));
             else if (srcp == &src && src.io_prefetch())
                 lookahead.set_depth(2);
             la_started = true;
-            if (srcp == &src && gpu_holds_all && !la_asked && !fs_ahead && !la_stats) {   // started, but not attached while nothing is read
+            if (srcp == &src && gpu_holds_all && !la_asked && !fs_ahead && !la_stats && !la_predict) {   // started, but not attached while nothing is read
                 drive.d.lookahead = nullptr;
                 std::fprintf(stderr, "strata generate: routing-aware prefetch off (every expert is in the GPU caches; STRATA_LOOKAHEAD=1 runs it)\n");
             } else
@@ -9058,7 +9071,7 @@ int main(int argc, char** argv) {
                 const char* sv = std::getenv("STRATA_IO_STATS");
                 src.set_io_stats(sv != nullptr && std::atoi(sv) != 0);
             }
-            if (la_started && !la_asked && !fs_ahead && !la_stats && drive.d.lookahead != nullptr) { drive.d.lookahead = nullptr; acted = true; }
+            if (la_started && !la_asked && !fs_ahead && !la_stats && !la_predict && drive.d.lookahead != nullptr) { drive.d.lookahead = nullptr; acted = true; }
             if (acted)
                 std::fprintf(stderr, "strata serve: every expert is in the GPU caches again (%lld of %lld): the file tier's Linux defaults are off\n",
                              (long long) held, (long long) total);
@@ -13183,6 +13196,8 @@ int main(int argc, char** argv) {
         // --pipeline-windows: set while the tier adapts beside windows in flight (see its use in adapt)
         std::function<void()> adapt_fence;
         int64_t adapt_nswaps = 0;   // the blocking tier's swaps chosen, cumulative (the decode timing line's swaps/window)
+        int64_t adapt_predicted = 0;   // --adapt-predict: of the pairs the tier considered, how many the layer's
+                                       // consensus was driving - the ledger line's "votes leading" figure
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
         auto adapt = [&]() -> bool {
             if (!pending.empty()) return true;   // the previous swaps are still in flight
@@ -13190,7 +13205,14 @@ int main(int argc, char** argv) {
             struct Swap { float gain; int32_t layer, in, out; };
             std::vector<Swap> swaps;
             std::vector<std::pair<float, int32_t>> cand, vict;
+            // --adapt-predict: the layer's consensus arrives as a ranked list of experts; the tier's rule is a
+            // membership test, so it is turned into a mask here and reused for every layer of the round.
+            std::vector<uint8_t> vmask;
+            int32_t vbuf[16];
+            const bool predict_on = o.adapt_predict > 0 && drive.d.lookahead != nullptr && !drive.d.usage.empty();
+            if (predict_on) vmask.assign((size_t) g.n_expert, 0);
             for (int64_t l = 0; l < g.n_layers; ++l) {
+                bool voted_first = false;
                 // STRATA_ADAPT_FETCH=2: where the PCIe share fetched since the last round, its fetchable experts are
                 // the admission's; the tier keeps the rest (no share there, or not pinned)
                 const bool fetched = drive.d.fetch_admit == 2 && !drive.d.fetch_avail.empty() && drive.d.fetch_avail[(size_t) l];
@@ -13204,7 +13226,23 @@ int main(int argc, char** argv) {
                     else vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
-                std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
+                // --adapt-predict N: the layer's consensus (what this window's routers agreed the near future
+                // routes) leads up to N admissions; past that the layer's remaining pairs are the count rule's,
+                // unchanged.  The bar is the same 2.0 the count rule uses, so a vote cannot admit a stranger.
+                if (predict_on) {
+                    const int got = drive.d.lookahead->take_votes(l, vbuf, (int) (sizeof vbuf / sizeof vbuf[0]));
+                    if (got > 0) {
+                        std::fill(vmask.begin(), vmask.end(), (uint8_t) 0);
+                        for (int i = 0; i < got; ++i)
+                            if (vbuf[i] >= 0 && vbuf[i] < (int32_t) g.n_expert) vmask[(size_t) vbuf[i]] = 1;
+                        strata::core::rank_admission(cand, vmask.data(), o.adapt_predict);
+                        adapt_predicted += strata::core::count_voted(cand, vmask.data(),
+                                                                      (int) std::min(cand.size(), vict.size()));
+                        voted_first = true;
+                    }
+                }
+                if (!voted_first)
+                    std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
                 const size_t nc = std::min(cand.size(), vict.size());
                 std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
                                   [](auto& a, auto& b) { return a.first < b.first; });
@@ -13416,7 +13454,7 @@ int main(int argc, char** argv) {
         std::vector<ASwap> aswaps;
         std::vector<float> a_usage;
         std::vector<int32_t> a_res;
-        int64_t a_win = 0, a_last = 0, a_rounds = 0, a_swapped = 0;
+        int64_t a_win = 0, a_last = 0, a_rounds = 0, a_swapped = 0, a_predicted = 0;   // a_predicted: --adapt-predict, the consensus's picks
         double a_ms = 0;                  // wall time from a round's start to its flip, summed (the "ms/round" stat)
         Clock::time_point a_t0;
         std::atomic<bool> a_err{false};
@@ -13476,7 +13514,14 @@ int main(int argc, char** argv) {
             struct C { float gain; int32_t layer, in, out; };
             std::vector<C> all;
             std::vector<std::pair<float, int32_t>> cand, vict;
+            // --adapt-predict on the tier this box actually runs (--adapt-async 1): the consensus is read on the
+            // job thread from the predictor's published list (atomics), so no lock is taken.
+            std::vector<uint8_t> vmask;
+            int32_t vbuf[16];
+            const bool predict_on = o.adapt_predict > 0 && drive.d.lookahead != nullptr;
+            if (predict_on) vmask.assign((size_t) g.n_expert, 0);
             for (int64_t l = 0; l < g.n_layers; ++l) {
+                bool voted_first = false;
                 cand.clear();
                 vict.clear();
                 const float* u = a_usage.data() + l * g.n_expert;
@@ -13486,7 +13531,20 @@ int main(int argc, char** argv) {
                     else vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
-                std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
+                if (predict_on) {   // --adapt-predict on the tier that runs by default (--adapt-async 1):
+                    // the layer's consensus leads up to N admissions, the count rule takes the rest.
+                    const int got = drive.d.lookahead->take_votes(l, vbuf, (int) (sizeof vbuf / sizeof vbuf[0]));
+                    if (got > 0) {
+                        std::fill(vmask.begin(), vmask.end(), (uint8_t) 0);
+                        for (int i = 0; i < got; ++i)
+                            if (vbuf[i] >= 0 && vbuf[i] < (int32_t) g.n_expert) vmask[(size_t) vbuf[i]] = 1;
+                        strata::core::rank_admission(cand, vmask.data(), o.adapt_predict);
+                        a_predicted += strata::core::count_voted(cand, vmask.data(), (int) std::min(cand.size(), vict.size()));
+                        voted_first = true;
+                    }
+                }
+                if (!voted_first)
+                    std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
                 const size_t nc = std::min(cand.size(), vict.size());
                 std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
                                   [](auto& a, auto& b) { return a.first < b.first; });
@@ -15528,6 +15586,26 @@ int main(int argc, char** argv) {
                 if (batch_on()) verr = "VRAM: not while batch slots are decoding";
                 else vram_command(line, verr);
                 if (!verr.empty()) std::printf("ERR %s\n", verr.c_str());
+                std::fflush(stdout);
+                continue;
+            }
+            if (line.rfind("CONF", 0) == 0) {   // the live --draft-conf (the server's POST /v1/conf): between requests.
+                // The window rule reads o.draft_conf every window (window_rule.hpp choose_window), so the next window
+                // is drafted at the new bar - no graph is touched, which is what --spec cannot say (each row count is
+                // its own captured graph).  Batch slots keep the start's bar: their df2_conf is fixed before the loop.
+                const char* cs = line.c_str() + 4;
+                while (*cs == ' ') ++cs;
+                if (*cs) {
+                    char* ce = nullptr;
+                    const double v = std::strtod(cs, &ce);
+                    if (ce == cs) {
+                        std::printf("ERR CONF: send CONF <0..1> (the selector's cumulative bar)\n");
+                        std::fflush(stdout);
+                        continue;
+                    }
+                    o.draft_conf = std::clamp(v, 0.0, 1.0);
+                }
+                std::printf("CONF %.2f\n", o.draft_conf);   // a bare CONF answers with the bar in force
                 std::fflush(stdout);
                 continue;
             }
@@ -20104,6 +20182,11 @@ int main(int argc, char** argv) {
                              100.0 * (double) req_hits / (double) req_look,
                              (long long) req_hits, (long long) req_look, off);
             }
+            if (o.adapt_predict > 0)   // the votes' share, counted where the tier pairs candidates with victims
+                std::fprintf(stderr, "strata serve: adapt-predict %d: the layer's consensus led %lld proposed "
+                                     "admissions, %lld swaps landed (since the start)\n",
+                             o.adapt_predict, (long long) (ajob ? a_predicted : adapt_predicted),
+                            (long long) (ajob ? a_swapped : adapt_nswaps));   // the tier that runs, not the one that is idle
             if (drive.d.tail_experts > 0)   // STRATA_ROUTE_TAIL_SKIP, cumulative
                 std::fprintf(stderr, "strata serve: route tail skip: %lld missed experts skipped (%lld entries) since the "
                                      "start\n", (long long) drive.d.tail_experts, (long long) drive.d.tail_skipped);
@@ -20940,6 +21023,10 @@ int main(int argc, char** argv) {
             struct Swap { float gain; int32_t layer, in, out; };
             std::vector<Swap> swaps;
             std::vector<std::pair<float, int32_t>> cand, vict;
+            std::vector<uint8_t> vmask;   // --adapt-predict, as in the serve tier
+            int32_t vbuf[16];
+            const bool predict_on = o.adapt_predict > 0 && drive.d.lookahead != nullptr;
+            if (predict_on) vmask.assign((size_t) g.n_expert, 0);
             for (int64_t l = 0; l < g.n_layers; ++l) {
                 // STRATA_ADAPT_FETCH=2: where the PCIe share fetched since the last round, its fetchable experts are
                 // the admission's; the tier keeps the rest (no share there, or not pinned)
@@ -20954,7 +21041,19 @@ int main(int argc, char** argv) {
                     else vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
-                std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
+                bool voted_first = false;
+                if (predict_on) {   // the same rule as the serve tier: the consensus leads, the count takes the tail
+                    const int got = drive.d.lookahead->take_votes(l, vbuf, (int) (sizeof vbuf / sizeof vbuf[0]));
+                    if (got > 0) {
+                        std::fill(vmask.begin(), vmask.end(), (uint8_t) 0);
+                        for (int i = 0; i < got; ++i)
+                            if (vbuf[i] >= 0 && vbuf[i] < (int32_t) g.n_expert) vmask[(size_t) vbuf[i]] = 1;
+                        strata::core::rank_admission(cand, vmask.data(), o.adapt_predict);
+                        voted_first = true;
+                    }
+                }
+                if (!voted_first)
+                    std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
                 const size_t nc = std::min(cand.size(), vict.size());
                 std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
                                   [](auto& a, auto& b) { return a.first < b.first; });

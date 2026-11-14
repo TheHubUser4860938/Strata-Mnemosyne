@@ -334,6 +334,14 @@ public:
     /// dispatch score it against the experts the next layer really routes outside the GPU cache.
     void enable_stats(int64_t n_layers);
     bool stats_on() const { return stats_on_; }
+    /// --adapt-predict N: publish each layer's cross-token consensus (the "votes" the stats line reports) on every
+    /// start, not only under the stats flag - the adapt tier admits in that order.  Implied by enable_stats.
+    void enable_votes(int64_t n_layers);
+    bool votes_on() const { return votes_on_; }
+    /// Copy the layer's consensus into `out` (nearest-future first) and return how many were published; 0 means
+    /// this layer has no published list yet (a prediction still running, or a skipped one).  Staleness is a
+    /// window, which is the horizon the rule is priced at, so no generation check is made here.
+    int take_votes(int64_t layer, int32_t* out, int max) const;
     void stats_window_start() { gen_.fetch_add(1, std::memory_order_relaxed); }
     void stats_score(int64_t layer, const int32_t* ids, int64_t n, const int32_t* host_res, int pcie_num = 0);
     int64_t predicted() const { return predicted_.load(std::memory_order_relaxed); }
@@ -361,6 +369,7 @@ private:
     std::atomic<uint64_t> busy_us_{0};
     // STRATA_LOOKAHEAD_STATS
     bool stats_on_ = false;
+    bool votes_on_ = false;   // --adapt-predict: publish each layer's consensus (the stats arm implies this)
     int64_t words_ = 0;
     std::unique_ptr<std::atomic<uint64_t>[]> pmask_;   // [layer][3 sizes][words]
     std::unique_ptr<std::atomic<uint64_t>[]> pstamp_;  // [layer]: gen + 1 of the prediction (0 = none)
