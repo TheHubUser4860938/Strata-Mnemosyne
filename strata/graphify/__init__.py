@@ -353,16 +353,17 @@ class StrataGraphify:
             out["message"] = "No graph yet. Press Build, or run: python -m strata.graphify.cli build"
         return out
 
-    def view(self, max_communities: int = 40) -> dict:
-        """The compact form the page draws: one node per fact, grouped by community.
+    def view(self, max_communities: int = 60) -> dict:
+        """The compact form the page draws: every node, its community, and the edges between.
 
-        Kept small on purpose — graph.json is 220 KB for 276 nodes and the page only
-        needs id, label, community and degree.
+        Kept small on purpose — the page only needs id, label, community, degree. Edges ride
+        as INDEX PAIRS into `nodes`, so the canvas draws the real graph and not a bubble per
+        community; an endpoint outside the kept set drops that one edge.
         """
         g = self._read(self.graph_path)
         analysis = self._read(self.analysis_path)
         if not g:
-            return {"nodes": [], "communities": []}
+            return {"nodes": [], "edges": [], "communities": []}
         member_of: dict[str, int] = {}
         for cid, members in (analysis.get("communities") or {}).items():
             for m in members:
@@ -371,26 +372,42 @@ class StrataGraphify:
         for e in g.get("links") or []:
             degree[e.get("source")] = degree.get(e.get("source"), 0) + 1
             degree[e.get("target")] = degree.get(e.get("target"), 0) + 1
-        nodes = [{"id": n.get("id"), "label": (n.get("label") or "")[:180],
+
+        def fact_of(nid) -> Optional[int]:
+            # Node ids are `<shelf>_fact_<row id>` (the corpus writes one heading per fact), so
+            # a node links straight back to its ledger row.
+            parts = str(nid or "").rsplit("_fact_", 1)
+            return int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
+
+        nodes = [{"id": n.get("id"), "label": (n.get("label") or "")[:220],
                   "community": member_of.get(n.get("id"), -1),
-                  "degree": degree.get(n.get("id"), 0)}
+                  "degree": degree.get(n.get("id"), 0), "fact": fact_of(n.get("id"))}
                  for n in g.get("nodes") or []]
         sizes = {}
         for n in nodes:
             sizes[n["community"]] = sizes.get(n["community"], 0) + 1
         keep = {c for c, _ in sorted(sizes.items(), key=lambda kv: -kv[1])[:max_communities]}
         kept = [n for n in nodes if n["community"] in keep]
-        # Edges ride as INDEX PAIRS into `nodes`, so the page draws the real graph and not a
-        # bubble per community. An endpoint outside the kept set drops that one edge.
         at = {n["id"]: i for i, n in enumerate(kept)}
         edges = []
         for e in g.get("links") or []:
             s, t = at.get(e.get("source")), at.get(e.get("target"))
             if s is not None and t is not None:
                 edges.append([s, t])
-        return {"nodes": kept, "edges": edges,
-                "communities": [{"id": c, "size": sizes[c]} for c in sorted(keep)],
-                "links_total": len(g.get("links") or [])}
+        # A community is NAMED for its best-connected member, the same convention graphify's
+        # report uses: the hub is what the cluster is about. No LLM, no cloud — a max() over
+        # degrees the graph already carries.
+        stored = analysis.get("community_labels") or {}
+        comms = []
+        for c in sorted(keep):
+            members = [n for n in kept if n["community"] == c]
+            hub = max(members, key=lambda n: n["degree"]) if members else None
+            comms.append({"id": c, "size": sizes[c],
+                          "label": stored.get(str(c))
+                                   or ((hub or {}).get("label") or f"community {c}")[:60]})
+        return {"nodes": kept, "edges": edges, "communities": comms,
+                "links_total": len(g.get("links") or []),
+                "nodes_total": len(g.get("nodes") or [])}
 
     def write_view(self, max_communities: int = 40) -> dict:
         """Materialise view.json from the graph, so the page fetches a file, not a parse."""

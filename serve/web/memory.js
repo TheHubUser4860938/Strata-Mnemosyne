@@ -355,22 +355,25 @@ $("theme").onclick = () => {
 // ---- the graph view (2026-11-15). strata.graphify builds the store's graph from the fact text
 // on the served model and keeps it in <store>/strata-graphify/, so the page, the CLI and a
 // cloned box all read the same file. A pass is LLM work, so it runs on a server thread and this
-// view polls it through op=graph; the drawing is a dependency-free force layout on a canvas.
-let GPOLL = null, GSTATE = null;
+// view polls it through op=graph. The drawing is a dependency-free canvas: a force layout run
+// once and cached, normalised into the box, with wheel zoom, drag pan, and a legend that
+// toggles communities.
+let GPOLL = null, GDATA = null, GSTATE = null;
+const GVIS = new Set();
+let GVIEW = { k: 1, x: 0, y: 0 };
 const gc = c => `hsl(${(c * 47) % 360} 62% 62%)`;
 
 async function graphStatus() {
   const d = await api("/memory", { op: "graph" });
   GSTATE = d.graph || (d.result && d.result.graph) || {};
-  const s = GSTATE;
-  const p = s.progress || {};
+  const s = GSTATE, p = s.progress || {};
   $("g-nodes").textContent = (s.nodes || 0).toLocaleString();
   $("g-edges").textContent = (s.edges || 0).toLocaleString();
   $("g-comm").textContent = (s.communities || 0).toLocaleString();
   $("g-built").textContent = s.built ? new Date(s.built).toLocaleString() : "never";
   $("g-builtsub").textContent = s.built
     ? `${s.mode || "full"} pass · ${(s.facts || 0).toLocaleString()} facts`
-      + (s.seconds ? ` · ${Math.round(s.seconds)}s` : "") + (s.model ? ` · ${s.model}` : "")
+      + (s.seconds ? ` · ${Math.round(s.seconds / 60)} min` : "") + (s.model ? ` · ${s.model}` : "")
     : "a pass is LLM work on the served model";
   $("g-progtxt").textContent = s.running
     ? `pass running — chunk ${p.done}/${p.total}${p.files ? ` · ${p.files} files written` : ""}`
@@ -383,10 +386,10 @@ async function graphStatus() {
 
 async function graphTick() {
   const s = await graphStatus().catch(() => ({ running: false }));
-  if (!s.running) { clearInterval(GPOLL); GPOLL = null; graphView(); }
+  if (!s.running) { clearInterval(GPOLL); GPOLL = null; graphView(true); }
 }
 
-async function graphView() {
+async function graphView(rebuild) {
   try {
     const s = await graphStatus();
     if (s.running && !GPOLL) GPOLL = setInterval(graphTick, 15000);
@@ -397,86 +400,170 @@ async function graphView() {
     const v = await api("/memory", { op: "graph", action: "view" });
     const d = v.graph || (v.result && v.result.graph) || {};
     if (!d.nodes || !d.nodes.length) { $("g-list").innerHTML = `<li class="empty">The graph has no nodes.</li>`; return; }
-    drawGraph(d);
-    renderCommunities(d);
+    if (rebuild || !GDATA || GDATA.stamp !== s.built) {
+      GDATA = d; GDATA.stamp = s.built; layout(GDATA);
+      GVIS.clear(); (d.communities || []).forEach(c => GVIS.add(c.id));
+      renderLegend(d);
+    }
+    paint();
   } catch (e) { note(e.message, true); }
 }
 
-function renderCommunities(d) {
-  const ul = $("g-list");
-  ul.innerHTML = "";
-  const bucket = {};
-  for (const n of d.nodes) (bucket[n.community] = bucket[n.community] || []).push(n);
-  for (const c of d.communities) {
-    const members = bucket[c.id] || [];
-    const top = members.slice().sort((a, b) => b.degree - a.degree).slice(0, 3);
-    const li = document.createElement("li");
-    li.className = "fact";
-    li.innerHTML = `<div class="body"><div class="txt">${esc(top.map(t => t.label).join("  ·  ") || "(no label)")}</div>
-      <div class="meta"><span class="chip cls">${members.length} fact${members.length === 1 ? "" : "s"}</span>community ${c.id}</div></div>`;
-    ul.append(li);
-  }
-  if (!ul.children.length) ul.innerHTML = `<li class="empty">No communities.</li>`;
-}
-
-// Seeded by community on a ring, then relaxed: edges pull their ends together, nodes push
-// apart, every node leans back toward its community's anchor. Deterministic, no animation.
-function drawGraph(d) {
-  const cv = $("g-canvas"), X = cv.getContext("2d");
-  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
-  cv.width = W * dpr; cv.height = H * dpr; X.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const hub = {};
+// Run ONCE per graph, then cached on GDATA.pos. Positions are normalised into a centred unit
+// square: an earlier version drew raw force output and a strong repulsion threw nodes off-canvas.
+function layout(d) {
+  const hub = {}, N = d.nodes.length;
   (d.communities || []).forEach((c, i) => {
-    const a = (i / Math.max(1, d.communities.length)) * Math.PI * 2, R = Math.min(W, H) * 0.40;
-    hub[c.id] = [W / 2 + Math.cos(a) * R, H / 2 + Math.sin(a) * R];
+    const a = (i / Math.max(1, d.communities.length)) * Math.PI * 2;
+    hub[c.id] = [Math.cos(a) * 0.82, Math.sin(a) * 0.82];
   });
   const P = d.nodes.map((n, i) => {
-    const h = hub[n.community] || [W / 2, H / 2], a = i * 2.399963;
-    return { x: h[0] + Math.cos(a) * 40, y: h[1] + Math.sin(a) * 40, n };
+    const h = hub[n.community] || [0, 0], a = i * 2.399963
+      , r = 0.06 + 0.5 * Math.sqrt(i / Math.max(1, N));
+    return { x: h[0] + Math.cos(a) * r, y: h[1] + Math.sin(a) * r, i };
   });
-  for (let it = 0; it < 200; it++) {
-    const cool = 1 - it / 240;
+  for (let it = 0; it < 300; it++) {
+    const cool = 1 - it / 340;
     for (const [s, t] of (d.edges || [])) {
       const a = P[s], b = P[t]; if (!a || !b) continue;
-      const dx = b.x - a.x, dy = b.y - a.y, dist = Math.hypot(dx, dy) || 1;
-      const f = (dist - 34) * 0.012 * cool;
+      const dx = b.x - a.x, dy = b.y - a.y, dist = Math.hypot(dx, dy) || 1e-6;
+      const f = (dist - 0.11) * 0.02 * cool;
       a.x += dx * f; a.y += dy * f; b.x -= dx * f; b.y -= dy * f;
     }
     for (let i = 0; i < P.length; i++) {
       const a = P[i];
       for (let j = i + 1; j < P.length; j++) {
-        const b = P[j], dx = a.x - b.x, dy = a.y - b.y, q = (dx * dx + dy * dy) || 1;
-        if (q > 14400) continue;
-        const f = (30 / q) * cool;
+        const b = P[j], dx = a.x - b.x, dy = a.y - b.y, q = (dx * dx + dy * dy) || 1e-6;
+        if (q > 0.25) continue;
+        const f = 0.0009 / q * cool;
         a.x += dx * f; a.y += dy * f; b.x -= dx * f; b.y -= dy * f;
       }
     }
     for (const p of P) {
-      const h = hub[p.n.community]; if (!h) continue;
-      p.x += (h[0] - p.x) * 0.012; p.y += (h[1] - p.y) * 0.012;
+      const h = hub[d.nodes[p.i].community]; if (!h) continue;
+      p.x += (h[0] - p.x) * 0.02; p.y += (h[1] - p.y) * 0.02;
     }
   }
-  X.clearRect(0, 0, W, H);
-  X.strokeStyle = "rgba(170,180,195,.16)"; X.lineWidth = 0.6; X.beginPath();
-  for (const [s, t] of (d.edges || [])) {
-    const a = P[s], b = P[t]; if (!a || !b) continue;
-    X.moveTo(a.x, a.y); X.lineTo(b.x, b.y);
-  }
-  X.stroke();
-  for (const p of P) {
-    X.fillStyle = gc(p.n.community);
-    X.beginPath(); X.arc(p.x, p.y, 2.4 + Math.min(5, p.n.degree * 0.9), 0, Math.PI * 2); X.fill();
-  }
-  $("g-canvas").onmousemove = ev => {
-    const r = ev.target.getBoundingClientRect();
-    const mx = ev.clientX - r.left, my = ev.clientY - r.top;
-    let best = 160, hit = null;
-    for (const p of P) { const q = (p.x - mx) ** 2 + (p.y - my) ** 2; if (q < best) { best = q; hit = p; } }
-    ev.target.title = hit ? `${hit.n.label} · community ${hit.n.community} · degree ${hit.n.degree}` : "";
-  };
-  $("g-cap").textContent = `${d.nodes.length.toLocaleString()} of ${(GSTATE && GSTATE.facts || d.nodes.length).toLocaleString()} facts in the graph`
-    + ` · ${(d.edges || []).length.toLocaleString()} edges drawn · colour is the community, size is degree`;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of P) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+  const side = Math.max(x1 - x0, y1 - y0) || 1;
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  d.pos = P.map(p => [(p.x - mx) / side, (p.y - my) / side]);
+  GVIEW = { k: 1, x: 0, y: 0 };
 }
+
+function renderLegend(d) {
+  const ul = $("g-list");
+  ul.innerHTML = "";
+  const head = document.createElement("li");
+  head.className = "fact";
+  head.innerHTML = `<div class="body"><label style="cursor:pointer"><input type="checkbox" id="g-all" checked> all ${d.communities.length} communities</label></div>`;
+  head.querySelector("input").onchange = ev => {
+    GVIS.clear();
+    if (ev.target.checked) (d.communities || []).forEach(c => GVIS.add(c.id));
+    ul.querySelectorAll("input[data-comm]").forEach(b => { b.checked = ev.target.checked; });
+    paint();
+  };
+  ul.append(head);
+  for (const c of d.communities) {
+    const li = document.createElement("li");
+    li.className = "fact";
+    li.innerHTML = `<div class="body"><div class="txt" style="max-height:none">
+        <input type="checkbox" data-comm="${c.id}" checked>
+        <span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${gc(c.id)};margin:0 5px"></span>${esc(c.label)}</div>
+      <div class="meta">${c.size} node${c.size === 1 ? "" : "s"}</div></div>`;
+    li.querySelector("input").onchange = ev => {
+      const id = Number(ev.target.dataset.comm);
+      ev.target.checked ? GVIS.add(id) : GVIS.delete(id);
+      paint();
+    };
+    ul.append(li);
+  }
+}
+
+function paint() {
+  const d = GDATA; if (!d || !d.pos) return;
+  const cv = $("g-canvas"), X = cv.getContext("2d");
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  X.setTransform(dpr, 0, 0, dpr, 0, 0);
+  X.clearRect(0, 0, W, H);
+  const S = Math.min(W, H) * 0.92 * GVIEW.k, cx = W / 2 + GVIEW.x, cy = H / 2 + GVIEW.y;
+  const at = i => [cx + d.pos[i][0] * S, cy + d.pos[i][1] * S];
+  X.lineWidth = 0.7;
+  for (const [s, t] of (d.edges || [])) {
+    if (!GVIS.has(d.nodes[s].community) || !GVIS.has(d.nodes[t].community)) continue;
+    const a = at(s), b = at(t);
+    X.strokeStyle = "rgba(160,172,190,.28)";
+    X.beginPath(); X.moveTo(a[0], a[1]); X.lineTo(b[0], b[1]); X.stroke();
+  }
+  for (let i = 0; i < d.nodes.length; i++) {
+    const n = d.nodes[i];
+    if (!GVIS.has(n.community)) continue;
+    const p = at(i);
+    X.fillStyle = gc(n.community);
+    X.beginPath(); X.arc(p[0], p[1], 2.2 + Math.min(5.5, (n.degree || 0) * 0.9), 0, Math.PI * 2); X.fill();
+  }
+  $("g-cap").textContent = `${d.nodes.length.toLocaleString()} nodes · ${(d.edges || []).length.toLocaleString()} edges drawn`
+    + ` of ${d.nodes_total ? d.nodes_total.toLocaleString() + " nodes, " : ""}${(d.links_total || 0).toLocaleString()} edges in the graph`
+    + ` · colour is the community, size is degree`;
+}
+
+// wheel zooms about the cursor, drag pans; the transform lives in GVIEW and paint() re-applies
+$("g-canvas").onwheel = ev => {
+  ev.preventDefault();
+  const r = ev.target.getBoundingClientRect();
+  const mx = ev.clientX - r.left - r.width / 2, my = ev.clientY - r.top - r.height / 2;
+  const k = Math.min(12, Math.max(0.4, GVIEW.k * (ev.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  GVIEW.x = mx - (mx - GVIEW.x) * (k / GVIEW.k);
+  GVIEW.y = my - (my - GVIEW.y) * (k / GVIEW.k);
+  GVIEW.k = k;
+  paint();
+};
+let GPAN = null;
+$("g-canvas").onpointerdown = ev => { GPAN = [ev.clientX, ev.clientY, GVIEW.x, GVIEW.y]; ev.target.setPointerCapture(ev.pointerId); };
+$("g-canvas").onpointerup = () => { GPAN = null; };
+$("g-canvas").onpointermove = ev => {
+  const cv = ev.target;
+  if (GPAN) { GVIEW.x = GPAN[2] + (ev.clientX - GPAN[0]); GVIEW.y = GPAN[3] + (ev.clientY - GPAN[1]); paint(); return; }
+  const d = GDATA; if (!d || !d.pos) return;
+  const r = cv.getBoundingClientRect();
+  const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  const S = Math.min(r.width, r.height) * 0.92 * GVIEW.k;
+  let best = 120, hit = -1;
+  for (let i = 0; i < d.nodes.length; i++) {
+    if (!GVIS.has(d.nodes[i].community)) continue;
+    const px = r.width / 2 + GVIEW.x + d.pos[i][0] * S, py = r.height / 2 + GVIEW.y + d.pos[i][1] * S;
+    const q = (px - mx) ** 2 + (py - my) ** 2;
+    if (q < best) { best = q; hit = i; }
+  }
+  const n = hit >= 0 ? d.nodes[hit] : null;
+  cv.style.cursor = n ? "pointer" : "grab";
+  cv.title = n ? `${n.label}\ncommunity ${n.community} · degree ${n.degree}${n.fact ? ` · fact #${n.fact}` : ""}` : "";
+};
+$("g-canvas").onclick = ev => {
+  const d = GDATA; if (!d || !d.pos) return;
+  const r = ev.target.getBoundingClientRect();
+  const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  const S = Math.min(r.width, r.height) * 0.92 * GVIEW.k;
+  let best = 120, hit = -1;
+  for (let i = 0; i < d.nodes.length; i++) {
+    if (!GVIS.has(d.nodes[i].community)) continue;
+    const px = r.width / 2 + GVIEW.x + d.pos[i][0] * S, py = r.height / 2 + GVIEW.y + d.pos[i][1] * S;
+    const q = (px - mx) ** 2 + (py - my) ** 2;
+    if (q < best) { best = q; hit = i; }
+  }
+  if (hit < 0) return;
+  const n = d.nodes[hit];
+  $("g-cap").innerHTML = `<b>${esc(n.label)}</b> · community ${n.community} · degree ${n.degree}`
+    + (n.fact ? ` · <a href="#" id="g-jump">open fact #${n.fact}</a>` : "");
+  const jump = $("g-jump");
+  if (jump) jump.onclick = e => { e.preventDefault(); $("q").value = String(n.fact); show(String(n.fact)); tier("t3"); };
+};
+window.addEventListener("resize", () => paint());
 
 async function graphPass(merge) {
   $("g-build").disabled = $("g-merge").disabled = true;
@@ -488,4 +575,5 @@ async function graphPass(merge) {
 }
 $("g-build").onclick = () => graphPass(false);
 $("g-merge").onclick = () => graphPass(true);
+graphView();
 show("");
