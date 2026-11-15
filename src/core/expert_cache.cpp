@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <cstdlib>
@@ -783,6 +784,13 @@ void ExpertCache::set_layer_split(const std::string& spec) {
     for (double w : split_) tot += w;
     if (tot <= 0.0) { split_.clear(); return; }
     for (double& w : split_) w = w * (double) n_layers_ / tot;   // normalise: mean weight 1 = the even share
+    // The bands moved, so every layer's cursor has to move with them: `open()` seeded them against the even
+    // ranges, and a 1.4x head shifts layer 1's band off `q`. Without this two layers write the same slot.
+    for (int64_t l = 0; l < n_layers_ && l < (int64_t) layer_next_.size(); ++l) {
+        int64_t lo = 0, hi = 0;
+        layer_slot_range(l, lo, hi);
+        layer_next_[(size_t) l] = (int32_t) lo;
+    }
     for (int64_t l = 0; l < n_layers_ && l < (int64_t) layer_next_.size(); ++l) {
         int64_t lo = 0, hi = 0;
         layer_slot_range(l, lo, hi);

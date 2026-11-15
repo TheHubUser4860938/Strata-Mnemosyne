@@ -85,8 +85,10 @@ public:
     /// drafter's own representation for exactly this; the copy is `7 x 10 KB`, about 3 us at the measured link.
     /// Off by default: `landing_`/`fn_` keep their current producers and the graphs are unchanged.
     bool window_ahead() const { return fused_on_; }
-    const float* fused_rows() const { return fused_h_; }   ///< row i is the draft at position i (i = 0 .. kDrafts-1)
-    int fused_n() const { return fused_on_ ? (int) kDrafts : 0; }
+    const float* fused_rows() const { return fused_h_; }   ///< row i is block row i + 1: the token after the anchor first
+    int fused_n() const { return fused_on_ ? ndraft_ : 0; }   ///< the rows the graph copies: the head's row count
+    /// The block runs all 8 rows every round, so every fused row is this round's; rows past the number the
+    /// verifier reads are drafted too, which makes them free coverage rather than noise.
     int fused_embd() const { return N_; }
     /// Allocates the pinned buffer and turns the export on (called from `alloc` and from a clone's alloc).
     void init_window_ahead();

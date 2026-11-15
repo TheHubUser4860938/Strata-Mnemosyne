@@ -19294,7 +19294,8 @@ int main(int argc, char** argv) {
                 const float* tp = df2_win_taps(a_ + 1, err);
                 if (tp == nullptr || !df2.draft(tp, a_ + 1, p, outv[(size_t) a_], dd, pp, err)) return false;
                 if (df2.window_ahead() && drive.d.lookahead != nullptr)
-                    drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(), df2.fused_n(), nullptr);   // the layers after the last tap, for a window not yet verified
+                    drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(),
+                                              df2.fused_n(), nullptr);   // this round's drafts, layers after the last tap
                 for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                 if (ss.ple.ready() && ss.ple.table != nullptr) {   // the PLE rows of the next window's tokens, read ahead (as the MTP's draft does)
                     int n_pf = 0;
@@ -19339,7 +19340,8 @@ int main(int argc, char** argv) {
                         float pp[strata::core::Dflash2Drafter::kDrafts];
                         if (!df2.draft(ver.tap_dev(), dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
                         if (df2.window_ahead() && drive.d.lookahead != nullptr)
-                            drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(), df2.fused_n(), nullptr);   // the window ahead, from the taps' last layer
+                            drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(),
+                                            df2.fused_n(), nullptr);   // the deferred round's drafts, layers after the last tap
                         for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                     }
                 }
@@ -21331,7 +21333,8 @@ int main(int argc, char** argv) {
                 float pp[strata::core::Dflash2Drafter::kDrafts];
                 if (!df2.draft(ver.tap_dev(), a_ + 1, p, outv[(size_t) a_], dd, pp, err)) return false;
                 if (df2.window_ahead() && drive.d.lookahead != nullptr)
-                    drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(), df2.fused_n(), nullptr);   // the window ahead, from the taps' last layer
+                    drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(),
+                                            df2.fused_n(), nullptr);   // the deferred round's drafts, layers after the last tap
                 for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                 // what the MTP does while it drafts: the PLE rows of the tokens the next window will hold are read ahead
                 // (the window's gather would otherwise wait for them: 1.8 ms a round on strix)
@@ -21380,7 +21383,8 @@ int main(int argc, char** argv) {
                     float pp[strata::core::Dflash2Drafter::kDrafts];
                     if (!df2.draft(ver.tap_dev(), dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
                     if (df2.window_ahead() && drive.d.lookahead != nullptr)
-                        drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(), df2.fused_n(), nullptr);   // the window ahead, from the taps' last layer
+                        drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(),
+                                            df2.fused_n(), nullptr);   // the deferred round's drafts, layers after the last tap
                     for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                 }
             }
