@@ -140,3 +140,6 @@ tools/molt_open.sh
 tools/molt_focus.sh
 tools/state/molt-state.json
 tools/state/molt.log
+graphify-out/
+bench/p1/graphify-corpus/
+bench/p1/slice/
