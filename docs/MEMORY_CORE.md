@@ -2951,3 +2951,35 @@ Tested: 15 in `serve.test_docs` (chunker contract, ledger, spine, the stat-sweep
 per-file replace, prune, nested paths, shelf recall, the HTTP op), three sabotages each caught
 by a failing test (gate, class, replace). The reading stage (block caps for chunk-shaped rows,
 an LLM-rerank arm on the fused candidates) is the named next work.
+
+## The graph: `strata/graphify` — the store's own concept map (built 2026-11-15)
+
+The store keeps rows; a graph keeps relationships. `strata/graphify` reads the shelved facts
+out of Postgres, asks the running model what belongs with what, and writes a node-and-edge
+map that lives **beside** the store, not inside it: `<store>/strata-graphify/` holds
+`graph.json` (the map), `analysis.json` (communities, cohesion, god nodes), `view.json` (the
+compact form the page draws), `state.json` (what built it), `pending.json` (facts the harvest
+has noted for the next pass) and `progress.json` (a pass in flight, with the pid that owns it).
+
+`op=graph` on the same `/memory` surface, five actions: `summary` (the tiles), `view` (the
+canvas), `build` (a full pass, on a worker thread), `update` (the pending facts, merged into
+the existing map by `graphify.build.build_merge`), `note` (record ids — the harvest's cheap
+half). The Memory page gained a third view, **Graph**, beside Text and Cartridges.
+
+The cost, measured on this box (RTX 4090, `swift-1.5-flash-next-heretic-iq4_nl`): 3,028 facts
+→ 203 corpus files at 25 facts each → 26 chunks of 8 files, **64 minutes**, 1,185,979 tokens
+in and 374,949 out, **$0** — every call is the box's own model. The result: 147 nodes,
+110 edges, 15 hyperedges, 44 communities.
+
+Two sizing laws, both bought by failure:
+- **Eight files per chunk.** A chunk of 8 files costs 70,741 output tokens and lands whole;
+  25 files ran past the model's 16,384-token completion ceiling, came back cut, and were
+  re-extracted. Prefill is ~4,000-5,500 tok/s and decode ~90-164 tok/s, so the chunk is
+  bounded by *writing* the graph, not reading the facts: 686 KB of corpus reads in ~35 s.
+- **Concurrency 1.** Four concurrent chunks on one 4090 queue behind each other and time out
+  ("Retry #2 — attempt 4/4 — Timed out waiting for request headers"). Serial costs nothing
+  you were not already paying.
+
+The harvest hook is split for the same reason the curation window is: `op=graph action=note`
+is a JSON append, so a drain never waits on the LLM. `--graphify` runs one pass at the end of
+a drain, gated by `--graphify-threshold` (24 facts), so 60 new facts cost one pass, not 60.

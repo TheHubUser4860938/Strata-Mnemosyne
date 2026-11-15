@@ -3915,6 +3915,8 @@ class MemoryService:
                              ({"on": True, "loaded": False, "error": self.embedder_error}
                               if self.embedder_error else {"on": False})),
                 "db": self.db_path,
+                "graph": self.graph_stats(),   # the store's own knowledge graph (strata.graphify):
+                                               # node/community counts and whether a pass is running
                 "dir": self.directory}    # the store dir - what tools/attach() needs (the tools'
                                           # native twin of the old stats.db file path)
         # Close the read transaction the trailing version()/foreign_vectors()/meta reads opened
@@ -3924,6 +3926,35 @@ class MemoryService:
         with self.lock:
             self.conn.commit()
         return out
+
+    def graph_stats(self) -> dict:
+        """The knowledge graph's tile numbers, read from its own files — no LLM, no scan.
+
+        The graph lives beside the data in `<store>/strata-graphify/` (strata.graphify owns
+        the format). A box with no graph gets zeros and `status: "empty"`, never an error:
+        an absent graph is a fact about the box, not a fault in the store.
+        """
+        import json as _json
+        import os as _os
+
+        d = _os.path.join(self.directory, "strata-graphify")
+
+        def _load(name):
+            try:
+                with open(_os.path.join(d, name)) as f:
+                    return _json.load(f)
+            except (OSError, ValueError):
+                return {}
+
+        state, prog = _load("state.json"), _load("progress.json")
+        pend = _load("pending.json").get("ids") or []
+        return {"status": "ready" if state else "empty",
+                "nodes": state.get("nodes", 0), "edges": state.get("edges", 0),
+                "communities": state.get("communities", 0), "facts": state.get("facts", 0),
+                "built": state.get("built"), "pending": len(pend),
+                "running": bool(prog.get("running")),
+                "chunks": (f"{prog.get('done')}/{prog.get('total')}"
+                           if prog.get("running") else state.get("chunks"))}
 
     @property
     def docs(self):

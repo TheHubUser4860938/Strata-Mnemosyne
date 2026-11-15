@@ -39,7 +39,7 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
   <div class="card"><div class="label">Curation</div><div class="value" id="pending">-</div><div class="small" id="pendsub"></div></div>
   <div class="card"><div class="label">Semantic arm</div><div class="value" id="embed">-</div><div class="small" id="embedsub"></div></div>
   <div class="card"><div class="label">At rest</div><div class="value" id="rest">-</div><div class="small" id="restsub"></div></div>
-  <div class="card"><div class="label">View</div><div class="value" style="display:flex;gap:8px;padding-top:4px"><button id="t3btn" class="primary">Text</button><button id="t2btn">Cartridges</button></div><div class="small" id="viewsub">flip: tier-3 recall text, or the tier-2 cartridge system</div></div>
+  <div class="card"><div class="label">View</div><div class="value" style="display:flex;gap:8px;padding-top:4px"><button id="t3btn" class="primary">Text</button><button id="t2btn">Cartridges</button><button id="grbtn" title="the facts as a graph the model drew - communities, god nodes, cases">Graph</button></div><div class="small" id="viewsub">flip: tier-3 recall text, the tier-2 cartridge system, or the knowledge graph</div></div>
 </div>
 <div id="t3wrap">
 <div class="panel">
@@ -98,7 +98,29 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
   <ul class="facts" id="catlog"><li class="empty">-</li></ul>
 </div>
 </div>
-<footer>Every operation here is the same <code>/memory</code> API any client uses. The Cartridges view shows the tier-2 standing system, the S3 cart ledger, and the engine's slot vault.</footer>
+<div id="grwrap" hidden>
+<div class="cards">
+  <div class="card"><div class="label">Nodes</div><div class="value" id="g-nodes">-</div><div class="small" id="g-nodessub">one node per fact the graph placed</div></div>
+  <div class="card"><div class="label">Edges</div><div class="value" id="g-edges">-</div><div class="small" id="g-edgessub">relations the model read between facts</div></div>
+  <div class="card"><div class="label">Communities</div><div class="value" id="g-comm">-</div><div class="small">what the graph thinks the shelves are</div></div>
+  <div class="card"><div class="label">Last pass</div><div class="value" id="g-built">-</div><div class="small" id="g-builtsub">a pass is LLM work on the served model</div></div>
+</div>
+<div class="panel">
+  <div class="panel-bar">
+    <button id="g-build" class="primary">Run a pass</button>
+    <button id="g-merge" title="graph only the facts stored since the last pass and merge them into the standing graph">Graph new facts</button>
+    <span class="small" id="g-note">serial, one chunk of eight shelf files at a time, so the box stays yours</span>
+  </div>
+  <div class="panel-bar" style="border-bottom:1px solid var(--st-line-soft)"><span class="small" id="g-progtxt">no pass running</span></div>
+  <canvas id="g-canvas" style="width:100%;height:460px;display:block"></canvas>
+  <div class="small" id="g-cap" style="padding:10px 18px;border-top:1px solid var(--st-line-soft)"></div>
+</div>
+<div class="panel">
+  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Communities</h2><span class="small">biggest first · a community is the graph's own grouping, not a shelf label</span></div>
+  <ul class="facts" id="g-list"><li class="empty">-</li></ul>
+</div>
+</div>
+<footer>Every operation here is the same <code>/memory</code> API any client uses. The Cartridges view shows the tier-2 standing system, the S3 cart ledger, and the engine's slot vault. The Graph view shows the knowledge graph the served model builds from the facts — <code>/memory {op:"graph"}</code>, stored at <code>&lt;store&gt;/strata-graphify/</code>.</footer>
 </main>
 </body>
 </html>

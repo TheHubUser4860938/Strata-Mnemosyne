@@ -252,15 +252,20 @@ function tier(t) {
   TIER = t;
   $("t3wrap").hidden = t !== "t3";
   $("t2wrap").hidden = t !== "t2";
+  $("grwrap").hidden = t !== "gr";
   $("t3btn").className = t === "t3" ? "primary" : "";
   $("t2btn").className = t === "t2" ? "primary" : "";
+  $("grbtn").className = t === "gr" ? "primary" : "";
   // the toggle says which one is showing (audit 2026-11-07: colour was the only signal)
   $("t3btn").setAttribute("aria-pressed", t === "t3");
   $("t2btn").setAttribute("aria-pressed", t === "t2");
+  $("grbtn").setAttribute("aria-pressed", t === "gr");
   if (t === "t2") { renderCart(); renderCatlog(); }
+  if (t === "gr") graphView();
 }
 $("t3btn").onclick = () => tier("t3");
 $("t2btn").onclick = () => tier("t2");
+$("grbtn").onclick = () => tier("gr");
 
 $("search").onclick = () => show($("q").value.trim());
 $("q").onkeydown = e => { if (e.key === "Enter") show($("q").value.trim()); };
@@ -346,4 +351,141 @@ $("theme").onclick = () => {
   document.documentElement.dataset.theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   localStorage.setItem("strata.theme", document.documentElement.dataset.theme);
 };
+
+// ---- the graph view (2026-11-15). strata.graphify builds the store's graph from the fact text
+// on the served model and keeps it in <store>/strata-graphify/, so the page, the CLI and a
+// cloned box all read the same file. A pass is LLM work, so it runs on a server thread and this
+// view polls it through op=graph; the drawing is a dependency-free force layout on a canvas.
+let GPOLL = null, GSTATE = null;
+const gc = c => `hsl(${(c * 47) % 360} 62% 62%)`;
+
+async function graphStatus() {
+  const d = await api("/memory", { op: "graph" });
+  GSTATE = d.graph || (d.result && d.result.graph) || {};
+  const s = GSTATE;
+  const p = s.progress || {};
+  $("g-nodes").textContent = (s.nodes || 0).toLocaleString();
+  $("g-edges").textContent = (s.edges || 0).toLocaleString();
+  $("g-comm").textContent = (s.communities || 0).toLocaleString();
+  $("g-built").textContent = s.built ? new Date(s.built).toLocaleString() : "never";
+  $("g-builtsub").textContent = s.built
+    ? `${s.mode || "full"} pass · ${(s.facts || 0).toLocaleString()} facts`
+      + (s.seconds ? ` · ${Math.round(s.seconds)}s` : "") + (s.model ? ` · ${s.model}` : "")
+    : "a pass is LLM work on the served model";
+  $("g-progtxt").textContent = s.running
+    ? `pass running — chunk ${p.done}/${p.total}${p.files ? ` · ${p.files} files written` : ""}`
+    : (s.error ? `last pass failed: ${s.error}`
+               : (s.status === "ready"
+                 ? `the graph stands · ${s.pending ? s.pending + " new fact(s) waiting a pass" : "nothing waiting"}`
+                 : "no graph yet — a pass reads the shelves and asks what belongs with what"));
+  return s;
+}
+
+async function graphTick() {
+  const s = await graphStatus().catch(() => ({ running: false }));
+  if (!s.running) { clearInterval(GPOLL); GPOLL = null; graphView(); }
+}
+
+async function graphView() {
+  try {
+    const s = await graphStatus();
+    if (s.running && !GPOLL) GPOLL = setInterval(graphTick, 15000);
+    if (s.status !== "ready") {
+      $("g-list").innerHTML = `<li class="empty">No graph yet. A pass reads every shelf once, eight files at a time.</li>`;
+      return;
+    }
+    const v = await api("/memory", { op: "graph", action: "view" });
+    const d = v.graph || (v.result && v.result.graph) || {};
+    if (!d.nodes || !d.nodes.length) { $("g-list").innerHTML = `<li class="empty">The graph has no nodes.</li>`; return; }
+    drawGraph(d);
+    renderCommunities(d);
+  } catch (e) { note(e.message, true); }
+}
+
+function renderCommunities(d) {
+  const ul = $("g-list");
+  ul.innerHTML = "";
+  const bucket = {};
+  for (const n of d.nodes) (bucket[n.community] = bucket[n.community] || []).push(n);
+  for (const c of d.communities) {
+    const members = bucket[c.id] || [];
+    const top = members.slice().sort((a, b) => b.degree - a.degree).slice(0, 3);
+    const li = document.createElement("li");
+    li.className = "fact";
+    li.innerHTML = `<div class="body"><div class="txt">${esc(top.map(t => t.label).join("  ·  ") || "(no label)")}</div>
+      <div class="meta"><span class="chip cls">${members.length} fact${members.length === 1 ? "" : "s"}</span>community ${c.id}</div></div>`;
+    ul.append(li);
+  }
+  if (!ul.children.length) ul.innerHTML = `<li class="empty">No communities.</li>`;
+}
+
+// Seeded by community on a ring, then relaxed: edges pull their ends together, nodes push
+// apart, every node leans back toward its community's anchor. Deterministic, no animation.
+function drawGraph(d) {
+  const cv = $("g-canvas"), X = cv.getContext("2d");
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr; X.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const hub = {};
+  (d.communities || []).forEach((c, i) => {
+    const a = (i / Math.max(1, d.communities.length)) * Math.PI * 2, R = Math.min(W, H) * 0.40;
+    hub[c.id] = [W / 2 + Math.cos(a) * R, H / 2 + Math.sin(a) * R];
+  });
+  const P = d.nodes.map((n, i) => {
+    const h = hub[n.community] || [W / 2, H / 2], a = i * 2.399963;
+    return { x: h[0] + Math.cos(a) * 40, y: h[1] + Math.sin(a) * 40, n };
+  });
+  for (let it = 0; it < 200; it++) {
+    const cool = 1 - it / 240;
+    for (const [s, t] of (d.edges || [])) {
+      const a = P[s], b = P[t]; if (!a || !b) continue;
+      const dx = b.x - a.x, dy = b.y - a.y, dist = Math.hypot(dx, dy) || 1;
+      const f = (dist - 34) * 0.012 * cool;
+      a.x += dx * f; a.y += dy * f; b.x -= dx * f; b.y -= dy * f;
+    }
+    for (let i = 0; i < P.length; i++) {
+      const a = P[i];
+      for (let j = i + 1; j < P.length; j++) {
+        const b = P[j], dx = a.x - b.x, dy = a.y - b.y, q = (dx * dx + dy * dy) || 1;
+        if (q > 14400) continue;
+        const f = (30 / q) * cool;
+        a.x += dx * f; a.y += dy * f; b.x -= dx * f; b.y -= dy * f;
+      }
+    }
+    for (const p of P) {
+      const h = hub[p.n.community]; if (!h) continue;
+      p.x += (h[0] - p.x) * 0.012; p.y += (h[1] - p.y) * 0.012;
+    }
+  }
+  X.clearRect(0, 0, W, H);
+  X.strokeStyle = "rgba(170,180,195,.16)"; X.lineWidth = 0.6; X.beginPath();
+  for (const [s, t] of (d.edges || [])) {
+    const a = P[s], b = P[t]; if (!a || !b) continue;
+    X.moveTo(a.x, a.y); X.lineTo(b.x, b.y);
+  }
+  X.stroke();
+  for (const p of P) {
+    X.fillStyle = gc(p.n.community);
+    X.beginPath(); X.arc(p.x, p.y, 2.4 + Math.min(5, p.n.degree * 0.9), 0, Math.PI * 2); X.fill();
+  }
+  $("g-canvas").onmousemove = ev => {
+    const r = ev.target.getBoundingClientRect();
+    const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    let best = 160, hit = null;
+    for (const p of P) { const q = (p.x - mx) ** 2 + (p.y - my) ** 2; if (q < best) { best = q; hit = p; } }
+    ev.target.title = hit ? `${hit.n.label} · community ${hit.n.community} · degree ${hit.n.degree}` : "";
+  };
+  $("g-cap").textContent = `${d.nodes.length.toLocaleString()} of ${(GSTATE && GSTATE.facts || d.nodes.length).toLocaleString()} facts in the graph`
+    + ` · ${(d.edges || []).length.toLocaleString()} edges drawn · colour is the community, size is degree`;
+}
+
+async function graphPass(merge) {
+  $("g-build").disabled = $("g-merge").disabled = true;
+  try {
+    await api("/memory", { op: "graph", action: merge ? "update" : "build" });
+    if (!GPOLL) GPOLL = setInterval(graphTick, 15000);
+    graphStatus();
+  } catch (e) { note(e.message, true); $("g-build").disabled = $("g-merge").disabled = false; }
+}
+$("g-build").onclick = () => graphPass(false);
+$("g-merge").onclick = () => graphPass(true);
 show("");

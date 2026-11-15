@@ -839,6 +839,14 @@ def main():
                          "diagnostic names multi-event ORDERING as the mechanism - while a rendered "
                          "memory line carries no date at all, so the fact has to name its own day.")
     ap.add_argument("--no-store", action="store_true", help="score but do not remember/mark")
+    ap.add_argument("--no-graph", action="store_true",
+                    help="do not note the window's new fact ids for the graph pass "
+                         "(strata.graphify reads <store>/strata-graphify/pending.json)")
+    ap.add_argument("--graphify", action="store_true",
+                    help="after the drain, run one graph pass over the facts this run noted "
+                         "(LLM work on the served model, one chunk at a time, ~1 min per 8 files)")
+    ap.add_argument("--graphify-threshold", type=int, default=24, metavar="N",
+                    help="with --graphify: only pass when at least N facts are pending (default 24)")
     ap.add_argument("--no-law", action="store_true",
                     help="skip the supersession law's vector scrutiny (fact 3820): a new fact "
                          "cos>=0.85 from an active same-scope row normally gets a RESTATED/"
@@ -1325,6 +1333,17 @@ def main():
                              'UNSCORED (blind-gate law: an unscored window eats no turns)')
             else:
                 note_mark = ""
+            # The graph pass is NOTED per window (2026-11-15, strata.graphify): op=graph/action=note
+            # appends the window's new row ids to <store>/strata-graphify/pending.json, which is a
+            # JSON write, not an LLM call, so a drain never waits on the graph. The pass itself runs
+            # on the page's Build button, on the CLI, or on --graphify below.
+            if not a.no_graph:
+                new_ids = [c["mem_id"] for c in win_c if c.get("mem_id")]
+                if new_ids:
+                    st, r = http(url + "/memory", {"op": "graph", "action": "note",
+                                                   "ids": new_ids}, timeout=30)
+                    if st != 200:
+                        rec({"kind": "graph_note", "http": st, "err": str(r)[:120]})
             print(f"window {batch + 1}: +{len(win_t)} turns, {len(win_c)} candidates, "
                   f"{s_ok} scored, {s_void} unscored; {note_mark}"
                   + (f"; {len(win_t) - len(markable)} left blind" if markable and win_t else ""),
@@ -1343,7 +1362,32 @@ def main():
             print(f"  [{c['turn_id']}] {c['fact'][:100]}")
         return 0
 
-    pend_after = (http(url + "/memory", timeout=15)[1].get("stats") or {}).get("turns_pending")
+    stats_after = http(url + "/memory", timeout=15)[1].get("stats") or {}
+    pend_after = stats_after.get("turns_pending")
+    # THE GRAPH PASS (2026-11-15, strata.graphify): the harvest notes fact ids per window
+    # (op=graph/action=note, a JSON write); this is where the LLM work happens, once per drain,
+    # over the ids noted since the last pass. Threshold-gated so a 60-candidate drain costs a
+    # handful of passes, not one per fact. The store dir comes from the server's own stats
+    # (`dir`), never from a flag, so a venue box graphs its own store and prod graphs prod.
+    if a.graphify:
+        store_dir = stats_after.get("dir")
+        if not store_dir:
+            print("graph: stats carried no store dir - no pass", flush=True)
+        else:
+            from strata.graphify import StrataGraphify
+            g = StrataGraphify(store_dir)
+            ids = g.pending_ids()
+            if len(ids) < max(1, a.graphify_threshold):
+                print(f"graph: {len(ids)} pending, under the {a.graphify_threshold}-fact "
+                      f"threshold - no pass", flush=True)
+            else:
+                res = g.build(ids=ids, full=False, on_progress=lambda d, t, n: print(
+                    f"  graph chunk {d}/{t} ({n} files extracted)", flush=True))
+                print(f"graph pass: {res.get('nodes')} nodes, {res.get('edges')} edges, "
+                      f"{res.get('communities')} communities over {res.get('facts')} facts "
+                      f"in {res.get('seconds')}s ({res.get('mode')}, "
+                      f"{res.get('tokens_out')} tok out)", flush=True)
+                g.clear_pending()
     lines = [f"curate verdict tag={a.tag} channel=off/temp0.8 muted passes={a.passes} "
              f"stored={'off' if a.no_store else 'on'}",
              f"  drained={drained} extract_fails={fails} candidates={len(candidates)} "

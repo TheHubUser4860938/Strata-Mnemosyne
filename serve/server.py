@@ -10928,6 +10928,29 @@ def make_handler(svc: Service):
                 else:
                     raise ValueError('docs action: one of "index", "list", "remove", "read", '
                                      '"expand", "rerank"')
+            elif op == "graph":           # the store's knowledge graph (2026-11-15): the facts as a
+                # graph the model drew, not a shelf list. It lives INSIDE the store folder
+                # (<store>/strata-graphify/), so a box that clones the data clones the graph.
+                # A pass is LLM work on the served model, so it runs on a worker thread and
+                # writes progress.json as it goes; this route answers from those files.
+                action = (str(req.get("action") or "summary")).strip().lower()
+                from strata.graphify import StrataGraphify
+                gr = StrataGraphify(svc.memory.directory)
+                if action == "build":
+                    r = {"graph": gr.build_in_background(
+                        ids=req.get("ids") or None, full=bool(req.get("full", True)))}
+                elif action == "update":
+                    ids = gr.pending_ids()
+                    r = {"graph": gr.build_in_background(ids=ids, full=False)
+                         if ids else {"status": "nothing pending"}}
+                elif action == "view":
+                    r = {"graph": gr.view(int(req.get("max_communities") or 40))}
+                elif action == "note":
+                    # the harvest's verb: "these facts are new, graph them on the next pass".
+                    # Cheap and offline (a JSON list), so a drain never waits on an LLM call.
+                    r = {"graph": {"pending": gr.note(req.get("ids") or [])}}
+                else:
+                    r = {"graph": gr.summary()}
             elif op in ("mint", "remint", "retire", "carts"):     # S3 (2026-10-25): one experience,
                 if svc.carts is None:                             # one cartridge - and the ledger
                     raise ValueError("carts are off (memory.cartridges needs slot_save_path "    #  lives in the store; the base
@@ -10954,7 +10977,7 @@ def make_handler(svc: Service):
                 # and the menu moves with them, or the menu lies
                 raise ValueError('op: one of "remember", "forget", "purge", "invalidate", "correct", '
                                  '"classify", "pin", "link", "curate", "search", "turn", "turns", "cartridge", '
-                                 '"docs", "mint", "remint", "retire", "carts"')
+                                 '"docs", "mint", "remint", "retire", "carts", "graph"')
             # EVERY op answers under its own key AND under `result` (audit 2026-11-07): the docs
             # verbs reply {"ok":true,"docs":{...}} while tools/m4_reshelve.py reads
             # out["result"]["docs"], and the two have been quietly out of step since the wire verb
