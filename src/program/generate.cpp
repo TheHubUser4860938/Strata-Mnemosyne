@@ -8472,7 +8472,10 @@ int main(int argc, char** argv) {
                     if (!per_layer_counts.empty()) xcache.set_layer_counts(per_layer_counts);
                     // R4.2i: the per-layer residency counters, so a quota change is measured, not guessed.
                     const char* ls = std::getenv("STRATA_EXPERT_LAYER_STATS");
-                    if (ls != nullptr && ls[0] == '1') xcache.enable_layer_stats();
+                    if (ls != nullptr && ls[0] == '1') {
+                        xcache.enable_layer_stats();
+                        std::fprintf(stderr, "strata generate: per-layer residency counters armed on the shared cache\n");
+                    }
                     // R4.2g with a split: the per-layer quota, from the same env the setup path uses.
                     const char* sp = std::getenv("STRATA_EXPERT_CACHE_SPLIT");
                     if (sp != nullptr && sp[0]) {
@@ -8743,6 +8746,13 @@ int main(int argc, char** argv) {
         // try said.  Nothing changes when the first open works.
         bool stage_open = false;
         st.cache.set_slot_guard(slot_guard);   // STRATA_MMQ_DIRECT: the stages' prompt MMQ reads their own slots
+        // R4.2i: the stages own the decode on a layer split, so the residency counters have to be armed here
+        // too - arming only the shared cache printed per-layer rates for a cache that served nothing (measured
+        // 2026-11-15: 57 hit-rate lines, no `layer residency`, on a pool boot).
+        {
+            const char* ls = std::getenv("STRATA_EXPERT_LAYER_STATS");
+            if (ls != nullptr && ls[0] == '1') st.cache.enable_layer_stats();
+        }
         for (int attempt = 0; !sized.empty(); ++attempt) {
             stage_open = native_pack ? st.cache.open_sized(sized, g.n_layers, g.n_expert, err)
                                      : st.cache.open((int64_t) sized.size(), g.n_layers, g.n_expert, (int64_t) lay.max_blob, err);
