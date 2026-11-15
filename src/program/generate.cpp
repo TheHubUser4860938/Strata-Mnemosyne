@@ -8247,10 +8247,14 @@ int main(int argc, char** argv) {
     // the slot table is `quota` copies of each layer's own blob in layer order, so a band cut from a fraction of
     // the pool lands a wide blob in a narrow stride (measured 2026-11-15: long prompts came back non-finite,
     // #879).  The weights are parsed here, the counts laid out here, and the same counts become the bands.
+    std::string split_spec;                  // the spec as written, for the boot line (getenv is null when unset)
     std::vector<double> split_w;
     if (o.expert_cache_per_layer) {
         const char* sp = std::getenv("STRATA_EXPERT_CACHE_SPLIT");
-        if (sp != nullptr && sp[0]) split_w = strata::core::ExpertCache::parse_split(sp, g.n_layers);
+        if (sp != nullptr && sp[0]) {
+            split_spec = sp;
+            split_w = strata::core::ExpertCache::parse_split(sp, g.n_layers);
+        }
     }
     std::vector<int64_t> per_layer_counts;   // what the sizing laid out (empty = a uniform-band cache)
     const auto counts_for = [&](int64_t base) {
@@ -8301,8 +8305,8 @@ int main(int argc, char** argv) {
                                  "(%.2f GiB) -> %d slots, %lld per layer (%.2f GiB)%s\n",
                          asked, (double) budget / 1073741824.0, o.expert_cache, (long long) q,
                          (double) (per_layer_bytes / 1073741824.0),
-                         per_layer_counts.empty() ? "" : (", split " + std::string(std::getenv("STRATA_EXPERT_CACHE_SPLIT"))
-                             + " -> " + std::to_string(per_layer_counts.front()) + ".."
+                         split_spec.empty() ? "" : (", split " + split_spec + " -> "
+                             + std::to_string(per_layer_counts.front()) + ".."
                              + std::to_string(per_layer_counts.back()) + " a layer").c_str());
         }
     } else if (native_pack && o.expert_cache > 0 && !profile.empty()) {
