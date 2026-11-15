@@ -90,7 +90,7 @@ _ATTR_RULE = (
     "observed: behavior the conversation shows, not stated. QUOTE = copied words, never a "
     "paraphrase; a fact whose quote is not found verbatim is trusted less, not more.\n")
 _LANE_RULE = (
-    "APPEND ONE MORE FIELD, BETWEEN ATTR AND QUOTE: LANE: fact|taboo|state:<key>\n"
+    "APPEND ONE MORE FIELD, BETWEEN ATTR AND QUOTE: LANE: fact|taboo|state:<key>|session\n"
     "taboo = a NEGATIVE CONSTRAINT stated by the user - what must not happen, what must always "
     "hold. Keep the binding word (never, don't, no, not, must, only, avoid) INSIDE the FACT: a "
     "fact that drops the negation silently flips a rule into a permission, and no later reader "
@@ -98,7 +98,10 @@ _LANE_RULE = (
     "ports, paths, RAM, boot counts - where <key> is the ONE word naming what was measured "
     "(state:engine, state:port, state:ram); write the FACT as 'key = value (YYYY-MM-DD)'. "
     "State is true only until the next look, so an undated state fact is a stale claim waiting "
-    "to happen. Everything else is fact.\n")
+    "to happen. session = a request, plan, or order of work that is only true for THIS working "
+    "session - 'do task 2 before task 1', 'run the suite before the demo' - a fact about the "
+    "afternoon, not about the person; it retires on a clock (30 days) while a fact keeps its "
+    "shelf. Everything else is fact.\n")
 # WHY (2026-10-29, the Mind survey's Name/What/Why/Where template). The ideal worth taking is not
 # the template, it is the STANDARD: our own agent.md says a law without a receipt is a vibe, and
 # until now the harvest wrote rows that were exactly that - one prose sentence, no stated cause. The
@@ -515,6 +518,11 @@ def parse_extract_line(ln: str, turn_user: str = "", turn_assistant: str = "") -
         key = lane_raw.split(":", 1)[1].strip() if ":" in lane_raw else ""
         if key and " " not in key and len(key) <= 24:
             lane, state_key = "state", key
+    elif lane_raw.startswith("session"):
+        # 2026-11-15: the fourth lane is the one the store was missing - a fact about THIS
+        # afternoon ("task 2 before task 1") that reads as a preference forever. The lane is
+        # the clock's handle: tools/m4_fold.py --session-days retires it, the shelf stays.
+        lane = "session"
     return {"fact": fact, "probe": probe, "gold": gold,
             "scope": "user" if scope.lower() == "user" else "project",
             "attr": attr, "quote": quote[:300], "quote_ok": quote_ok,

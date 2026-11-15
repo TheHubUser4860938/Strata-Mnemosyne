@@ -621,7 +621,11 @@ $("g-canvas").onpointermove = ev => {
   cv.style.cursor = n ? "pointer" : "grab";
   cv.title = n ? `${n.label}\ncommunity ${n.community} · degree ${n.degree}${n.fact ? " · fact #" + n.fact : ""}` : "";
 };
-$("g-canvas").onclick = ev => {
+// Double-click, not single. Orbiting the camera is a drag that ends on a node, and a single
+// click fired the jump through the whole gesture (owner's report, 2026-11-15). Hover previews,
+// single click selects the node into the caption line, and the jump into the Text view needs a
+// deliberate double-click.
+$("g-canvas").ondblclick = ev => {
   const d = GDATA; if (!d || !d.px) return;
   const r = ev.target.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
   let best = 130, hit = -1;
