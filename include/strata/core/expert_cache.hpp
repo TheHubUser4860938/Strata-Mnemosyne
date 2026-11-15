@@ -154,6 +154,14 @@ public:
     /// `(layer, expert)` -> slot index, or `kNotResident`.  Bounds-checked: a bad layer or expert returns
     /// `kNotResident` rather than reading whatever is adjacent in the table.
     int32_t slot_of(int64_t layer, int64_t expert) const;
+    /// R4.2i: count one routed lookup where the cache is not consulted by slot - the CUDA-graph gather knows
+    /// only `kind` (cache, PCIe, remote).  Without this the per-layer line was silent on a graph decode: the
+    /// routed site that calls `slot_of_routed` is the stager's CPU path.
+    void note_lookup(int64_t layer, int64_t expert, bool hit) {
+        if (layer_lookups_.empty() || layer < 0 || layer >= n_layers_) return;
+        ++layer_lookups_[(size_t) layer];
+        if (hit) ++layer_hits_[(size_t) layer];
+    }
     /// R4.2i: the same lookup as `slot_of`, counted per layer. The decode path's routed experts go through
     /// this; the tier's own scans (which sweep all 512 per layer and report the FILL, 107/512 = 21% for
     /// every layer) keep using `slot_of`, so the printed spread is the routing-weighted one.
