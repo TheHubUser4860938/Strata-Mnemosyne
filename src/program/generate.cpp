@@ -8243,6 +8243,36 @@ int main(int argc, char** argv) {
     // blobs, and the quota is however many copies of every layer fit in it.
     std::vector<int64_t> sized_slots;
     uint64_t per_layer_bytes = 0;
+    // R4.2g-3: on a per-layer cache STRATA_EXPERT_CACHE_SPLIT is a SIZING decision, not a post-open band move:
+    // the slot table is `quota` copies of each layer's own blob in layer order, so a band cut from a fraction of
+    // the pool lands a wide blob in a narrow stride (measured 2026-11-15: long prompts came back non-finite,
+    // #879).  The weights are parsed here, the counts laid out here, and the same counts become the bands.
+    std::vector<double> split_w;
+    if (o.expert_cache_per_layer) {
+        const char* sp = std::getenv("STRATA_EXPERT_CACHE_SPLIT");
+        if (sp != nullptr && sp[0]) split_w = strata::core::ExpertCache::parse_split(sp, g.n_layers);
+    }
+    std::vector<int64_t> per_layer_counts;   // what the sizing laid out (empty = a uniform-band cache)
+    const auto counts_for = [&](int64_t base) {
+        std::vector<int64_t> c((size_t) g.n_layers, base);
+        if (split_w.empty() || base <= 0) return c;
+        double pre = 0.0;
+        int64_t assigned = 0;
+        for (int64_t l = 0; l < g.n_layers; ++l) {
+            pre += split_w[(size_t) l];                              // weights are normalised: they sum to n_layers
+            const int64_t want = (int64_t) (pre / (double) g.n_layers * (double) base + 0.5);
+            c[(size_t) l] = std::max<int64_t>(1, want - assigned);    // a running sum: the counts tile the pool
+            assigned += c[(size_t) l];
+        }
+        return c;
+    };
+    const auto bytes_for = [&](const std::vector<int64_t>& c) {
+        uint64_t need = 0;
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            need += (uint64_t) c[(size_t) l] *
+                    (uint64_t) strata::core::ExpertCache::slot_stride((int64_t) nib::slot_bytes(l), slot_guard);
+        return need;
+    };
     if (native_pack && o.expert_cache > 0 && o.expert_cache_per_layer) {
         const size_t free_b = strata::core::device_free_bytes();   // the same reading the shared-cache sizing uses
         const auto& lay = strata::kernels::cpu::expert_layout();
@@ -8255,18 +8285,25 @@ int main(int argc, char** argv) {
             sum += (uint64_t) strata::core::ExpertCache::slot_stride((int64_t) nib::slot_bytes(l), slot_guard);
         int64_t q = sum > 0 ? (int64_t) (cap / sum) : 0;
         if (q > g.n_expert) q = g.n_expert;
+        std::vector<int64_t> counts = counts_for(q);
+        while (q > 1 && bytes_for(counts) > cap) { --q; counts = counts_for(q); }   // a weighted pool is not q*sum
+        q = (int64_t) (counts.empty() ? 0 : counts[(size_t) (g.n_layers / 2)]);      // what the line says per layer
         if (q > 0) {
-            per_layer_bytes = sum;
+            per_layer_bytes = bytes_for(counts);
+            per_layer_counts = counts;
             sized_slots.reserve((size_t) q * (size_t) g.n_layers);
             for (int64_t l = 0; l < g.n_layers; ++l) {
                 const int64_t b = (int64_t) nib::slot_bytes(l);
-                for (int64_t s = 0; s < q; ++s) sized_slots.push_back(b);
+                for (int64_t s = 0; s < counts[(size_t) l]; ++s) sized_slots.push_back(b);
             }
             o.expert_cache = (int) sized_slots.size();
             std::fprintf(stderr, "strata generate: per-layer slots use each layer's blob: %d uniform slots "
-                                 "(%.2f GiB) -> %d slots, %lld per layer (%.2f GiB)\n",
+                                 "(%.2f GiB) -> %d slots, %lld per layer (%.2f GiB)%s\n",
                          asked, (double) budget / 1073741824.0, o.expert_cache, (long long) q,
-                         (double) ((uint64_t) q * per_layer_bytes) / 1073741824.0);
+                         (double) (per_layer_bytes / 1073741824.0),
+                         per_layer_counts.empty() ? "" : (", split " + std::string(std::getenv("STRATA_EXPERT_CACHE_SPLIT"))
+                             + " -> " + std::to_string(per_layer_counts.front()) + ".."
+                             + std::to_string(per_layer_counts.back()) + " a layer").c_str());
         }
     } else if (native_pack && o.expert_cache > 0 && !profile.empty()) {
         size_t free_b = 0, total_b = 0;
@@ -8373,9 +8410,13 @@ int main(int argc, char** argv) {
                 if (q > g.n_expert) q = g.n_expert;
                 sized_slots.clear();
                 if (q <= 0) { o.expert_cache = 0; return false; }
+                std::vector<int64_t> c2 = counts_for(q);
+                while (q > 1 && bytes_for(c2) > keep_bytes) { --q; c2 = counts_for(q); }
+                per_layer_counts = c2;
+                per_layer_bytes = bytes_for(c2);
                 for (int64_t l = 0; l < g.n_layers; ++l) {
                     const int64_t b = (int64_t) nib::slot_bytes(l);
-                    for (int64_t s = 0; s < q; ++s) sized_slots.push_back(b);
+                    for (int64_t s = 0; s < c2[(size_t) l]; ++s) sized_slots.push_back(b);
                 }
                 o.expert_cache = (int) sized_slots.size();
                 return true;
@@ -8419,6 +8460,9 @@ int main(int argc, char** argv) {
                     ? xcache.open(o.expert_cache, g.n_layers, g.n_expert, (int64_t) strata::kernels::cpu::expert_layout().max_blob, err)
                     : xcache.open_sized(sized_slots, g.n_layers, g.n_expert, err);
                 if (ok) {
+                    // R4.2g-3: the bands are the counts the slot table was built from, so a weighted split never
+                    // moves a layer into a slot sized for another layer's blob.
+                    if (!per_layer_counts.empty()) xcache.set_layer_counts(per_layer_counts);
                     // R4.2i: the per-layer residency counters, so a quota change is measured, not guessed.
                     const char* ls = std::getenv("STRATA_EXPERT_LAYER_STATS");
                     if (ls != nullptr && ls[0] == '1') xcache.enable_layer_stats();

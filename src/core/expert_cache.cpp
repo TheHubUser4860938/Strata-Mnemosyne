@@ -739,6 +739,17 @@ void ExpertCache::layer_slot_range(int64_t layer, int64_t& lo, int64_t& hi) cons
     lo = 0;
     hi = 0;
     if (n_layers_ <= 0 || slots_ <= 0 || layer < 0 || layer >= n_layers_) return;
+    if (!layer_counts_.empty()) {
+        // R4.2g-3: the sizing built the slot table from these counts, in layer order, so the band is the
+        // running sum of the counts - the same layout the bytes are in, which is what keeps a blob and the
+        // stride it is copied into together.
+        int64_t lo2 = 0;
+        for (int64_t l = 0; l < layer; ++l) lo2 += layer_counts_[(size_t) l];
+        lo = lo2;
+        hi = lo2 + layer_counts_[(size_t) layer];
+        if (hi > slots_) hi = slots_;
+        return;
+    }
     if (split_.empty()) {
         const int64_t q = slots_ / n_layers_;
         lo = layer * q;
@@ -759,42 +770,57 @@ void ExpertCache::layer_slot_range(int64_t layer, int64_t& lo, int64_t& hi) cons
 /// Parse "1.4,1.4,1,..." into per-layer weights, normalised to sum to `n_layers_`, and rewind every layer's
 /// cursor to the start of its (new) range.  Empty entries and trailing junk are ignored; a list shorter than
 /// the layer count repeats its last weight, which is what makes "1.4,1.4,1" mean "the head gets 40% more".
-void ExpertCache::set_layer_split(const std::string& spec) {
-    split_.clear();
-    if (n_layers_ <= 0) return;
+std::vector<double> ExpertCache::parse_split(const std::string& spec, int64_t n_layers) {
+    std::vector<double> w;
+    if (n_layers <= 0) return w;
     size_t i = 0;
     while (i < spec.size()) {
         size_t j = spec.find(',', i);
         if (j == std::string::npos) j = spec.size();
         std::string tok = spec.substr(i, j - i);
         i = j + 1;
-        size_t a = tok.find_first_not_of(" \t");
+        const size_t a = tok.find_first_not_of(" \t");
         if (a == std::string::npos) continue;
-        size_t b = tok.find_last_not_of(" \t");
-        tok = tok.substr(a, b - a + 1);
+        tok = tok.substr(a, tok.find_last_not_of(" \t") - a + 1);
         char* end = nullptr;
-        const double w = strtod(tok.c_str(), &end);
-        if (end == tok.c_str() || w <= 0.0) continue;
-        split_.push_back(w);
+        const double v = strtod(tok.c_str(), &end);
+        if (end == tok.c_str() || v <= 0.0) continue;
+        w.push_back(v);
     }
-    if (split_.empty()) return;
-    while ((int64_t) split_.size() < n_layers_) split_.push_back(split_.back());
-    split_.resize((size_t) n_layers_);
+    if (w.empty()) return w;
+    while ((int64_t) w.size() < n_layers) w.push_back(w.back());
+    w.resize((size_t) n_layers);
     double tot = 0.0;
-    for (double w : split_) tot += w;
-    if (tot <= 0.0) { split_.clear(); return; }
-    for (double& w : split_) w = w * (double) n_layers_ / tot;   // normalise: mean weight 1 = the even share
-    // The bands moved, so every layer's cursor has to move with them: `open()` seeded them against the even
-    // ranges, and a 1.4x head shifts layer 1's band off `q`. Without this two layers write the same slot.
+    for (double x : w) tot += x;
+    if (tot <= 0.0) { w.clear(); return w; }
+    for (double& x : w) x = x * (double) n_layers / tot;   // normalise: mean weight 1 = the even share
+    return w;
+}
+
+void ExpertCache::set_layer_split(const std::string& spec) {
+    split_ = parse_split(spec, n_layers_);
+    if (split_.empty()) return;
+    // The bands moved, so every layer's cursor has to be re-seeded at its new first slot: `open()` seeded them
+    // against the even ranges, and a 1.4x head shifts layer 1's band off `q`. Without this two layers evict
+    // into the same slot.
     for (int64_t l = 0; l < n_layers_ && l < (int64_t) layer_next_.size(); ++l) {
         int64_t lo = 0, hi = 0;
         layer_slot_range(l, lo, hi);
         layer_next_[(size_t) l] = (int32_t) lo;
     }
+}
+
+void ExpertCache::set_layer_counts(std::vector<int64_t> counts) {
+    if (n_layers_ <= 0) return;
+    counts.resize((size_t) n_layers_, counts.empty() ? 0 : counts.back());
+    bool any = false;
+    for (int64_t& c : counts) { if (c < 1) c = 1; any = true; }
+    if (!any) return;
+    layer_counts_ = std::move(counts);
+    int64_t start = 0;
     for (int64_t l = 0; l < n_layers_ && l < (int64_t) layer_next_.size(); ++l) {
-        int64_t lo = 0, hi = 0;
-        layer_slot_range(l, lo, hi);
-        layer_next_[(size_t) l] = (int32_t) lo;
+        layer_next_[(size_t) l] = (int32_t) start;
+        start += layer_counts_[(size_t) l];
     }
 }
 

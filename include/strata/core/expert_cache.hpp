@@ -206,6 +206,14 @@ public:
     /// uniform-allocation costs of 1.1% of TPOT; MoE-Infinity (2401.14361) uses 4 / 20 / 6 by layer group;
     /// our own 200M-row trace puts the deficit at the head (layer 0 hits 0.505 at 102 slots, layer 31 0.919).
     void set_layer_split(const std::string& spec);
+    /// R4.2g-3: the bands from explicit per-layer slot counts, for a cache whose slots are NOT all the same
+    /// size (STRATA_EXPERT_CACHE_PER_LAYER).  `open_sized` lays out one layer's blob per group of slots, so a
+    /// weighted split has to be a sizing decision: a band that straddles a layer boundary puts a wide blob in a
+    /// narrow stride, the copy overlaps, and long prompts come back non-finite (#879, measured 2026-11-15).
+    void set_layer_counts(std::vector<int64_t> counts);
+    /// R4.2g-3: parses a split spec ("1.4,1.4,1.4,1") into `n_layers` weights with mean 1 (a short spec
+    /// repeats its last entry, an over-long one is cut).  Empty when the spec has no positive numbers.
+    static std::vector<double> parse_split(const std::string& spec, int64_t n_layers);
     bool layer_split() const { return !split_.empty(); }
 
     /// The device address of one slot.
@@ -296,6 +304,8 @@ private:
     bool per_layer_ = false;
     std::vector<int32_t> layer_next_;   ///< [n_layers] -> that layer's next free slot
     std::vector<double> split_;         ///< R4.2g-2: per-layer weights, normalised to sum to n_layers (empty = the even share)
+    /// R4.2g-3: per-layer slot counts, when the sizing (not a fraction of the pool) laid the bands out.
+    std::vector<int64_t> layer_counts_;
     mutable std::vector<int64_t> layer_hits_, layer_lookups_;   ///< R4.2i: the per-layer residency counters, bumped by a const lookup
     std::vector<uint64_t> off_;         ///< plan v0.3 P6: slot offsets (slots + 1 entries) when sized
     int64_t admitted_ = 0;
