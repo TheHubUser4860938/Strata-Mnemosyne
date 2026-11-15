@@ -8418,6 +8418,18 @@ int main(int argc, char** argv) {
                 ok = sized_slots.empty()
                     ? xcache.open(o.expert_cache, g.n_layers, g.n_expert, (int64_t) strata::kernels::cpu::expert_layout().max_blob, err)
                     : xcache.open_sized(sized_slots, g.n_layers, g.n_expert, err);
+                if (ok) {
+                    // R4.2i: the per-layer residency counters, so a quota change is measured, not guessed.
+                    const char* ls = std::getenv("STRATA_EXPERT_LAYER_STATS");
+                    if (ls != nullptr && ls[0] == '1') xcache.enable_layer_stats();
+                    // R4.2g with a split: the per-layer quota, from the same env the setup path uses.
+                    const char* sp = std::getenv("STRATA_EXPERT_CACHE_SPLIT");
+                    if (sp != nullptr && sp[0]) {
+                        xcache.set_layer_split(sp);
+                        std::fprintf(stderr, "strata generate: the expert cache splits its %lld slots per layer (%s)\n",
+                                     (long long) o.expert_cache, sp);
+                    }
+                }
             }
             if (!ok) {
                 // Issue #60: on Windows a device allocation is also charged to the system commit (RAM + page file),
@@ -9062,6 +9074,11 @@ int main(int argc, char** argv) {
                 lookahead.set_depth(std::atoi(dv));
             else if (srcp == &src && src.io_prefetch())
                 lookahead.set_depth(2);
+            if (const char* sv = std::getenv("STRATA_LOOKAHEAD_KS"); sv != nullptr && sv[0] != '\0') {
+                lookahead.set_layer_k(sv);   // the predictor thread is the wall at depth 3; this is where the k goes
+                std::fprintf(stderr, "strata generate: STRATA_LOOKAHEAD_KS=%s: the top-k is spent per layer (the flat k was %d)\n",
+                             sv, kv ? std::atoi(kv) : 10);
+            }
             la_started = true;
             if (srcp == &src && gpu_holds_all && !la_asked && !fs_ahead && !la_stats && !la_predict) {   // started, but not attached while nothing is read
                 drive.d.lookahead = nullptr;
@@ -19276,6 +19293,8 @@ int main(int argc, char** argv) {
                 float pp[strata::core::Dflash2Drafter::kDrafts];
                 const float* tp = df2_win_taps(a_ + 1, err);
                 if (tp == nullptr || !df2.draft(tp, a_ + 1, p, outv[(size_t) a_], dd, pp, err)) return false;
+                if (df2.window_ahead() && drive.d.lookahead != nullptr)
+                    drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(), df2.fused_n(), nullptr);   // the layers after the last tap, for a window not yet verified
                 for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                 if (ss.ple.ready() && ss.ple.table != nullptr) {   // the PLE rows of the next window's tokens, read ahead (as the MTP's draft does)
                     int n_pf = 0;
@@ -19319,6 +19338,8 @@ int main(int argc, char** argv) {
                         int32_t dd[strata::core::Dflash2Drafter::kDrafts];
                         float pp[strata::core::Dflash2Drafter::kDrafts];
                         if (!df2.draft(ver.tap_dev(), dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        if (df2.window_ahead() && drive.d.lookahead != nullptr)
+                            drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(), df2.fused_n(), nullptr);   // the window ahead, from the taps' last layer
                         for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                     }
                 }
@@ -20205,6 +20226,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: decode expert cache hit rate: %.1f%% (%lld hits / %lld lookups)%s\n",
                              100.0 * (double) req_hits / (double) req_look,
                              (long long) req_hits, (long long) req_look, off);
+                if (xcache.layer_stats())   // R4.2i: which layers the quota is actually serving
+                    std::fprintf(stderr, "strata serve: %s\n", xcache.layer_summary().c_str());
             }
             if (o.adapt_predict > 0)   // the votes' share, counted where the tier pairs candidates with victims
                 std::fprintf(stderr, "strata serve: adapt-predict %d: the layer's consensus led %lld proposed "
@@ -21307,6 +21330,8 @@ int main(int argc, char** argv) {
                 int32_t dd[strata::core::Dflash2Drafter::kDrafts];
                 float pp[strata::core::Dflash2Drafter::kDrafts];
                 if (!df2.draft(ver.tap_dev(), a_ + 1, p, outv[(size_t) a_], dd, pp, err)) return false;
+                if (df2.window_ahead() && drive.d.lookahead != nullptr)
+                    drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(), df2.fused_n(), nullptr);   // the window ahead, from the taps' last layer
                 for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                 // what the MTP does while it drafts: the PLE rows of the tokens the next window will hold are read ahead
                 // (the window's gather would otherwise wait for them: 1.8 ms a round on strix)
@@ -21354,6 +21379,8 @@ int main(int argc, char** argv) {
                     int32_t dd[strata::core::Dflash2Drafter::kDrafts];
                     float pp[strata::core::Dflash2Drafter::kDrafts];
                     if (!df2.draft(ver.tap_dev(), dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+                    if (df2.window_ahead() && drive.d.lookahead != nullptr)
+                        drive.d.lookahead->submit(df2.tap_layer_last(), df2.fused_rows(), df2.fused_n(), nullptr);   // the window ahead, from the taps' last layer
                     for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                 }
             }

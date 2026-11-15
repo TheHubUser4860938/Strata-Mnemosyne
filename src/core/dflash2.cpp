@@ -48,6 +48,7 @@ Dflash2Drafter::~Dflash2Drafter() {
     auto fr = [](void* p) { if (p) cudaFree(p); };
     if (h_logq_) cudaFreeHost(h_logq_);
     if (h_logd_) cudaFreeHost(h_logd_);
+    if (fused_h_) cudaFreeHost(fused_h_);
     fr(rb_q_); fr(rb_d_); fr(rb_pos_);
     if (!blob_shared_) fr(blob_);
     fr(landing_); if (dpend_) cudaFreeHost(dpend_); fr(tag_); fr(d_meta_); fr(xq_); fr(xil_); fr(xqp_); fr(xdp_); fr(xqc_); fr(xdc_); fr(rt_ctx_); fr(rope_inv_);
@@ -276,6 +277,7 @@ bool Dflash2Drafter::alloc(std::string& err) {
     cudaMemset(tag_, 0xff, (size_t) kRing * 8);   // -1: no slot holds a context row yet
     for (int64_t& t : slot_pos_) t = -1;
     init_ring_log();
+    init_window_ahead();   // before the graphs are captured: the copy node is part of the block's graph
     cudaMemset(xqp_, 0, (size_t) 5 * N_ * 8 + 4096);
     cudaMemset(xdp_, 0, ((size_t) 5 * N_ / 32 * 8 + 64) * 4);
     cudaMemset(xqc_, 0, (size_t) 5 * N_ * 8 + 4096);
@@ -509,6 +511,12 @@ bool Dflash2Drafter::record_block(cudaStream_t cs, std::string& err, bool rope) 
             const std::string next_gamma = l + 1 < L_ ? "layers." + std::to_string(l + 1) + ".input_layernorm.weight" : std::string("norm.weight");
             if (!skip_part("small")) df2_conv_rms_quant(mlp_, dyn_ + 320, 640, base_m + 2 * N_, h_, f32(next_gamma), l + 1 < L_ ? xn_ : fn_, B, N_, group_, eps_, xqp_, xdp_, cs);
             stamp("df2_conv_rms_quant");
+        }
+        if (fused_on_) {   // STRATA_WINDOW_AHEAD: the drafts' fused rows out to the host, from this same graph
+            if (cudaMemcpyAsync(fused_h_, fn_ + N_, (size_t) ndraft_ * (size_t) N_ * 4,
+                                cudaMemcpyDeviceToHost, cs) != cudaSuccess)
+                throw std::runtime_error("dflash2: the window-ahead copy");
+            stamp("df2_fused_d2h");
         }
         native_quantize_q8_1(fn_ + N_, xq_, N_, ndraft_, cs);   // rows 1..7, the head's format
         df2_quant_rows(fn_ + N_, N_, ndraft_, xqp_, xdp_, cs);   // and the selector projection's
@@ -745,6 +753,24 @@ uint64_t Dflash2Drafter::ring_stash_bytes() const {
 
 // The log is OFF until this has allocated its pinned staging: a drafter that never ran alloc() (a --parallel slot's clone) keeps the old behaviour instead of
 // copying into a null staging buffer. Callable again by a clone's allocation, on the drafter's device.
+// STRATA_WINDOW_AHEAD=1: allocate the pinned [kDrafts][N_] row set the block's graph copies its final hidden
+// into, so the drafts' state at the last tap layer reaches the host and the lookahead can predict the layers
+// after it for a window that has not been verified yet.  Off by default: the graphs, `fn_`'s consumers and the
+// copy traffic are then exactly what they were.
+void Dflash2Drafter::init_window_ahead() {
+    const char* e = std::getenv("STRATA_WINDOW_AHEAD");
+    if (e == nullptr || e[0] == '0') { fused_on_ = false; return; }
+    if (fused_h_ != nullptr) { fused_on_ = true; return; }
+    if (cudaHostAlloc((void**) &fused_h_, (size_t) kDrafts * (size_t) N_ * 4, cudaHostAllocPortable) != cudaSuccess) {
+        fused_h_ = nullptr;
+        std::fprintf(stderr, "strata dflash2: the window-ahead rows do not fit in pinned memory: the export is off\n");
+        return;
+    }
+    fused_on_ = true;
+    std::fprintf(stderr, "strata dflash2: STRATA_WINDOW_AHEAD=1: the block's fused rows (the target's state at layer %d) go to the host with each draft, and the lookahead warms the layers after it\n",
+                 tap_layer_last());
+}
+
 void Dflash2Drafter::init_ring_log() {
     const OnDevice on_device(device_);
     for (int64_t& t : slot_pos_) t = -1;

@@ -738,14 +738,101 @@ void ExpertCache::layer_slot_range(int64_t layer, int64_t& lo, int64_t& hi) cons
     lo = 0;
     hi = 0;
     if (n_layers_ <= 0 || slots_ <= 0 || layer < 0 || layer >= n_layers_) return;
-    const int64_t q = slots_ / n_layers_;
-    lo = layer * q;
-    hi = (layer == n_layers_ - 1) ? slots_ : (layer + 1) * q;
+    if (split_.empty()) {
+        const int64_t q = slots_ / n_layers_;
+        lo = layer * q;
+        hi = (layer == n_layers_ - 1) ? slots_ : (layer + 1) * q;
+        return;
+    }
+    // R4.2g-2: the weights are normalised to sum to n_layers, so their running sum IS the fraction of the
+    // pool the layers up to and including `layer` own.  Cumulative rounding keeps the ranges monotone and the
+    // last one ending exactly at slots_, which is what stops a slot being orphaned by the division.
+    double pre = 0.0;
+    for (int64_t l = 0; l < layer; ++l) pre += split_[(size_t) l];
+    const double all = pre + split_[(size_t) layer];
+    lo = (int64_t) llround((double) slots_ * pre / (double) n_layers_);
+    hi = (layer == n_layers_ - 1) ? slots_ : (int64_t) llround((double) slots_ * all / (double) n_layers_);
+    if (hi < lo) hi = lo;
+}
+
+/// Parse "1.4,1.4,1,..." into per-layer weights, normalised to sum to `n_layers_`, and rewind every layer's
+/// cursor to the start of its (new) range.  Empty entries and trailing junk are ignored; a list shorter than
+/// the layer count repeats its last weight, which is what makes "1.4,1.4,1" mean "the head gets 40% more".
+void ExpertCache::set_layer_split(const std::string& spec) {
+    split_.clear();
+    if (n_layers_ <= 0) return;
+    size_t i = 0;
+    while (i < spec.size()) {
+        size_t j = spec.find(',', i);
+        if (j == std::string::npos) j = spec.size();
+        std::string tok = spec.substr(i, j - i);
+        i = j + 1;
+        size_t a = tok.find_first_not_of(" \t");
+        if (a == std::string::npos) continue;
+        size_t b = tok.find_last_not_of(" \t");
+        tok = tok.substr(a, b - a + 1);
+        char* end = nullptr;
+        const double w = strtod(tok.c_str(), &end);
+        if (end == tok.c_str() || w <= 0.0) continue;
+        split_.push_back(w);
+    }
+    if (split_.empty()) return;
+    while ((int64_t) split_.size() < n_layers_) split_.push_back(split_.back());
+    split_.resize((size_t) n_layers_);
+    double tot = 0.0;
+    for (double w : split_) tot += w;
+    if (tot <= 0.0) { split_.clear(); return; }
+    for (double& w : split_) w = w * (double) n_layers_ / tot;   // normalise: mean weight 1 = the even share
+    for (int64_t l = 0; l < n_layers_ && l < (int64_t) layer_next_.size(); ++l) {
+        int64_t lo = 0, hi = 0;
+        layer_slot_range(l, lo, hi);
+        layer_next_[(size_t) l] = (int32_t) lo;
+    }
 }
 
 int32_t ExpertCache::slot_of(int64_t layer, int64_t expert) const {
     if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return kNotResident;
-    return residency_[(size_t) (layer * n_expert_ + expert)];
+    const int32_t s = residency_[(size_t) (layer * n_expert_ + expert)];
+    if (!layer_lookups_.empty()) {   // R4.2i: the per-layer residency counters, on by STRATA_EXPERT_LAYER_STATS
+        ++layer_lookups_[(size_t) layer];
+        if (s != kNotResident) ++layer_hits_[(size_t) layer];
+    }
+    return s;
+}
+
+/// Turn on the per-layer residency counters (R4.2i).  The pool's one global hit rate cannot tell us that
+/// layer 0 wants more slots than layer 31 - our trace says 0.505 against 0.919 at a uniform 102 slots - and
+/// the live tier's own split is invisible without it.  Two int64 increments per routed expert per layer per
+/// token, on the decode path, so it is opt-in: `STRATA_EXPERT_LAYER_STATS=1`.
+void ExpertCache::enable_layer_stats() {
+    if (n_layers_ <= 0 || !layer_lookups_.empty()) return;
+    layer_lookups_.assign((size_t) n_layers_, 0);
+    layer_hits_.assign((size_t) n_layers_, 0);
+}
+
+/// The per-layer hit rates as a compact string, `L<layer>=<pct>` for the layers measured, oldest first.
+/// Kept to one line for the log; the /metrics side publishes the arrays.
+std::string ExpertCache::layer_summary() const {
+    if (layer_lookups_.empty()) return {};
+    std::string out;
+    int lo = -1, hi = -1;
+    double lo_p = 2.0, hi_p = -1.0, sum = 0.0;
+    int n = 0;
+    for (int64_t l = 0; l < n_layers_; ++l) {
+        const int64_t q = layer_lookups_[(size_t) l];
+        if (q <= 0) continue;
+        const double p = (double) layer_hits_[(size_t) l] / (double) q;
+        sum += p; ++n;
+        if (p < lo_p) { lo_p = p; lo = (int) l; }
+        if (p > hi_p) { hi_p = p; hi = (int) l; }
+        if (out.size() < 1400) {
+            out += " L" + std::to_string(l) + "=" + std::to_string((int) lround(p * 100.0));
+        }
+    }
+    if (!n) return {};
+    return "layer residency: min " + std::to_string((int) lround(lo_p * 100.0)) + "% at L" + std::to_string(lo) +
+           ", max " + std::to_string((int) lround(hi_p * 100.0)) + "% at L" + std::to_string(hi) +
+           ", mean " + std::to_string((int) lround(sum / n * 100.0)) + "%" + out;
 }
 
 int32_t ExpertCache::admit(int64_t layer, int64_t expert) {

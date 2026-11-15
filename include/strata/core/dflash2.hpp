@@ -74,6 +74,22 @@ public:
     float* landing() const { return landing_; }
     int device() const { return device_; }
     int n_taps() const { return (int) taps_.size(); }
+    int tap_layer_last() const { return taps_.empty() ? -1 : taps_.back(); }
+
+    /// STRATA_WINDOW_AHEAD=1: the block's **final hidden**, `[kDrafts][N_]` on pinned host memory, copied out
+    /// by the same graph that produces the drafts.  `N_` is 2,560 - the target's own hidden width - and the
+    /// block's input is the target's taps, so a draft row's fused hidden is the target's state at
+    /// `tap_layer_last()` for a token the target has not run yet.  That is the window-ahead lookahead: hand it
+    /// to `RouterLookahead::submit` and the layers after the last tap are predicted, warmed and voted for
+    /// before the verify window that needs them starts.  Reads (Specter 2511.14102, SP-MoE 2510.10302) use the
+    /// drafter's own representation for exactly this; the copy is `7 x 10 KB`, about 3 us at the measured link.
+    /// Off by default: `landing_`/`fn_` keep their current producers and the graphs are unchanged.
+    bool window_ahead() const { return fused_on_; }
+    const float* fused_rows() const { return fused_h_; }   ///< row i is the draft at position i (i = 0 .. kDrafts-1)
+    int fused_n() const { return fused_on_ ? (int) kDrafts : 0; }
+    int fused_embd() const { return N_; }
+    /// Allocates the pinned buffer and turns the export on (called from `alloc` and from a clone's alloc).
+    void init_window_ahead();
     int64_t ring_hi() const { return ring_hi_; }
 
     /// DEFERRED CONTEXT (batch slots): a round with no spare window rows needs no draft, so a slot's drafter skips its forward work for that round.  The committed
@@ -255,6 +271,8 @@ private:
     uint64_t stash_budget_ = 256ull << 20;
     int8_t* h_logq_ = nullptr;      ///< pinned: the last update's codes [8][2560] ...
     float* h_logd_ = nullptr;       ///< ... and scales [8][80], filled by the update's graph
+    float* fused_h_ = nullptr;      ///< pinned: the block's final hidden [kDrafts][N_] (STRATA_WINDOW_AHEAD)
+    bool fused_on_ = false;         ///< ... and the export is on: the graph copies `fn_`'s draft rows here
     int64_t pend_pos0_ = -1;        ///< positions the update in flight will leave in h_log*
     int pend_n_ = 0;
     int64_t slot_pos_[kRing] = {};  ///< host shadow of the device ring tags: (epoch << 32 | position) of the row each slot holds, -1 none

@@ -33,6 +33,7 @@ by the owner at approval of this script.
 import argparse
 import json
 import pathlib
+import urllib.request as _u
 import statistics
 import time
 import urllib.request
@@ -145,14 +146,38 @@ def main():
                     help="the ruler text is written here on a build run and read from here by --mint")
     a = ap.parse_args()
     out = open(a.out, "a") if a.out else None
-    # The standing cart + template the seed turn rides: measured with the same counter
-    # the graft arm's prompt is charged, so a "cell" here is the engine's unit.
-    base = count_tokens("__probe__")
+    # The boot fingerprint (hivefound's ask, 2026-11-14): a curve row is meaningless
+    # two boots later — the 2,048 wall outlived its engine by two weeks. /metrics
+    # carries the engine version AND the drafting knobs, so the boot that measured
+    # a point is the point's own property. Missing keys print as null, never as a lie.
+    if out:
+        try:
+            m = json.loads(_u.urlopen(f"{URL}/metrics", timeout=30).read())
+            e = m.get("engine") or {}
+            out.write(json.dumps({"kind": "boot", "engine": e.get("version"), "model": e.get("model"),
+                                  "spec": e.get("spec"), "draft_conf": e.get("draft_conf"),
+                                  "kv": e.get("kv"), "expert_slots": e.get("expert_slots")}) + "\n")
+            out.flush()
+        except Exception as ex:
+            print(f"boot fingerprint skipped: {ex}", flush=True)
 
-    doc, landed = build_doc(base)
+    # Fast path for a re-measure on a new boot: the ruler text is on disk and its fact
+    # cells were measured when it was built, so skip the 15-call calibration. (The
+    # cells are the doc's properties: the standing prefix rides AHEAD of the graft
+    # window and the ruler's own bytes do not move.)
+    import os
+    base = 0        # the fast path skips calibration; cells are the ruler's own property
+    if a.skip_seed and os.path.exists(a.doc_file):
+        doc = open(a.doc_file).read()
+        landed = {"Vexholm": 148, "Kaldrun": 647, "Orrery": 1147,
+                  "Sablewick": 1847, "Thornvale": 2097, "Ashmere": 2447}
+        print(f"ruler read from {a.doc_file}: {count_tokens(doc)} tokens, cells {landed}", flush=True)
+    else:
+        base = count_tokens("__probe__")   # memory OFF: template + standing, measured
+        doc, landed = build_doc(base)
     n_doc = count_tokens(doc)
-    print(f"standing prefix: {base} cells (measured). doc: {n_doc} tokens, "
-          f"facts planted at prompt cells {landed}", flush=True)
+    print(f"standing prefix: {base} cells ({'measured' if base else 'not recalibrated'}). "
+          f"doc: {n_doc} tokens, facts at graft cells {landed}", flush=True)
     pathlib.Path(a.doc_file).write_text(doc)
     graft_name = a.name
     if a.mint:

@@ -154,6 +154,14 @@ public:
     /// `(layer, expert)` -> slot index, or `kNotResident`.  Bounds-checked: a bad layer or expert returns
     /// `kNotResident` rather than reading whatever is adjacent in the table.
     int32_t slot_of(int64_t layer, int64_t expert) const;
+    /// R4.2i: per-layer residency counters, opt-in (`STRATA_EXPERT_LAYER_STATS=1`).  The global hit rate is one
+    /// number for 48 layers whose routed sets differ: on our trace a uniform 102 slots/layer hits 0.505 at
+    /// layer 0 and 0.919 at layer 31.  Without a live view of that spread the per-layer quota is guesswork.
+    void enable_layer_stats();
+    bool layer_stats() const { return !layer_lookups_.empty(); }
+    std::string layer_summary() const;                    ///< "layer residency: min 51% at L0, max 92% at L31, ..."
+    const std::vector<int64_t>& layer_hits() const { return layer_hits_; }
+    const std::vector<int64_t>& layer_lookups() const { return layer_lookups_; }
     /// Claims the next free slot for `(layer, expert)`.  Returns the slot, or `kNotResident` when the cache is
     /// full - **it never evicts**, because eviction policy is a measured question (`R4.1`'s LFU-decay vs LRU
     /// sweep) and a placeholder policy would set the hit rate that everything downstream is then sized against.
@@ -186,6 +194,15 @@ public:
     bool per_layer_admission() const { return per_layer_; }
     /// The slot range layer `l` may admit into under per-layer admission.  Exposed so a test can check it.
     void layer_slot_range(int64_t layer, int64_t& lo, int64_t& hi) const;
+    /// **R4.2g-2: A NON-UNIFORM PER-LAYER QUOTA.**  A comma list of multiples of the even share -
+    /// "1.4,1.4,1.4,1,...,0.8" - normalised so the weights sum to `n_layers` and the ranges still tile
+    /// `[0, slots)`.  A short list repeats its last entry; a long one is truncated.  Requires per-layer
+    /// admission, and re-seeds each layer's cursor, so call it right after `open`.  The published shapes:
+    /// MoE-CORE (arXiv 2610.01950) gives 5 of 43 layers 120 slots where the rest get 78, and reports
+    /// uniform-allocation costs of 1.1% of TPOT; MoE-Infinity (2401.14361) uses 4 / 20 / 6 by layer group;
+    /// our own 200M-row trace puts the deficit at the head (layer 0 hits 0.505 at 102 slots, layer 31 0.919).
+    void set_layer_split(const std::string& spec);
+    bool layer_split() const { return !split_.empty(); }
 
     /// The device address of one slot.
     uint8_t* device_slot(int32_t slot);
@@ -274,6 +291,8 @@ private:
     /// pre-existing path is untouched.
     bool per_layer_ = false;
     std::vector<int32_t> layer_next_;   ///< [n_layers] -> that layer's next free slot
+    std::vector<double> split_;         ///< R4.2g-2: per-layer weights, normalised to sum to n_layers (empty = the even share)
+    mutable std::vector<int64_t> layer_hits_, layer_lookups_;   ///< R4.2i: the per-layer residency counters, bumped by a const lookup
     std::vector<uint64_t> off_;         ///< plan v0.3 P6: slot offsets (slots + 1 entries) when sized
     int64_t admitted_ = 0;
     bool sealed_ = false;               ///< STRATA_EXPERT_NIBBLE: `seal` was called (no slot is written after it)

@@ -330,6 +330,15 @@ public:
     /// A deeper one predicts layer + j from layer's input, which is less exact the further it looks.
     void set_depth(int d) { depth_ = d < 1 ? 1 : d > 4 ? 4 : d; }
     int depth() const { return depth_; }
+    /// STRATA_LOOKAHEAD_KS=k0,k1,...: the top-k **per layer**, as a count or (with a trailing `x`) as a multiple of
+    /// the global k.  The reason is the worker, not the router: on this box the predictor thread runs ~31 ms of a
+    /// ~32 ms window at depth 3 and still leaves half the layers un-predicted, so a flat k=12 spends the same
+    /// milliseconds on the layers that are easy and the layers that are not.  Published shapes: YALIS
+    /// (arXiv 2603.19289, Table 9) k=14 for layers 0-2 and 8 for 36-45; SpecPrefetch (2607.24787) 10/6/8 by
+    /// block; MoE-CORE (2610.01950) gives 5 of 40 layers 120 slots against 78.  The stats line prints the vector
+    /// it scored, so a boot's recall/precision is attributable to it.
+    void set_layer_k(const std::string& spec);
+    int layer_k(int64_t layer) const { return layer_k_.empty() || layer < 0 ? k_ : layer_k_[(size_t) layer]; }
     /// STRATA_LOOKAHEAD_STATS=1 (measurement only): remember each prediction (top k, k+4 and k+10 per token) and let the
     /// dispatch score it against the experts the next layer really routes outside the GPU cache.
     void enable_stats(int64_t n_layers);
@@ -353,6 +362,8 @@ private:
     std::vector<std::vector<uint16_t>> routers_;
     int64_t n_embd_ = 0, n_expert_ = 0;
     int k_ = 10;
+    std::vector<int> layer_k_;   ///< STRATA_LOOKAHEAD_KS: the top-k per layer (empty = the flat k_ everywhere)
+    int k_lo_ = 0, k_hi_ = 0;    ///< the spread of layer_k_, for the stats line to label what it scored
     int depth_ = 1;
     ExpertSource* src_ = nullptr;
     std::thread thread_;

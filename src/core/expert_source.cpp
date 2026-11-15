@@ -3099,6 +3099,34 @@ bool RouterLookahead::start(std::vector<std::vector<uint16_t>> routers, int64_t 
     return true;
 }
 
+/// STRATA_LOOKAHEAD_KS: the top-k each layer's prediction takes, as a comma list of counts (`14,12,8`) or of
+/// multiples of the global k with an `x` (`1.4x,1x,0.7x`).  A short list repeats its last entry, so a three-number
+/// head/body/tail shape is one env value.  Clamped to [1, n_expert].
+void RouterLookahead::set_layer_k(const std::string& spec) {
+    layer_k_.clear();
+    k_lo_ = k_hi_ = 0;
+    size_t i = 0;
+    while (i < spec.size()) {
+        size_t j = spec.find(',', i);
+        if (j == std::string::npos) j = spec.size();
+        std::string tok = spec.substr(i, j - i);
+        i = j + 1;
+        while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t')) tok.erase(tok.begin());
+        while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t')) tok.pop_back();
+        if (tok.empty()) continue;
+        const bool rel = !tok.empty() && (tok.back() == 'x' || tok.back() == 'X');
+        if (rel) tok.pop_back();
+        float v = std::strtof(tok.c_str(), nullptr);
+        int k = rel ? (int) lroundf(v * (float) k_) : (int) lroundf(v);
+        layer_k_.push_back(k < 1 ? 1 : k > (int) n_expert_ ? (int) n_expert_ : k);
+        if (layer_k_.size() == 1) k_lo_ = k_hi_ = layer_k_.front();
+        else { k_lo_ = std::min(k_lo_, layer_k_.back()); k_hi_ = std::max(k_hi_, layer_k_.back()); }
+    }
+    if (layer_k_.empty()) return;
+    if (!routers_.empty() && layer_k_.size() < routers_.size())
+        layer_k_.resize(routers_.size(), layer_k_.back());   // the tail of the model gets the last number given
+}
+
 void RouterLookahead::submit(int64_t layer, const float* x, int64_t n_tok, const int32_t* host_res) {
     if (layer + 1 >= (int64_t) routers_.size() || n_tok <= 0 || x == nullptr) return;
     {
@@ -3217,7 +3245,10 @@ void RouterLookahead::stats_score(int64_t layer, const int32_t* ids, int64_t n, 
                      (double) busy_us_.load(std::memory_order_relaxed) / 1000.0 / (double) st_windows_);
         static const int add[3] = {0, 4, 10};
         for (int s = 0; s < 3; ++s)
-            std::fprintf(stderr, " k=%d: recall %.3f precision %.3f (%.2f predicted/layer);", k_ + add[s],
+            std::fprintf(stderr, " %s: recall %.3f precision %.3f (%.2f predicted/layer);",
+                         layer_k_.empty() ? ("k=" + std::to_string(k_ + add[s])).c_str()
+                                          : ("ks=" + std::to_string(k_lo_) + "-" + std::to_string(k_hi_) +
+                                             "+" + std::to_string(add[s])).c_str(),
                          st_actual_ ? (double) st_hit_[s] / (double) st_actual_ : 0.0,
                          st_pred_[s] ? (double) st_hit_[s] / (double) st_pred_[s] : 0.0,
                          scored ? (double) st_pred_[s] / (double) scored : 0.0);
@@ -3297,8 +3328,9 @@ void RouterLookahead::run() {
             }
         }
 #endif
-        const int kmax = stats_on_ ? (int) std::min<int64_t>(k_ + 10, n_expert_) : k_;
-        const int ks[3] = {k_, (int) std::min<int64_t>(k_ + 4, n_expert_), kmax};
+        const int ksel = layer_k(layer);   // STRATA_LOOKAHEAD_KS: this layer's own k (the flat k_ when unset)
+        const int kmax = stats_on_ ? (int) std::min<int64_t>(ksel + 10, n_expert_) : ksel;
+        const int ks[3] = {ksel, (int) std::min<int64_t>(ksel + 4, n_expert_), kmax};
         std::vector<uint64_t> sm;
         if (stats_on_) sm.assign((size_t) (3 * words_), 0);
         for (int64_t t = 0; t < nt; ++t) {
@@ -3309,11 +3341,11 @@ void RouterLookahead::run() {
             for (int j = 0; j < kmax; ++j) {
                 const int64_t e = order[(size_t) j];
                 if (host_res != nullptr && host_res[(size_t) ((layer - layer0) * n_expert_ + e)] >= 0) continue;   // on the GPU
-                if (j < k_) {
+                if (j < ksel) {
                     const auto it = std::find(want.begin(), want.end(), e);
-                    // confidence: 1 for a token's top pick down to 1/k_ for its k_-th, the best over the window's tokens,
+                    // confidence: 1 for a token's top pick down to 1/k for its k-th, the best over the window's tokens,
                     // halved for every layer further ahead than the next (a deeper guess is less often right)
-                    const float c = (float) (k_ - j) / (float) k_ * (dj == 0 ? 1.0f : std::pow(0.5f, (float) dj));
+                    const float c = (float) (ksel - j) / (float) ksel * (dj == 0 ? 1.0f : std::pow(0.5f, (float) dj));
                     if (it == want.end()) { want.push_back(e); wconf.push_back(c); }
                     else if (scored && c > wconf[(size_t) (it - want.begin())]) wconf[(size_t) (it - want.begin())] = c;
                 }
@@ -3323,14 +3355,14 @@ void RouterLookahead::run() {
             }
         }
         if (votes_on_ && dj == 0) {
-            // votes: how many tokens put each non-resident expert in their top k_
+            // votes: how many tokens put each non-resident expert in their top k (this layer's k)
             std::vector<std::pair<int, int32_t>> votes;   // (sum of 64 - rank, expert)
             for (int64_t t = 0; t < nt; ++t) {
                 const float* lt = logits.data() + (size_t) (t * n_expert_);
                 for (int64_t e = 0; e < n_expert_; ++e) order[(size_t) e] = (int32_t) e;
-                std::partial_sort(order.begin(), order.begin() + k_, order.end(),
+                std::partial_sort(order.begin(), order.begin() + ksel, order.end(),
                                   [&](int32_t a, int32_t b) { return lt[(size_t) a] > lt[(size_t) b]; });
-                for (int j = 0; j < k_; ++j) {
+                for (int j = 0; j < ksel; ++j) {
                     const int32_t e = order[(size_t) j];
                     if (host_res != nullptr && host_res[(size_t) ((layer - layer0) * n_expert_ + e)] >= 0) continue;
                     auto it = std::find_if(votes.begin(), votes.end(), [&](const auto& v) { return v.second == e; });
