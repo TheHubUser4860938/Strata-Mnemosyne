@@ -8263,8 +8263,11 @@ int main(int argc, char** argv) {
         double pre = 0.0;
         int64_t assigned = 0;
         for (int64_t l = 0; l < g.n_layers; ++l) {
-            pre += split_w[(size_t) l];                              // weights are normalised: they sum to n_layers
-            const int64_t want = (int64_t) (pre / (double) g.n_layers * (double) base + 0.5);
+            pre += split_w[(size_t) l];                              // weights are normalised: mean 1
+            // `base` is the PER-LAYER quota, so a layer's share is its weight times that quota: the running sum
+            // ends at n_layers x base, which is the pool the sizing budgeted.  Dividing by n_layers here made the
+            // weights share a total, and a 107-slot quota came out as 2 a layer (measured 2026-11-15).
+            const int64_t want = (int64_t) (pre * (double) base + 0.5);
             c[(size_t) l] = std::max<int64_t>(1, want - assigned);    // a running sum: the counts tile the pool
             assigned += c[(size_t) l];
         }
