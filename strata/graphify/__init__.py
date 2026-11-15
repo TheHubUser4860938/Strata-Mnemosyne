@@ -334,12 +334,14 @@ class StrataGraphify:
         """What the page's tiles and the CLI print. Never raises on a missing graph."""
         state = self._read(self.state_path)
         prog = self._progress()
+        cov = self.coverage() if state else {"in_graph": 0}
         out = {
             "status": "ready" if state else "empty",
             "nodes": state.get("nodes", 0), "edges": state.get("edges", 0),
             "hyperedges": state.get("hyperedges", 0),
             "communities": state.get("communities", 0),
             "facts": state.get("facts", 0),
+            "in_graph": cov.get("in_graph", 0),
             "built": state.get("built"), "seconds": state.get("seconds"),
             "model": state.get("model"), "mode": state.get("mode"),
             "pending": len(self._read(self.pending_path, {}).get("ids", [])),
@@ -414,6 +416,31 @@ class StrataGraphify:
         data = self.view(max_communities=max_communities)
         self._write(self.view_path, data)
         return data
+
+    def coverage(self) -> dict:
+        """Facts in the graph over facts in the store — the number the tile shows.
+
+        A node is a concept the model lifted out of the fact text, so the node count is not
+        the coverage: one node can cite a dozen rows, and a row can be cited by none. The
+        honest read is the set of row ids the graph actually names. Node ids carry them
+        (`<shelf>_fact_<id>`), so coverage is a suffix count over the ids on disk.
+        """
+        g = self._read(self.graph_path)
+        ids = set()
+        for n in g.get("nodes") or []:
+            nid = str(n.get("id") or "")
+            if "_fact_" in nid:
+                tail = nid.rsplit("_fact_", 1)[1]
+                if tail.isdigit():
+                    ids.add(int(tail))
+        for h in g.get("hyperedges") or []:
+            for m in h.get("members") or h.get("nodes") or []:
+                mid = str(m.get("id") if isinstance(m, dict) else m)
+                if "_fact_" in mid:
+                    tail = mid.rsplit("_fact_", 1)[1]
+                    if tail.isdigit():
+                        ids.add(int(tail))
+        return {"in_graph": len(ids), "graph_ids": sorted(ids)[:20]}
 
     def stats_patch(self) -> dict:
         """The graph tile's numbers, folded into the store's own stats reply."""

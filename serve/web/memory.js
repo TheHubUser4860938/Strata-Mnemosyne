@@ -355,13 +355,18 @@ $("theme").onclick = () => {
 // ---- the graph view (2026-11-15). strata.graphify builds the store's graph from the fact text
 // on the served model and keeps it in <store>/strata-graphify/, so the page, the CLI and a
 // cloned box all read the same file. A pass is LLM work, so it runs on a server thread and this
-// view polls it through op=graph. The drawing is a dependency-free canvas: a force layout run
-// once and cached, normalised into the box, with wheel zoom, drag pan, and a legend that
-// toggles communities.
+// view polls it through op=graph.
+//
+// The drawing is a dependency-free canvas in three dimensions: the layout is a force simulation
+// over x/y/z, the camera orbits with the mouse and zooms with the wheel, and depth drives size
+// and opacity the way a star chart does. Positions are computed once per graph and cached, so
+// orbiting costs a projection, not a re-simulation.
 let GPOLL = null, GDATA = null, GSTATE = null;
-const GVIS = new Set();
-let GVIEW = { k: 1, x: 0, y: 0 };
-const gc = c => `hsl(${(c * 47) % 360} 62% 62%)`;
+const GVIS = new Set();                       // visible community ids
+let GCAM = { yaw: -0.55, pitch: 0.42, k: 1, x: 0, y: 0 };
+const GCOLORS = ["#7aa2f7", "#9ece6a", "#f7768e", "#e0af68", "#7dcfff", "#bb9af7",
+                 "#73daca", "#ff9e64", "#2ac3de", "#c0caf5", "#b9f27c", "#f472b6"];
+const gc = c => GCOLORS[Math.abs(Number(c)) % GCOLORS.length];
 
 async function graphStatus() {
   const d = await api("/memory", { op: "graph" });
@@ -370,6 +375,14 @@ async function graphStatus() {
   $("g-nodes").textContent = (s.nodes || 0).toLocaleString();
   $("g-edges").textContent = (s.edges || 0).toLocaleString();
   $("g-comm").textContent = (s.communities || 0).toLocaleString();
+  // Coverage is the row ids the graph names, not the node count: a node is a concept the model
+  // lifted out of several facts, so 147 nodes can speak for a thousand rows.
+  $("g-graphed").textContent = (s.in_graph || 0).toLocaleString() + " / " + (s.facts || 0).toLocaleString();
+  // The store's live count is already on the page (the FACTS tile), so this reads it rather
+  // than paying for a second stats call.
+  $("g-graphedsub").textContent = s.in_graph
+    ? `${Math.round(100 * (s.in_graph || 0) / Math.max(1, s.facts || 1))}% of what the pass read · ${$("rows").textContent} live in the store`
+    : "facts the graph names, over facts the pass read";
   $("g-built").textContent = s.built ? new Date(s.built).toLocaleString() : "never";
   $("g-builtsub").textContent = s.built
     ? `${s.mode || "full"} pass · ${(s.facts || 0).toLocaleString()} facts`
@@ -386,7 +399,7 @@ async function graphStatus() {
 
 async function graphTick() {
   const s = await graphStatus().catch(() => ({ running: false }));
-  if (!s.running) { clearInterval(GPOLL); GPOLL = null; graphView(true); }
+  if (!s.running) { clearInterval(GPOLL); GPOLL = null; graphView(); }
 }
 
 async function graphView(rebuild) {
@@ -401,88 +414,86 @@ async function graphView(rebuild) {
     const d = v.graph || (v.result && v.result.graph) || {};
     if (!d.nodes || !d.nodes.length) { $("g-list").innerHTML = `<li class="empty">The graph has no nodes.</li>`; return; }
     if (rebuild || !GDATA || GDATA.stamp !== s.built) {
-      GDATA = d; GDATA.stamp = s.built; layout(GDATA);
+      GDATA = d; GDATA.stamp = s.built;
+      layout3(d);
       GVIS.clear(); (d.communities || []).forEach(c => GVIS.add(c.id));
-      renderLegend(d);
+      renderCommunities(d);
     }
     paint();
   } catch (e) { note(e.message, true); }
 }
 
-// Run ONCE per graph, then cached on GDATA.pos. Positions are normalised into a centred unit
-// square: an earlier version drew raw force output and a strong repulsion threw nodes off-canvas.
-function layout(d) {
-  const hub = {}, N = d.nodes.length;
+// A force simulation in three dimensions. Hubs sit on a Fibonacci sphere so communities get
+// evenly spread shells; edges pull, nodes repel at short range, everything leans back toward
+// its hub. Then normalise into the unit cube: the camera owns the framing, not the sim.
+function layout3(d) {
+  const N = d.nodes.length, hub = {};
+  const phi = Math.PI * (3 - Math.sqrt(5));
   (d.communities || []).forEach((c, i) => {
-    const a = (i / Math.max(1, d.communities.length)) * Math.PI * 2;
-    hub[c.id] = [Math.cos(a) * 0.82, Math.sin(a) * 0.82];
+    const y = 1 - (i / Math.max(1, d.communities.length - 1)) * 2;
+    const r = Math.sqrt(Math.max(0, 1 - y * y)), a = phi * i;
+    hub[c.id] = [Math.cos(a) * r * 0.82, y * 0.82, Math.sin(a) * r * 0.82];
   });
   const P = d.nodes.map((n, i) => {
-    const h = hub[n.community] || [0, 0], a = i * 2.399963
-      , r = 0.06 + 0.5 * Math.sqrt(i / Math.max(1, N));
-    return { x: h[0] + Math.cos(a) * r, y: h[1] + Math.sin(a) * r, i };
+    const h = hub[n.community] || [0, 0, 0], a = i * 2.399963, s = i * 0.618034 % 1;
+    const z = 1 - s * 2, rr = Math.sqrt(Math.max(0, 1 - z * z)), th = phi * i;
+    const rad = 0.05 + 0.30 * Math.sqrt(i / Math.max(1, N));
+    return { x: h[0] + Math.cos(th) * rr * rad, y: h[1] + z * rad, z: h[2] + Math.sin(th) * rr * rad, i };
   });
-  for (let it = 0; it < 300; it++) {
-    const cool = 1 - it / 340;
+  for (let it = 0; it < 240; it++) {
+    const cool = 1 - it / 300;
     for (const [s, t] of (d.edges || [])) {
       const a = P[s], b = P[t]; if (!a || !b) continue;
-      const dx = b.x - a.x, dy = b.y - a.y, dist = Math.hypot(dx, dy) || 1e-6;
-      const f = (dist - 0.11) * 0.02 * cool;
-      a.x += dx * f; a.y += dy * f; b.x -= dx * f; b.y -= dy * f;
+      const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+      const dist = Math.hypot(dx, dy, dz) || 1e-6, f = (dist - 0.10) * 0.02 * cool;
+      a.x += dx * f; a.y += dy * f; a.z += dz * f;
+      b.x -= dx * f; b.y -= dy * f; b.z -= dz * f;
     }
     for (let i = 0; i < P.length; i++) {
       const a = P[i];
       for (let j = i + 1; j < P.length; j++) {
-        const b = P[j], dx = a.x - b.x, dy = a.y - b.y, q = (dx * dx + dy * dy) || 1e-6;
-        if (q > 0.25) continue;
-        const f = 0.0009 / q * cool;
-        a.x += dx * f; a.y += dy * f; b.x -= dx * f; b.y -= dy * f;
+        const b = P[j], dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+        const q = dx * dx + dy * dy + dz * dz;
+        if (q > 0.30 || q < 1e-9) continue;
+        const f = 0.0016 / q * cool;
+        a.x += dx * f; a.y += dy * f; a.z += dz * f;
+        b.x -= dx * f; b.y -= dy * f; b.z -= dz * f;
       }
     }
     for (const p of P) {
       const h = hub[d.nodes[p.i].community]; if (!h) continue;
-      p.x += (h[0] - p.x) * 0.02; p.y += (h[1] - p.y) * 0.02;
+      p.x += (h[0] - p.x) * 0.02; p.y += (h[1] - p.y) * 0.02; p.z += (h[2] - p.z) * 0.02;
     }
   }
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const p of P) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
-  const side = Math.max(x1 - x0, y1 - y0) || 1;
-  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
-  d.pos = P.map(p => [(p.x - mx) / side, (p.y - my) / side]);
-  GVIEW = { k: 1, x: 0, y: 0 };
+  let mx = 0, my = 0, mz = 0;
+  for (const p of P) { mx += p.x; my += p.y; mz += p.z; }
+  mx /= Math.max(1, P.length); my /= Math.max(1, P.length); mz /= Math.max(1, P.length);
+  let span = 1e-6;
+  for (const p of P) { p.x -= mx; p.y -= my; p.z -= mz; span = Math.max(span, Math.abs(p.x), Math.abs(p.y), Math.abs(p.z)); }
+  for (const p of P) { p.x /= span; p.y /= span; p.z /= span; }
+  d.pos3 = P;                                              // unit cube, centred
+  d.px = new Array(P.length); d.py = new Array(P.length);   // last projection, for hit tests
+  d.pz = new Array(P.length);
 }
 
-function renderLegend(d) {
-  const ul = $("g-list");
-  ul.innerHTML = "";
-  const head = document.createElement("li");
-  head.className = "fact";
-  head.innerHTML = `<div class="body"><label style="cursor:pointer"><input type="checkbox" id="g-all" checked> all ${d.communities.length} communities</label></div>`;
-  head.querySelector("input").onchange = ev => {
-    GVIS.clear();
-    if (ev.target.checked) (d.communities || []).forEach(c => GVIS.add(c.id));
-    ul.querySelectorAll("input[data-comm]").forEach(b => { b.checked = ev.target.checked; });
-    paint();
-  };
-  ul.append(head);
-  for (const c of d.communities) {
-    const li = document.createElement("li");
-    li.className = "fact";
-    li.innerHTML = `<div class="body"><div class="txt" style="max-height:none">
-        <input type="checkbox" data-comm="${c.id}" checked>
-        <span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${gc(c.id)};margin:0 5px"></span>${esc(c.label)}</div>
-      <div class="meta">${c.size} node${c.size === 1 ? "" : "s"}</div></div>`;
-    li.querySelector("input").onchange = ev => {
-      const id = Number(ev.target.dataset.comm);
-      ev.target.checked ? GVIS.add(id) : GVIS.delete(id);
-      paint();
-    };
-    ul.append(li);
+function project(d, W, H) {
+  const S = Math.min(W, H) * 0.46 * GCAM.k, cx = W / 2 + GCAM.x, cy = H / 2 + GCAM.y;
+  const cy2 = Math.cos(GCAM.yaw), sy = Math.sin(GCAM.yaw);
+  const cp = Math.cos(GCAM.pitch), sp = Math.sin(GCAM.pitch);
+  const P = d.pos3;
+  for (let i = 0; i < P.length; i++) {
+    const p = P[i];
+    const x1 = p.x * cy2 - p.z * sy, z1 = p.x * sy + p.z * cy2;   // yaw
+    const y2 = p.y * cp - z1 * sp, z2 = p.y * sp + z1 * cp;        // pitch
+    const persp = 1 / (1.55 - z2 * 0.75);                          // near grows, far shrinks
+    d.px[i] = cx + x1 * S * persp * 1.55;
+    d.py[i] = cy + y2 * S * persp * 1.55;
+    d.pz[i] = z2;
   }
 }
 
 function paint() {
-  const d = GDATA; if (!d || !d.pos) return;
+  const d = GDATA; if (!d || !d.pos3) return;
   const cv = $("g-canvas"), X = cv.getContext("2d");
   const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
   if (!W || !H) return;
@@ -491,77 +502,135 @@ function paint() {
   }
   X.setTransform(dpr, 0, 0, dpr, 0, 0);
   X.clearRect(0, 0, W, H);
-  const S = Math.min(W, H) * 0.92 * GVIEW.k, cx = W / 2 + GVIEW.x, cy = H / 2 + GVIEW.y;
-  const at = i => [cx + d.pos[i][0] * S, cy + d.pos[i][1] * S];
+  project(d, W, H);
+  const live = d.nodes.map((n, i) => i).filter(i => GVIS.has(d.nodes[i].community));
+  const order = live.slice().sort((a, b) => d.pz[a] - d.pz[b]);        // far first, near on top
   X.lineWidth = 0.7;
   for (const [s, t] of (d.edges || [])) {
     if (!GVIS.has(d.nodes[s].community) || !GVIS.has(d.nodes[t].community)) continue;
-    const a = at(s), b = at(t);
-    X.strokeStyle = "rgba(160,172,190,.28)";
-    X.beginPath(); X.moveTo(a[0], a[1]); X.lineTo(b[0], b[1]); X.stroke();
+    const depth = (d.pz[s] + d.pz[t]) / 2;
+    X.strokeStyle = `rgba(150,164,186,${(0.10 + 0.22 * (depth + 1) / 2).toFixed(3)})`;
+    X.beginPath(); X.moveTo(d.px[s], d.py[s]); X.lineTo(d.px[t], d.py[t]); X.stroke();
   }
-  for (let i = 0; i < d.nodes.length; i++) {
-    const n = d.nodes[i];
-    if (!GVIS.has(n.community)) continue;
-    const p = at(i);
+  for (const i of order) {
+    const n = d.nodes[i], depth = (d.pz[i] + 1) / 2;                   // 0 far, 1 near
+    const r = (1.7 + Math.min(5.2, (n.degree || 0) * 0.85)) * (0.62 + 0.62 * depth);
+    X.globalAlpha = 0.42 + 0.58 * depth;
     X.fillStyle = gc(n.community);
-    X.beginPath(); X.arc(p[0], p[1], 2.2 + Math.min(5.5, (n.degree || 0) * 0.9), 0, Math.PI * 2); X.fill();
+    X.beginPath(); X.arc(d.px[i], d.py[i], r, 0, Math.PI * 2); X.fill();
   }
-  $("g-cap").textContent = `${d.nodes.length.toLocaleString()} nodes · ${(d.edges || []).length.toLocaleString()} edges drawn`
-    + ` of ${d.nodes_total ? d.nodes_total.toLocaleString() + " nodes, " : ""}${(d.links_total || 0).toLocaleString()} edges in the graph`
-    + ` · colour is the community, size is degree`;
+  X.globalAlpha = 1;
+  const seen = live.length, all = d.nodes.length;
+  $("g-cap").textContent = `${seen === all ? all : seen + " of " + all} nodes drawn · ${(d.edges || []).length.toLocaleString()} edges`
+    + ` · drag to orbit, wheel to zoom, click a node for the fact`;
 }
 
-// wheel zooms about the cursor, drag pans; the transform lives in GVIEW and paint() re-applies
+// Communities as a browsable index: every fact in the group, in a scroll box, each one a link
+// into the Text view. The graph is the map; the ledger is the ground truth under it.
+function renderCommunities(d) {
+  const ul = $("g-list");
+  ul.innerHTML = "";
+  const head = document.createElement("li");
+  head.className = "fact";
+  head.innerHTML = `<div class="body"><label style="cursor:pointer"><input type="checkbox" id="g-all" checked>
+      all ${d.communities.length} communities · ${(d.nodes || []).length} nodes</label></div>`;
+  head.querySelector("input").onchange = ev => {
+    GVIS.clear();
+    if (ev.target.checked) (d.communities || []).forEach(c => GVIS.add(c.id));
+    ul.querySelectorAll("input[data-comm]").forEach(b => { b.checked = ev.target.checked; });
+    paint();
+  };
+  ul.append(head);
+  const by = {};
+  (d.nodes || []).forEach((n, i) => { (by[n.community] = by[n.community] || []).push([n, i]); });
+  for (const c of d.communities) {
+    const members = (by[c.id] || []).slice().sort((a, b) => b[0].degree - a[0].degree);
+    const li = document.createElement("li");
+    li.className = "fact";
+    const box = document.createElement("div");
+    box.className = "txt";
+    box.style.maxHeight = "150px";
+    members.forEach(([n, i]) => {
+      const row = document.createElement("a");
+      row.href = "#";
+      row.textContent = n.label;
+      row.style.cssText = "display:block;color:inherit;text-decoration:none;cursor:pointer;padding:1px 0";
+      row.title = `community ${n.community} · degree ${n.degree}${n.fact ? " · fact #" + n.fact : ""}`;
+      row.onclick = e => { e.preventDefault(); focusNode(i); };
+      box.append(row);
+    });
+    const body = document.createElement("div");
+    body.className = "body";
+    const title = document.createElement("div");
+    title.className = "meta";
+    title.innerHTML = `<input type="checkbox" data-comm="${c.id}" checked>
+      <span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${gc(c.id)};margin:0 5px"></span>
+      <strong style="font-weight:600">${c.size} node${c.size === 1 ? "" : "s"}</strong>
+      · community ${c.id}${c.label ? " · " + esc(c.label) : ""}`;
+    title.querySelector("input").onchange = ev => {
+      const id = Number(ev.target.dataset.comm);
+      ev.target.checked ? GVIS.add(id) : GVIS.delete(id);
+      paint();
+    };
+    body.append(title, box);
+    li.append(body);
+    ul.append(li);
+  }
+}
+
+function focusNode(i) {
+  const n = GDATA.nodes[i];
+  $("g-cap").innerHTML = "";
+  $("g-cap").textContent = `${n.label} · community ${n.community} · degree ${n.degree}`
+    + (n.fact ? ` · fact #${n.fact}` : "");
+  if (n.label) { $("q").value = n.label.slice(0, 70); show($("q").value); tier("t3"); }
+}
+
+// camera: drag orbits, wheel zooms toward the pointer, resize repaints
 $("g-canvas").onwheel = ev => {
   ev.preventDefault();
   const r = ev.target.getBoundingClientRect();
   const mx = ev.clientX - r.left - r.width / 2, my = ev.clientY - r.top - r.height / 2;
-  const k = Math.min(12, Math.max(0.4, GVIEW.k * (ev.deltaY < 0 ? 1.15 : 1 / 1.15)));
-  GVIEW.x = mx - (mx - GVIEW.x) * (k / GVIEW.k);
-  GVIEW.y = my - (my - GVIEW.y) * (k / GVIEW.k);
-  GVIEW.k = k;
+  const k = Math.min(6, Math.max(0.45, GCAM.k * (ev.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  GCAM.x = mx - (mx - GCAM.x) * (k / GCAM.k);
+  GCAM.y = my - (my - GCAM.y) * (k / GCAM.k);
+  GCAM.k = k;
   paint();
 };
-let GPAN = null;
-$("g-canvas").onpointerdown = ev => { GPAN = [ev.clientX, ev.clientY, GVIEW.x, GVIEW.y]; ev.target.setPointerCapture(ev.pointerId); };
-$("g-canvas").onpointerup = () => { GPAN = null; };
+let GDRAG = null;
+$("g-canvas").onpointerdown = ev => { GDRAG = [ev.clientX, ev.clientY, GCAM.yaw, GCAM.pitch, GCAM.x, GCAM.y]; ev.target.setPointerCapture(ev.pointerId); };
+$("g-canvas").onpointerup = () => { GDRAG = null; };
 $("g-canvas").onpointermove = ev => {
   const cv = ev.target;
-  if (GPAN) { GVIEW.x = GPAN[2] + (ev.clientX - GPAN[0]); GVIEW.y = GPAN[3] + (ev.clientY - GPAN[1]); paint(); return; }
-  const d = GDATA; if (!d || !d.pos) return;
-  const r = cv.getBoundingClientRect();
-  const mx = ev.clientX - r.left, my = ev.clientY - r.top;
-  const S = Math.min(r.width, r.height) * 0.92 * GVIEW.k;
-  let best = 120, hit = -1;
+  if (GDRAG) {
+    const dx = ev.clientX - GDRAG[0], dy = ev.clientY - GDRAG[1];
+    if (ev.shiftKey) { GCAM.x = GDRAG[4] + dx; GCAM.y = GDRAG[5] + dy; }
+    else { GCAM.yaw = GDRAG[2] + dx * 0.006; GCAM.pitch = Math.max(-1.5, Math.min(1.5, GDRAG[3] + dy * 0.006)); }
+    paint();
+    return;
+  }
+  const d = GDATA; if (!d || !d.px) return;
+  const r = cv.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  let best = 130, hit = -1;
   for (let i = 0; i < d.nodes.length; i++) {
     if (!GVIS.has(d.nodes[i].community)) continue;
-    const px = r.width / 2 + GVIEW.x + d.pos[i][0] * S, py = r.height / 2 + GVIEW.y + d.pos[i][1] * S;
-    const q = (px - mx) ** 2 + (py - my) ** 2;
+    const q = (d.px[i] - mx) ** 2 + (d.py[i] - my) ** 2;
     if (q < best) { best = q; hit = i; }
   }
   const n = hit >= 0 ? d.nodes[hit] : null;
   cv.style.cursor = n ? "pointer" : "grab";
-  cv.title = n ? `${n.label}\ncommunity ${n.community} · degree ${n.degree}${n.fact ? ` · fact #${n.fact}` : ""}` : "";
+  cv.title = n ? `${n.label}\ncommunity ${n.community} · degree ${n.degree}${n.fact ? " · fact #" + n.fact : ""}` : "";
 };
 $("g-canvas").onclick = ev => {
-  const d = GDATA; if (!d || !d.pos) return;
-  const r = ev.target.getBoundingClientRect();
-  const mx = ev.clientX - r.left, my = ev.clientY - r.top;
-  const S = Math.min(r.width, r.height) * 0.92 * GVIEW.k;
-  let best = 120, hit = -1;
+  const d = GDATA; if (!d || !d.px) return;
+  const r = ev.target.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  let best = 130, hit = -1;
   for (let i = 0; i < d.nodes.length; i++) {
     if (!GVIS.has(d.nodes[i].community)) continue;
-    const px = r.width / 2 + GVIEW.x + d.pos[i][0] * S, py = r.height / 2 + GVIEW.y + d.pos[i][1] * S;
-    const q = (px - mx) ** 2 + (py - my) ** 2;
+    const q = (d.px[i] - mx) ** 2 + (d.py[i] - my) ** 2;
     if (q < best) { best = q; hit = i; }
   }
-  if (hit < 0) return;
-  const n = d.nodes[hit];
-  $("g-cap").innerHTML = `<b>${esc(n.label)}</b> · community ${n.community} · degree ${n.degree}`
-    + (n.fact ? ` · <a href="#" id="g-jump">open fact #${n.fact}</a>` : "");
-  const jump = $("g-jump");
-  if (jump) jump.onclick = e => { e.preventDefault(); $("q").value = String(n.fact); show(String(n.fact)); tier("t3"); };
+  if (hit >= 0) focusNode(hit);
 };
 window.addEventListener("resize", () => paint());
 
@@ -575,5 +644,4 @@ async function graphPass(merge) {
 }
 $("g-build").onclick = () => graphPass(false);
 $("g-merge").onclick = () => graphPass(true);
-graphView();
 show("");
