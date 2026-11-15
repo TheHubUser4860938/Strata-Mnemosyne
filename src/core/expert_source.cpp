@@ -5490,7 +5490,7 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
             const int64_t e = ids[i];
             d.is_hit[(size_t) i] = 0;
             if (e < 0 || e >= d.n_expert) continue;   // out of range: the pool refuses it, with a message
-            int32_t slot = d.cache->slot_of(d.layers, e);
+            int32_t slot = d.cache->slot_of_routed(d.layers, e);   // R4.2i: counted, so the spread is the routed one
             if (slot == kNotResident) {
                 const int32_t cand = d.cache->admit(d.layers, e);
                 if (cand == kNotResident) {

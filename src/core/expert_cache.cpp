@@ -800,8 +800,17 @@ void ExpertCache::set_layer_split(const std::string& spec) {
 
 int32_t ExpertCache::slot_of(int64_t layer, int64_t expert) const {
     if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return kNotResident;
+    return residency_[(size_t) (layer * n_expert_ + expert)];
+}
+
+/// R4.2i: the decode path's lookup, counted per layer.  This is the accessor whose spread a per-layer quota
+/// is chosen against: `slot_of` is also called by the adapter's residency sweep (48 x 512 lookups a round,
+/// against 480 routed lookups a token), so counting there reports the FILL - 107 of 512 slots, 21% for every
+/// layer - and hides the routing-weighted spread of ~40% the split is meant to exploit.
+int32_t ExpertCache::slot_of_routed(int64_t layer, int64_t expert) const {
+    if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return kNotResident;
     const int32_t s = residency_[(size_t) (layer * n_expert_ + expert)];
-    if (!layer_lookups_.empty()) {   // R4.2i: the per-layer residency counters, on by STRATA_EXPERT_LAYER_STATS
+    if (!layer_lookups_.empty()) {
         ++layer_lookups_[(size_t) layer];
         if (s != kNotResident) ++layer_hits_[(size_t) layer];
     }

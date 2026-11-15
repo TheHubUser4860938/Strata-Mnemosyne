@@ -154,6 +154,10 @@ public:
     /// `(layer, expert)` -> slot index, or `kNotResident`.  Bounds-checked: a bad layer or expert returns
     /// `kNotResident` rather than reading whatever is adjacent in the table.
     int32_t slot_of(int64_t layer, int64_t expert) const;
+    /// R4.2i: the same lookup as `slot_of`, counted per layer. The decode path's routed experts go through
+    /// this; the tier's own scans (which sweep all 512 per layer and report the FILL, 107/512 = 21% for
+    /// every layer) keep using `slot_of`, so the printed spread is the routing-weighted one.
+    int32_t slot_of_routed(int64_t layer, int64_t expert) const;
     /// R4.2i: per-layer residency counters, opt-in (`STRATA_EXPERT_LAYER_STATS=1`).  The global hit rate is one
     /// number for 48 layers whose routed sets differ: on our trace a uniform 102 slots/layer hits 0.505 at
     /// layer 0 and 0.919 at layer 31.  Without a live view of that spread the per-layer quota is guesswork.
