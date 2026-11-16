@@ -39,9 +39,12 @@ from typing import Iterable, Optional
 DEFAULT_STORE = "/home/eugene/Strata-data/memory-eval"
 DIR_NAME = "strata-graphify"
 
-# One chunk = 8 files. Measured: 8 files → 70,741 output tokens, no truncation;
-# 25 files → truncated at the 16,384 cap and re-extracted. See the module docstring.
-FILES_PER_CHUNK = 8
+# One chunk = 4 files. Measured on this box: 8 files per chunk costs 70,741 output tokens and
+# lands whole, and yields ~7 concepts per chunk; 4 files costs about half as much per call and
+# yields roughly the same per file, so it doubles the number of chunks — ~2.2 h for the whole
+# store, about twice the rows the graph names. 25 files ran past the model's 16,384-token
+# completion ceiling and re-extracted.
+FILES_PER_CHUNK = int(os.environ.get("STRATA_GRAPHIFY_CHUNK", "4"))
 FACTS_PER_FILE = 25
 MAX_CONCURRENCY = 1
 
@@ -187,8 +190,9 @@ class StrataGraphify:
         return sorted(out)
 
     # ---------------------------------------------------------------- pass
-    def _chunks(self, files: list[Path]) -> list[list[Path]]:
-        return [files[i:i + FILES_PER_CHUNK] for i in range(0, len(files), FILES_PER_CHUNK)]
+    def _chunks(self, files: list[Path], size: int = FILES_PER_CHUNK) -> list[list[Path]]:
+        size = max(1, int(size))
+        return [files[i:i + size] for i in range(0, len(files), size)]
 
     def _extract(self, chunk: list[Path]) -> dict:
         """One LLM pass over one chunk, through the installed graphify library."""
@@ -215,7 +219,7 @@ class StrataGraphify:
                 "input_tokens": tin, "output_tokens": tout}
 
     def build(self, ids: Optional[Iterable[int]] = None, full: bool = True,
-              on_progress=None) -> dict:
+              files_per_chunk: int = FILES_PER_CHUNK, on_progress=None) -> dict:
         """Run a graph pass and persist it. `full` rebuilds every shelf; otherwise the
         existing graph is kept and the new rows are merged into it (build_merge), so a
         curated fact joins the graph it belongs to instead of replacing the file.
@@ -228,7 +232,7 @@ class StrataGraphify:
         if not rows:
             return {"status": "empty", "message": "no facts to graph"}
         files = self.write_corpus(rows)
-        chunks = self._chunks(files)
+        chunks = self._chunks(files, files_per_chunk)
         total = len(chunks)
         parts, done, t0 = [], 0, time.time()
         for chunk in chunks:
