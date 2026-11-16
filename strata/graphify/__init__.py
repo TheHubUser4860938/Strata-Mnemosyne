@@ -334,9 +334,10 @@ class StrataGraphify:
         """What the page's tiles and the CLI print. Never raises on a missing graph."""
         state = self._read(self.state_path)
         prog = self._progress()
-        cov = self.coverage() if state else {"in_graph": 0}
+        has = self.graph_path.exists()          # a graph on disk is the truth; state.json is
+        cov = self.coverage() if has else {"in_graph": 0}   # only the record of building it
         out = {
-            "status": "ready" if state else "empty",
+            "status": "ready" if (state or has) else "empty",
             "nodes": state.get("nodes", 0), "edges": state.get("edges", 0),
             "hyperedges": state.get("hyperedges", 0),
             "communities": state.get("communities", 0),
@@ -351,7 +352,7 @@ class StrataGraphify:
             "error": prog.get("error") if not prog.get("running") else None,
             "graph_path": str(self.graph_path),
         }
-        if not state:
+        if not (state or has):
             out["message"] = "No graph yet. Press Build, or run: python -m strata.graphify.cli build"
         return out
 

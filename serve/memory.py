@@ -1156,6 +1156,7 @@ class MemoryService:
                  expose_window: int = 0, expose_step: float = 0.0, expose_cap: int = 3,
                  route_shelves: bool = False, route_demote: float = 0.0,
                  derived_weight: float = 1.0, block_cover_terms: int = 0,
+                 graph_weight: float = 0.0, graph_seeds: int = 8,
                  cover_weight: float = 0.0, proof_weight: float = 0.0,
                  turn_recall_agg: int = 0, route_glossary: float = 0.0,
                  route_top: int = ROUTE_TOP, block_shelf_tags: bool = False,
@@ -1225,6 +1226,13 @@ class MemoryService:
         # (cover_weight), and how many turns back this fact up (proof_weight, written by the merge
         # path). Both default 0.0 = today's bytes.
         self.cover_weight = max(0.0, float(cover_weight))
+        # THE GRAPH ARM (2026-11-15): a third vote in the same RRF currency the other two arms
+        # spend. 0.0 leaves the ranking byte-identical to the release before it; the arm reads
+        # <store>/strata-graphify/graph.json and casts a vote for the neighbours of the rows
+        # the lexical and cosine arms already liked.
+        self.graph_weight = max(0.0, float(graph_weight))
+        self.graph_seeds = max(1, int(graph_seeds))
+        self._graph_cache: tuple | None = None      # (mtime, adjacency) - a rebuilt graph is a new stamp
         self.proof_weight = max(0.0, float(proof_weight))
         # AGGREGATION-AWARE TAIL (2026-11-08): counting questions want every row, lookups want the
         # best one. 0 = the tail cap is turn_recall_limit for every shape, exactly today.
@@ -2934,6 +2942,13 @@ class MemoryService:
         if semantic and self.embedder is not None:
             out = self._semantic(out, query, scopes, classes, since, until, limit)
             out.sort(key=lambda x: -x["score"])
+        # THE GRAPH ARM: neighbours of the rows both arms already liked, in the same RRF
+        # currency, before the trust tier and the exposure decay so they are treated like any
+        # other candidate. It runs on the fused list, not the query, so it costs a dict lookup
+        # and one IN-list read - no fourth model call, no fourth index.
+        if self.graph_weight > 0.0:
+            out = self._graph_expand(out, limit)
+            out.sort(key=lambda x: -x["score"])
         self._trust_tier(out)              # labels every derived row; multiplies only when d < 1.0
         if self.expose_step > 0.0 and self.expose_window > 0:
             # EXPOSURE-DECAY (see __init__): demote what the recent ledger already showed, AFTER
@@ -3367,6 +3382,137 @@ class MemoryService:
                                   source=r[6],                    # the cosine arm's rows get a tier too -
                                   #   a derived row the lexical pass never proposed is still derived
                                   **{"class": r[3]}))
+        return cands
+
+    @_heals
+    def _graph(self) -> dict:
+        """Adjacency over fact ids, read from the store's own graph and cached by file mtime.
+
+        `strata/graphify` writes <store>/strata-graphify/graph.json: nodes are concepts the
+        served model lifted out of the fact text, and a node id carries the row it came from
+        (`<shelf>_fact_<id>`). So an edge between two nodes is a relationship between two
+        rows, and a hyperedge is a whole case with several rows in it. This turns both into
+        id→ids and nothing else: the arm votes on rows, the graph stays a file.
+        """
+        path = os.path.join(self.directory, "strata-graphify", "graph.json")
+        try:
+            stamp = os.path.getmtime(path)
+        except OSError:
+            return {}
+        if self._graph_cache and self._graph_cache[0] == stamp:
+            return self._graph_cache[1]
+        adj: dict[int, set[int]] = {}
+
+        def fid(node):
+            s = str(node.get("id") if isinstance(node, dict) else node)
+            i = s.rfind("_fact_")
+            return int(s[i + 6:]) if i >= 0 and s[i + 6:].isdigit() else None
+
+        try:
+            with open(path) as fh:
+                g = json.load(fh)
+        except (OSError, ValueError):
+            return {}
+        for e in g.get("links") or []:
+            a, b = fid(e.get("source")), fid(e.get("target"))
+            if a and b and a != b:
+                adj.setdefault(a, set()).add(b)
+                adj.setdefault(b, set()).add(a)
+        for h in g.get("hyperedges") or []:
+            members = [m for m in (fid(x) for x in (h.get("members") or h.get("nodes") or [])) if m]
+            for m in members:
+                adj.setdefault(m, set()).update(o for o in members if o != m)
+        self._graph_cache = (stamp, adj)
+        return adj
+
+    @_heals
+    def _graph_stats(self) -> dict:
+        """The Graph tile: what the graph holds, and whether the arm is casting votes.
+
+        `rows` is the coverage the tile shows as "graphed" — the store's fact rows the graph
+        connects, which is a smaller number than `nodes`: a node is a concept, and one
+        concept links several rows.
+        """
+        d = os.path.join(self.directory, "strata-graphify")
+
+        def _load(name):
+            try:
+                with open(os.path.join(d, name)) as f:
+                    return json.load(f)
+            except (OSError, ValueError):
+                return {}
+
+        state, prog = _load("state.json"), _load("progress.json")
+        return {"arm": round(self.graph_weight, 3), "seeds": self.graph_seeds,
+                "nodes": state.get("nodes", 0), "edges": state.get("edges", 0),
+                "communities": state.get("communities", 0),
+                "facts": state.get("facts", 0), "rows": len(self._graph()),
+                "built": state.get("built"),
+                "pending": len(_load("pending.json").get("ids") or []),
+                "running": bool(prog.get("running"))}
+
+    def _graph_expand(self, cands: list[dict], limit: int) -> list[dict]:
+        """The third arm: neighbours of the fused top rows cast an RRF vote of their own.
+
+        Why a vote and not a multiplier: the two shipped arms fuse by RANK POSITION (see
+        _semantic), because raw scores from different arms are not comparable on this store.
+        A neighbour row was found by neither word nor cosine, so it enters with a graph rank
+        and the same RRF term the other arms use, scaled by `graph_weight` — a row the graph
+        vouches for can rise, and a row both arms already like keeps its place.
+
+        Seeds are the top `graph_seeds` fused rows: the graph is a map of the case, so the
+        neighbour of a good answer is the rest of that answer.
+        """
+        adj = self._graph()
+        if not adj or not cands:
+            return cands
+        seeds = cands[:max(1, self.graph_seeds)]
+        # A vote is priced by who cast it: rank = seed position + position inside that seed's
+        # neighbourhood, so a neighbour of the top hit outranks a neighbour of the eighth.
+        vote: dict[int, int] = {}
+        for si, s in enumerate(seeds, 1):
+            for ni, nb in enumerate(sorted(adj.get(s["id"], ())), 1):
+                rank = si + ni
+                if nb not in vote or rank < vote[nb]:
+                    vote[nb] = rank
+        if not vote:
+            return cands
+        have = {c["id"] for c in cands}
+        # Two effects, one currency: a row the other arms ALREADY found gets its RRF sum raised
+        # by the graph's term (that is the re-ranking the panel measures), and a neighbour no
+        # arm found joins the list on the graph's vote alone.
+        for c in cands:
+            rank = vote.get(c["id"])
+            if rank:
+                c["score"] = round(c["score"] + self.graph_weight / (RRF_K + rank), 6)
+                c["graph_rank"] = rank
+        ids = [i for i in vote if i not in have][:max(0, limit * 2)]
+        if not ids:
+            return cands
+        with self.lock:
+            got = {r[0]: r for r in self.conn.execute(
+                "select id, scope, text, coalesce(class,''), confidence, coalesce(hits, 0), "
+                "coalesce(source,''), coalesce(updated_at, created_at) from memories "
+                "where id in (" + ",".join(["%s"] * len(ids)) + ") and invalid_at is null",
+                ids).fetchall()}
+            self.conn.commit()
+        now = time.time()
+        for rid in ids:
+            r = got.get(rid)
+            if r is None:
+                continue
+            rank = vote[rid]
+            # updated_at comes back as a datetime on this path (the lexical arm converts it with
+            # _ep before the blend; the graph arm must do the same or the vote is a TypeError)
+            upd = self._ep(r[7]) if r[7] is not None else now
+            fresh = math.exp(-max(0.0, now - upd) / 86400.0 / AGE_SCALE_DAYS)
+            v = self.graph_weight / (RRF_K + rank)      # the arm's own RRF term
+            cands.append(dict(id=rid, scope=r[1], text=r[2], score=round(v, 6),
+                              graph_rank=rank,           # provenance: which arm put it here
+                              lex_rank=None, cos_rank=None,
+                              updated_at=round(upd, 1),
+                              confidence=r[4], hits=r[5], source=r[6],
+                              **{"class": r[3]}))
         return cands
 
     @_heals
@@ -3915,6 +4061,7 @@ class MemoryService:
                              ({"on": True, "loaded": False, "error": self.embedder_error}
                               if self.embedder_error else {"on": False})),
                 "db": self.db_path,
+                "graph": self._graph_stats(),
                 "graph": self.graph_stats(),   # the store's own knowledge graph (strata.graphify):
                                                # node/community counts and whether a pass is running
                 "dir": self.directory}    # the store dir - what tools/attach() needs (the tools'
@@ -4488,6 +4635,10 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         floor_cosine=num("floor_cosine", 0.0, float),
         auto_shelve=flag("auto_shelve"),
         block_min_score=num("block_min_score", 0.0, float),
+        # the graph arm (2026-11-15): 0.0 is off and byte-identical; the vote weight and the
+        # number of fused rows whose neighbours get pulled in are both box-tunable
+        graph_weight=num("graph_weight", 0.0, float),
+        graph_seeds=num("graph_seeds", 8),
         block_doc_cap=num("block_doc_cap", 1200),
         expose_window=num("expose_window", 0),
         expose_step=num("expose_step", 0.0, float),
