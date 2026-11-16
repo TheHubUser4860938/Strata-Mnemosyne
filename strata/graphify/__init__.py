@@ -219,19 +219,29 @@ class StrataGraphify:
                 "input_tokens": tin, "output_tokens": tout}
 
     def build(self, ids: Optional[Iterable[int]] = None, full: bool = True,
-              files_per_chunk: int = FILES_PER_CHUNK, on_progress=None) -> dict:
+              files_per_chunk: int = FILES_PER_CHUNK, per_file: int = FACTS_PER_FILE,
+              corpus_files: Optional[list[Path]] = None, on_progress=None) -> dict:
         """Run a graph pass and persist it. `full` rebuilds every shelf; otherwise the
         existing graph is kept and the new rows are merged into it (build_merge), so a
         curated fact joins the graph it belongs to instead of replacing the file.
+
+        `per_file` is the density knob: the model writes about one concept per 1.5 facts at
+        10 facts a file, and one per 15 facts at 25 a file. Smaller files name more of the
+        store per pass, which is what `cover` runs on.
         """
         import networkx as nx
         from graphify import analyze, build as gbuild, cluster as gcluster, export as gexport
 
         self._ensure()
-        rows = self.facts(ids)
-        if not rows:
-            return {"status": "empty", "message": "no facts to graph"}
-        files = self.write_corpus(rows)
+        if corpus_files:
+            # A bridge pass reads a file the graph wrote about itself, not the store.
+            files, rows = list(corpus_files), self.facts(None)
+        else:
+            rows = self.facts(ids)
+            if not rows:
+                return {"status": "empty", "message": "no facts to graph"}
+            files = self.write_corpus(rows, per_file=per_file)
+        files_per_chunk = files_per_chunk or FILES_PER_CHUNK
         chunks = self._chunks(files, files_per_chunk)
         total = len(chunks)
         parts, done, t0 = [], 0, time.time()
@@ -258,6 +268,9 @@ class StrataGraphify:
         state = {
             "built": _now(), "seconds": round(time.time() - t0, 1),
             "facts": len(rows), "files": len(files), "chunks": total,
+            # in_graph is the coverage the tile shows, recorded at build time so a sweep can
+            # read it out of state.json without re-parsing the graph.
+            "in_graph": self.coverage().get("in_graph", 0),
             "nodes": G.number_of_nodes(), "edges": G.number_of_edges(),
             "hyperedges": len(extraction.get("hyperedges") or []),
             "communities": len(communities),
@@ -446,6 +459,102 @@ class StrataGraphify:
                     if tail.isdigit():
                         ids.add(int(tail))
         return {"in_graph": len(ids), "graph_ids": sorted(ids)[:20]}
+
+    def uncovered(self) -> list[int]:
+        """Live fact ids that no node cites. This is the queue `cover` drains."""
+        g = self._read(self.graph_path)
+        named: set[int] = set()
+        pool = list(g.get("nodes") or [])
+        for h in g.get("hyperedges") or []:
+            pool += [{"id": m} for m in (h.get("nodes") or [])]
+        for n in pool:
+            s = str(n.get("id") if isinstance(n, dict) else n)
+            if "_fact_" in s:
+                tail = s.rsplit("_fact_", 1)[1]
+                if tail.isdigit():
+                    named.add(int(tail))
+        return [r[0] for r in self._rows_meta() if r[0] not in named]
+
+    def _rows_meta(self) -> list[tuple]:
+        from serve.memory import attach
+        conn = attach(str(self.store_dir))      # attach takes a path STRING
+        try:
+            return conn.execute(
+                "SELECT id FROM memories WHERE invalid_at IS NULL AND source NOT LIKE 'doc-index%%' "
+                "ORDER BY id").fetchall()
+        finally:
+            conn.close()
+
+    def cover(self, per_file: int = 10, files_per_chunk: int = 6, max_passes: int = 12,
+              on_progress=None) -> dict:
+        """Drain the store into the graph: repeated merge passes over the rows no node names yet.
+
+        Why passes and not one big pass: a pass reads everything and the model writes about one
+        concept per 1.5-15 facts depending on file size, so a single pass names a slice of the
+        store. The rows it skipped are still live, still searchable by word and cosine, and
+        invisible to the graph arm. Each cover pass re-reads ONLY those rows, at 10 facts a
+        file — the density that makes the model name a fact rather than summarise a shelf — and
+        merges into the standing graph. The queue shrinks monotonically, so the run ends.
+        """
+        passes, started = 0, time.time()
+        while passes < max_passes:
+            todo = self.uncovered()
+            if not todo:
+                break
+            passes += 1
+            self._write(self.progress_path, {"running": True, "started": _now(),
+                                             "pid": os.getpid(), "mode": "cover",
+                                             "pass": passes, "queued": len(todo),
+                                             "done": 0, "total": 0})
+            res = self.build(ids=todo, full=False, per_file=per_file,
+                             files_per_chunk=files_per_chunk,
+                             on_progress=lambda d, t, n: self._write(self.progress_path, {
+                                 "running": True, "started": _now(), "pid": os.getpid(),
+                                 "mode": "cover", "pass": passes, "queued": len(todo),
+                                 "files": n, "done": d, "total": t}))
+            if on_progress:
+                on_progress(passes, res)
+            if res.get("status") != "ok":
+                break
+        s = self.summary()
+        s["cover_passes"] = passes
+        s["cover_seconds"] = round(time.time() - started, 1)
+        s["uncovered"] = len(self.uncovered())
+        return s
+
+    def bridge(self, members_per_community: int = 12, max_communities: int = 90) -> dict:
+        """One pass over the graph's OWN groups, to put edges between the communities.
+
+        A cover drain makes the graph wide; the groups stay islands, and the recall arm spends
+        its votes along edges. This writes a corpus file naming each community by its
+        highest-degree members and asks the model what connects one group's case to another's.
+        Cheap by construction: 90 groups × 12 members is a few chunks, not the store.
+        """
+        analysis = self._read(self.analysis_path)
+        g = self._read(self.graph_path)
+        if not g:
+            return {"status": "empty", "message": "no graph to bridge"}
+        labels = {n.get("id"): (n.get("label") or "") for n in (g.get("nodes") or [])}
+        deg: dict[str, int] = {}
+        for e in g.get("links") or []:
+            deg[e.get("source")] = deg.get(e.get("source"), 0) + 1
+            deg[e.get("target")] = deg.get(e.get("target"), 0) + 1
+        blocks = []
+        comms = sorted((analysis.get("communities") or {}).items(),
+                       key=lambda kv: -len(kv[1]))[:max_communities]
+        for cid, members in comms:
+            top = sorted(members, key=lambda m: -deg.get(m, 0))[:members_per_community]
+            text = "\n".join(f"- {labels.get(m, '')[:200]}" for m in top if labels.get(m))
+            if text:
+                blocks.append(f"## community {cid}\n{text}\n")
+        self._write(self.progress_path, {"running": True, "started": _now(), "pid": os.getpid(),
+                                         "mode": "bridge", "done": 0, "total": len(blocks)})
+        path = self.corpus / "bridges.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# The graph's own groups\n\nEach section is one community, named by its "
+                        "best-connected members. What connects these cases to each other?\n\n"
+                        + "\n".join(blocks), encoding="utf-8")
+        return self.build(corpus_files=[path], full=False)
 
     def stats_patch(self) -> dict:
         """The graph tile's numbers, folded into the store's own stats reply."""
