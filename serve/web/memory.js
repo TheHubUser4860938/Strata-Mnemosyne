@@ -381,8 +381,9 @@ async function graphStatus() {
   // The store's live count is already on the page (the FACTS tile), so this reads it rather
   // than paying for a second stats call.
   $("g-graphedsub").textContent = s.in_graph
-    ? `${Math.round(100 * (s.in_graph || 0) / Math.max(1, s.facts || 1))}% of what the pass read · ${$("rows").textContent} live in the store`
-    : "facts the graph names, over facts the pass read";
+    ? `${Math.round(100 * (s.in_graph || 0) / Math.max(1, s.facts || 1))}% of the live facts`
+      + (s.facts_read ? ` · the last pass read ${s.facts_read.toLocaleString()}` : "")
+    : "facts the graph names, over facts in the store";
   $("g-built").textContent = s.built ? new Date(s.built).toLocaleString() : "never";
   $("g-builtsub").textContent = s.built
     ? `${s.mode || "full"} pass · ${(s.facts || 0).toLocaleString()} facts`
@@ -407,7 +408,7 @@ async function graphView(rebuild) {
     const s = await graphStatus();
     if (s.running && !GPOLL) GPOLL = setInterval(graphTick, 15000);
     if (s.status !== "ready") {
-      $("g-list").innerHTML = `<li class="empty">No graph yet. A pass reads every shelf once, eight files at a time.</li>`;
+      $("g-list").innerHTML = `<li class="empty">No graph yet. A pass reads every shelf, a few files at a time; a drain loops until the queue is empty.</li>`;
       return;
     }
     const v = await api("/memory", { op: "graph", action: "view" });

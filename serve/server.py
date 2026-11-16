@@ -10944,7 +10944,7 @@ def make_handler(svc: Service):
                     r = {"graph": gr.build_in_background(ids=ids, full=False)
                          if ids else {"status": "nothing pending"}}
                 elif action == "view":
-                    r = {"graph": gr.view(int(req.get("max_communities") or 40))}
+                    r = {"graph": gr.read_view(int(req.get("max_communities") or 40))}
                 elif action == "note":
                     # the harvest's verb: "these facts are new, graph them on the next pass".
                     # Cheap and offline (a JSON list), so a drain never waits on an LLM call.

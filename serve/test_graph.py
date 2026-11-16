@@ -97,6 +97,42 @@ class GraphArm(unittest.TestCase):
         self.assertEqual(len(v["edges"]), 1)
         self.assertEqual(g.summary()["in_graph"], 3, "coverage counts the row ids the graph names")
 
+    def test_neighbours_stay_in_scope(self):
+        """A graph edge to a row in ANOTHER scope lifts shelves, not stores (audit 2026-11-16):
+        the arm's IN-list read must honour the request's scopes, as the lexical SELECT does."""
+        other = self.store.remember("Venue nights belong to the owner, scheduled by hand.",
+                                    klass="OPS", scope="venue")["id"]
+        self._write_graph([{"source": f"ops_fact_{self.a}", "target": f"ops_fact_{other}",
+                            "relation": "about"}])
+        self.store._graph_cache = None
+        self.store.graph_weight = 0.6
+        ids = [h["id"] for h in self.store.search("graphify extract concurrency 4090 timeouts",
+                                                  limit=20)]
+        self.assertNotIn(other, ids, "the graph arm crossed into the venue scope")
+        self.store.graph_weight = 0.0
+
+    def test_cover_drains_then_plateaus(self):
+        """cover() loops over the uncovered queue and stops when a pass gains nothing — the
+        plateau law, pinned with a stubbed extractor so the test costs no LLM call."""
+        from strata.graphify import StrataGraphify
+        g = StrataGraphify(self.dir)
+
+        def stub(chunk):
+            return {"nodes": [{"id": f"ops_fact_{self.a}", "label": "x"},
+                              {"id": f"ops_fact_{self.b}", "label": "y"}],
+                    "edges": [{"source": f"ops_fact_{self.a}", "target": f"ops_fact_{self.b}"}],
+                    "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+        g._extract = stub
+        # Fresh standing graph citing ONE row, so the queue is deterministic in any test order:
+        # pass 1 must add the stub's second row, pass 2 must add nothing and stop on the plateau.
+        os.makedirs(os.path.join(self.dir, "strata-graphify"), exist_ok=True)
+        with open(os.path.join(self.dir, "strata-graphify", "graph.json"), "w") as f:
+            json.dump({"nodes": [{"id": f"ops_fact_{self.a}"}], "links": [], "hyperedges": []}, f)
+        s = g.cover(per_file=10, files_per_chunk=6, max_passes=5)
+        self.assertEqual(s["in_graph"], 2, "the stub names two rows, and both land in the graph")
+        self.assertEqual(s["cover_passes"], 2, "pass 2 gains nothing and stops on the plateau")
+
 
 if __name__ == "__main__":
     unittest.main()

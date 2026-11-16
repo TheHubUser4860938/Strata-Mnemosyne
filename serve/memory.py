@@ -2947,7 +2947,7 @@ class MemoryService:
         # other candidate. It runs on the fused list, not the query, so it costs a dict lookup
         # and one IN-list read - no fourth model call, no fourth index.
         if self.graph_weight > 0.0:
-            out = self._graph_expand(out, limit)
+            out = self._graph_expand(out, limit, scopes=scopes)
             out.sort(key=lambda x: -x["score"])
         self._trust_tier(out)              # labels every derived row; multiplies only when d < 1.0
         if self.expose_step > 0.0 and self.expose_window > 0:
@@ -3431,7 +3431,9 @@ class MemoryService:
 
         `rows` is the coverage the tile shows as "graphed" — the store's fact rows the graph
         connects, which is a smaller number than `nodes`: a node is a concept, and one
-        concept links several rows.
+        concept links several rows. `running` is liveness-checked (the same law as graphify's
+        `_alive`): progress.json outlives its writer, and a pass killed at 3 a.m. would
+        otherwise keep the tile spinning forever.
         """
         d = os.path.join(self.directory, "strata-graphify")
 
@@ -3443,15 +3445,22 @@ class MemoryService:
                 return {}
 
         state, prog = _load("state.json"), _load("progress.json")
+        running = bool(prog.get("running"))
+        if running and prog.get("pid"):
+            try:
+                os.kill(int(prog["pid"]), 0)
+            except OSError:
+                running = False
         return {"arm": round(self.graph_weight, 3), "seeds": self.graph_seeds,
                 "nodes": state.get("nodes", 0), "edges": state.get("edges", 0),
                 "communities": state.get("communities", 0),
                 "facts": state.get("facts", 0), "rows": len(self._graph()),
                 "built": state.get("built"),
                 "pending": len(_load("pending.json").get("ids") or []),
-                "running": bool(prog.get("running"))}
+                "running": running}
 
-    def _graph_expand(self, cands: list[dict], limit: int) -> list[dict]:
+    def _graph_expand(self, cands: list[dict], limit: int,
+                      scopes: tuple | list | None = None) -> list[dict]:
         """The third arm: neighbours of the fused top rows cast an RRF vote of their own.
 
         Why a vote and not a multiplier: the two shipped arms fuse by RANK POSITION (see
@@ -3489,12 +3498,18 @@ class MemoryService:
         ids = [i for i in vote if i not in have][:max(0, limit * 2)]
         if not ids:
             return cands
+        # Scope filter, not class filter: a shelf is a filing drawer and a graph edge crossing
+        # drawers is the point of the arm, but a tenant's neighbours stay inside its scopes -
+        # the same scopes the lexical SELECT drew the seeds from.
+        q = ("select id, scope, text, coalesce(class,''), confidence, coalesce(hits, 0), "
+             "coalesce(source,''), coalesce(updated_at, created_at) from memories "
+             "where id in (" + ",".join(["%s"] * len(ids)) + ") and invalid_at is null")
+        args: list = list(ids)
+        if scopes:
+            q += " and scope = any(%s)"
+            args.append(list(scopes))
         with self.lock:
-            got = {r[0]: r for r in self.conn.execute(
-                "select id, scope, text, coalesce(class,''), confidence, coalesce(hits, 0), "
-                "coalesce(source,''), coalesce(updated_at, created_at) from memories "
-                "where id in (" + ",".join(["%s"] * len(ids)) + ") and invalid_at is null",
-                ids).fetchall()}
+            got = {r[0]: r for r in self.conn.execute(q, args).fetchall()}
             self.conn.commit()
         now = time.time()
         for rid in ids:
@@ -3506,7 +3521,9 @@ class MemoryService:
             # _ep before the blend; the graph arm must do the same or the vote is a TypeError)
             upd = self._ep(r[7]) if r[7] is not None else now
             fresh = math.exp(-max(0.0, now - upd) / 86400.0 / AGE_SCALE_DAYS)
-            v = self.graph_weight / (RRF_K + rank)      # the arm's own RRF term
+            # the arm's own RRF term, with recency as a TIE-BREAK only (the _semantic law:
+            # recency survives at 1e-5 scale so it never outvotes a rank step)
+            v = self.graph_weight / (RRF_K + rank) + 1e-5 * fresh
             cands.append(dict(id=rid, scope=r[1], text=r[2], score=round(v, 6),
                               graph_rank=rank,           # provenance: which arm put it here
                               lex_rank=None, cos_rank=None,

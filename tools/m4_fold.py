@@ -13,9 +13,10 @@ each slightly different, and each useless alone —
 
 A search for "work orders" returns five hits where one composite fact should do. Folding
 groups rows by the store's OWN embeddings (no new index, no new model) and asks the served
-model to write one fact that carries every distinct claim, dated where dated. The oldest row
-in the group SURVIVES as the composite, so the chain reads forward through ids and the merged
-rows keep pointing at it.
+model to write one fact that carries every distinct claim, dated where dated. The composite
+lands as a NEW row through op=correct: the most-used member is the row it supersedes, so the
+version chain reads through the survivor's shelf, and every other member is invalidated
+pointing at the same composite.
 
     python tools/m4_fold.py --dry-run --limit 5         # show the groups, write nothing
     python tools/m4_fold.py --shelf USR                 # fold one family
@@ -83,23 +84,35 @@ def norm(v):
 
 
 def cluster(rows, min_cos):
-    """Greedy transitive grouping on the store's own vectors. O(n²) at fact scale (~3k rows,
-    ~4.5 M dot products of 3072-dim — seconds), and a row joins the first group it fits."""
-    groups, used = [], set()
-    for i, a in enumerate(rows):
-        if i in used:
+    """Anchor-anchor grouping on the store's own vectors, in numpy.
+
+    Each anchor claims every later row that (a) shares its scope — not its class: one topic's
+    rows sit on three shelves — and (b) clears `min_cos` against IT, so a group is one theme,
+    not a similarity chain. The vectors arrive normalized, so a dot product IS a cosine.
+    Measured 2026-11-16: this loop in pure Python over 3,000 rows × 3,072 dims ran minutes;
+    one float32 matrix multiply per anchor runs seconds.
+    """
+    import numpy as np
+
+    n = len(rows)
+    if n == 0:
+        return []
+    V = np.asarray([r["v"] for r in rows], dtype=np.float32)
+    scopes = [r["scope"] for r in rows]
+    groups: list[list[int]] = []
+    used = [False] * n
+    for i in range(n):
+        if used[i]:
             continue
-        grp = [i]
-        used.add(i)
-        for j in range(i + 1, len(rows)):
-            if j in used:
-                continue
-            if rows[i]["scope"] != rows[j]["scope"]:
-                continue          # scope, not class: one topic's rows sit on three shelves
-            if rows[i]["cos"](rows[j]) >= min_cos:
-                grp.append(j)
-                used.add(j)
-        if len(grp) > 1:
+        used[i] = True
+        cand = [j for j in range(i + 1, n) if not used[j] and scopes[j] == scopes[i]]
+        if not cand:
+            continue
+        hits = np.nonzero(V[cand] @ V[i] >= min_cos)[0]
+        if hits.size:
+            grp = [i] + [cand[h] for h in hits.tolist()]
+            for j in grp:
+                used[j] = True
             groups.append(grp)
     return groups
 
@@ -157,14 +170,12 @@ def main():
     facts = [f for f in facts if f["v"]]
     if a.shelf:
         facts = [f for f in facts if (f["class"] or "").upper().startswith(a.shelf.upper())]
-    for f in facts:
-        f["cos"] = lambda o, v=f["v"]: sum(x * y for x, y in zip(v, o["v"]))
 
     groups = cluster(facts, a.min_cos)[:a.limit]
     if not groups:
         print("no groups at this threshold")
         return
-    total = 0
+    total, composites = 0, 0
     for grp in groups:
         members = [facts[i] for i in grp]   # cluster returns positions in `facts`
         members.sort(key=lambda f: f["id"])
@@ -193,7 +204,8 @@ def main():
             post(a.url, {"op": "invalidate", "id": f["id"], "by": new_id})
         print(f"   → #{new_id} {merged[:120]}")
         total += len(others)
-    print(f"\nfolded {total} rows into {len(groups) if not a.dry_run else 0} composites"
+        composites += 1
+    print(f"\nfolded {total} rows into {composites} composites"
           + (" (dry run, nothing written)" if a.dry_run else ""))
 
 

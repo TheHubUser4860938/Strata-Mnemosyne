@@ -86,6 +86,12 @@ EDITABLE = [
     ("memory.recall_limit", ("section", "memory", "int>=1"),
      "Facts the recall block shows at most per conversation (the head block; the tail has its own). "
      "Takes effect at the next restart"),
+    ("memory.graph_weight", ("section", "memory", "num>=0"),
+     "The graph arm's vote in search: neighbours of the top hits in the store's own knowledge "
+     "graph rise by this weight. 0 turns the arm off. Takes effect at the next restart"),
+    ("memory.graph_seeds", ("section", "memory", "int>=1"),
+     "How many of the top hits seed the graph arm's neighbourhood walk (default 8). "
+     "Takes effect at the next restart"),
 ]
 SPEC = {k: kind for k, kind, _ in EDITABLE}
 

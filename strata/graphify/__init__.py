@@ -71,6 +71,11 @@ os.environ.setdefault("GRAPHIFY_MAX_OUTPUT_TOKENS", "16384")
 # The answer is cached per process; `STRATA_GRAPHIFY_MODEL` overrides it for a side-by-side.
 _MODEL_CACHE: list = []
 
+# graph.json coverage cache, keyed by path: (file mtime, frozenset of cited fact ids). The
+# page polls summary/view every refresh and cover() asks uncovered() between passes; after a
+# full drain graph.json is megabytes, so the parse is paid once per rebuild, not once per ask.
+_COV_CACHE: dict = {}
+
 
 def served_model(base_url: str | None = None) -> str:
     """The model id the server reports, from /health, then /models. Env wins if set."""
@@ -252,7 +257,11 @@ class StrataGraphify:
                 on_progress(done, total, len(files))
         extraction = self._merge_extractions(parts)
 
-        if full or not self.graph_path.exists():
+        # The mode question is answered BEFORE the export: after gexport writes graph.json,
+        # "does the file exist?" is always yes and a first merge pass would stamp itself
+        # "merge" while it actually rebuilt the file (reporting bug found in the 2026-11-16 audit).
+        is_full = full or not self.graph_path.exists()
+        if is_full:
             G = gbuild.build_from_json(extraction, root=self.corpus)
         else:
             G = gbuild.build_merge([extraction], graph_path=self.graph_path, root=self.corpus)
@@ -265,6 +274,12 @@ class StrataGraphify:
             "cohesion": {str(k): v for k, v in cohesion.items()},
             "gods": analyze.god_nodes(G, top_n=12),
         })
+        # hyperedges counts the WHOLE graph (the file just written carries the merged set), not
+        # this pass's extraction: on a merge pass the extraction count is the delta, and the
+        # tile read it as the total (2026-11-16 audit). watermark is the store's max id, not the
+        # subset's: a cover pass reads a queue whose top id sits below the newest fact, and the
+        # tile's "read through" stamp must name the newest row the store holds.
+        whole = self._read(self.graph_path)
         state = {
             "built": _now(), "seconds": round(time.time() - t0, 1),
             "facts": len(rows), "files": len(files), "chunks": total,
@@ -272,11 +287,12 @@ class StrataGraphify:
             # read it out of state.json without re-parsing the graph.
             "in_graph": self.coverage().get("in_graph", 0),
             "nodes": G.number_of_nodes(), "edges": G.number_of_edges(),
-            "hyperedges": len(extraction.get("hyperedges") or []),
+            "hyperedges": len(whole.get("hyperedges") or []),
             "communities": len(communities),
             "tokens_in": extraction["input_tokens"], "tokens_out": extraction["output_tokens"],
-            "model": served_model(), "watermark": max(r[0] for r in rows),
-            "mode": "full" if (full or not self.graph_path.exists()) else "merge",
+            "model": served_model(), "watermark": self._store_max_id(),
+            "store_facts": len(rows) if is_full else self._n_facts(),
+            "mode": "full" if is_full else "merge",
         }
         self._write(self.state_path, state)
         self.write_view()
@@ -358,7 +374,11 @@ class StrataGraphify:
             "nodes": state.get("nodes", 0), "edges": state.get("edges", 0),
             "hyperedges": state.get("hyperedges", 0),
             "communities": state.get("communities", 0),
-            "facts": state.get("facts", 0),
+            # facts is the LIVE store count — the coverage denominator the page prints. A cover
+            # pass reads a queue whose count is not the store's, and the tile was dividing by
+            # it (2026-11-16 audit); facts_read keeps the old number visible.
+            "facts": state.get("store_facts") or self._n_facts(),
+            "facts_read": state.get("facts", 0),
             "in_graph": cov.get("in_graph", 0),
             "built": state.get("built"), "seconds": state.get("seconds"),
             "model": state.get("model"), "mode": state.get("mode"),
@@ -435,55 +455,92 @@ class StrataGraphify:
         self._write(self.view_path, data)
         return data
 
+    def read_view(self, max_communities: int = 40) -> dict:
+        """view.json when it is as fresh as graph.json, a recomputed view otherwise.
+
+        The page's Graph tab polls this every refresh; after a full drain graph.json is
+        megabytes and the parse is the whole cost of a poll. The build stamps view.json
+        last, so "view.json mtime >= graph.json mtime" means it describes the current
+        graph. A caller asking for a non-default community count gets a fresh compute -
+        the materialised file is cut for the page's 40.
+        """
+        if max_communities == 40 and self.view_path.exists() and self.graph_path.exists():
+            try:
+                if self.view_path.stat().st_mtime >= self.graph_path.stat().st_mtime:
+                    data = self._read(self.view_path)
+                    if data.get("nodes"):
+                        return data
+            except OSError:
+                pass
+        return self.view(max_communities=max_communities)
+
     def coverage(self) -> dict:
         """Facts in the graph over facts in the store — the number the tile shows.
 
         A node is a concept the model lifted out of the fact text, so the node count is not
         the coverage: one node can cite a dozen rows, and a row can be cited by none. The
         honest read is the set of row ids the graph actually names. Node ids carry them
-        (`<shelf>_fact_<id>`), so coverage is a suffix count over the ids on disk.
+        (`<shelf>_fact_<id>`), so coverage is a suffix count over the ids on disk —
+        through `_named_ids`, which caches the parse by file mtime.
         """
-        g = self._read(self.graph_path)
-        ids = set()
-        for n in g.get("nodes") or []:
-            nid = str(n.get("id") or "")
-            if "_fact_" in nid:
-                tail = nid.rsplit("_fact_", 1)[1]
-                if tail.isdigit():
-                    ids.add(int(tail))
-        for h in g.get("hyperedges") or []:
-            for m in h.get("members") or h.get("nodes") or []:
-                mid = str(m.get("id") if isinstance(m, dict) else m)
-                if "_fact_" in mid:
-                    tail = mid.rsplit("_fact_", 1)[1]
-                    if tail.isdigit():
-                        ids.add(int(tail))
+        ids = self._named_ids()
         return {"in_graph": len(ids), "graph_ids": sorted(ids)[:20]}
 
-    def uncovered(self) -> list[int]:
-        """Live fact ids that no node cites. This is the queue `cover` drains."""
+    def _named_ids(self) -> set[int]:
+        """The fact ids the graph's nodes and hyperedges cite, cached by graph.json mtime.
+
+        summary(), coverage(), uncovered() and the cover loop all ask the same question of
+        the same file within seconds of each other, and after a full drain graph.json is
+        megabytes — one parse per rebuild, not one per poll (2026-11-16 optimization).
+        """
+        key = str(self.graph_path)
+        try:
+            stamp = os.path.getmtime(self.graph_path)
+        except OSError:
+            return set()                        # no graph file yet: nothing is named
+        hit = _COV_CACHE.get(key)
+        if hit and hit[0] == stamp:
+            return set(hit[1])
         g = self._read(self.graph_path)
-        named: set[int] = set()
+        ids: set[int] = set()
         pool = list(g.get("nodes") or [])
         for h in g.get("hyperedges") or []:
-            pool += [{"id": m} for m in (h.get("nodes") or [])]
+            pool += [{"id": m} for m in (h.get("members") or h.get("nodes") or [])]
         for n in pool:
             s = str(n.get("id") if isinstance(n, dict) else n)
             if "_fact_" in s:
                 tail = s.rsplit("_fact_", 1)[1]
                 if tail.isdigit():
-                    named.add(int(tail))
+                    ids.add(int(tail))
+        _COV_CACHE[key] = (stamp, frozenset(ids))
+        return ids
+
+    def uncovered(self) -> list[int]:
+        """Live fact ids that no node cites. This is the queue `cover` drains."""
+        named = self._named_ids()
         return [r[0] for r in self._rows_meta() if r[0] not in named]
 
     def _rows_meta(self) -> list[tuple]:
         from serve.memory import attach
-        conn = attach(str(self.store_dir))      # attach takes a path STRING
+        try:
+            conn = attach(str(self.store_dir))      # attach takes a path STRING
+        except Exception:                            # a box with no cluster up yet: no queue
+            return []
         try:
             return conn.execute(
                 "SELECT id FROM memories WHERE invalid_at IS NULL AND source NOT LIKE 'doc-index%%' "
                 "ORDER BY id").fetchall()
         finally:
             conn.close()
+
+    def _store_max_id(self) -> int:
+        """The newest live fact id in the store — the state's watermark, store-wide.
+        Derived from _rows_meta (ids ASC), so one guarded attach serves all three readers."""
+        rows = self._rows_meta()
+        return rows[-1][0] if rows else 0
+
+    def _n_facts(self) -> int:
+        return len(self._rows_meta())
 
     def cover(self, per_file: int = 10, files_per_chunk: int = 6, max_passes: int = 12,
               on_progress=None) -> dict:
@@ -497,6 +554,7 @@ class StrataGraphify:
         merges into the standing graph. The queue shrinks monotonically, so the run ends.
         """
         passes, started = 0, time.time()
+        before = len(self.uncovered())
         while passes < max_passes:
             todo = self.uncovered()
             if not todo:
@@ -516,6 +574,12 @@ class StrataGraphify:
                 on_progress(passes, res)
             if res.get("status") != "ok":
                 break
+            after = len(self.uncovered())
+            if after >= before:               # the plateau law: a pass that names nothing new
+                break                         # will not name anything new tomorrow
+            before = after
+        self._write(self.progress_path, {"running": False, "finished": _now(), "pid": os.getpid(),
+                                         "mode": "cover", "pass": passes})
         s = self.summary()
         s["cover_passes"] = passes
         s["cover_seconds"] = round(time.time() - started, 1)
@@ -554,20 +618,10 @@ class StrataGraphify:
         path.write_text("# The graph's own groups\n\nEach section is one community, named by its "
                         "best-connected members. What connects these cases to each other?\n\n"
                         + "\n".join(blocks), encoding="utf-8")
-        return self.build(corpus_files=[path], full=False)
-
-    def stats_patch(self) -> dict:
-        """The graph tile's numbers, folded into the store's own stats reply."""
-        state = self._read(self.state_path)
-        prog = self._read(self.progress_path)
-        return {
-            "nodes": state.get("nodes", 0),
-            "communities": state.get("communities", 0),
-            "facts": state.get("facts", 0),
-            "built": state.get("built"),
-            "pending": len(self._read(self.pending_path, {}).get("ids", [])),
-            "running": bool(prog.get("running")),
-        }
+        res = self.build(corpus_files=[path], full=False)
+        self._write(self.progress_path, {"running": False, "finished": _now(), "pid": os.getpid(),
+                                         "mode": "bridge", "result": res})
+        return res
 
     # ---------------------------------------------------------------- curation hook
     def note(self, ids: Iterable[int]) -> int:
