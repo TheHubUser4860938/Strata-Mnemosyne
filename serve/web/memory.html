@@ -119,7 +119,7 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
   <div class="panel-bar">
     <button id="g-build" class="primary">Run a pass</button>
     <button id="g-merge" title="graph only the facts stored since the last pass and merge them into the standing graph">Graph new facts</button>
-    <span class="small" id="g-note">serial, one chunk of eight shelf files at a time, so the box stays yours</span>
+    <span class="small" id="g-passnote">serial, one chunk of shelf files at a time, so the box stays yours</span>
   </div>
   <div class="panel-bar" style="border-bottom:1px solid var(--st-line-soft)"><span class="small" id="g-progtxt">no pass running</span></div>
   <canvas id="g-canvas" style="width:100%;height:460px;display:block"></canvas>
@@ -134,7 +134,6 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
     <div style="padding:14px 18px" id="g-note"></div>
   </div>
   <div class="panel-bar"><h2 style="margin:0;font-size:17px">Communities</h2><span class="small">biggest first · a community is the graph's own grouping, not a shelf label</span></div>
-  <div class="g-note" id="g-note" hidden></div>
   <ul class="facts" id="g-list"><li class="empty">-</li></ul>
 </div>
 </div>
