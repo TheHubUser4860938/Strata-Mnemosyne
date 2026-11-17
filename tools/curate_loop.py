@@ -81,6 +81,15 @@ _DATES_RULE = (
     "date in it at all, so a fact that does not name its own day is unorderable even when it is "
     "present. Never invent a date: if the day is unknown, leave it out.\n")
 _EXTRACT_TAIL = "\nCONVERSATION:\nuser: {user}\nassistant: {assistant}"
+# ANCHOR (2026-11-16, the owner's standing complaint: "a lot of memories are vague one-liners
+# tied to nothing"). The named subject is the field every later reader routes by - the graph
+# links it, the shelf files it, a fresh session answers to it. Joins the SHIPPED arm only;
+# the control (UNDATED) stays byte-identical, so the A/B history keeps its single-variable leg.
+_ANCHOR_RULE = (
+    "NAME THE SUBJECT: start every FACT with the thing it is about - the project, test, tool, "
+    "file, person, or decision (\"the browse-lever pilot measured...\", not \"it measured...\"). "
+    "A fact whose subject needs the conversation to be understood is a fact a fresh session "
+    "cannot route: it floats. One fact = one subject.\n")
 _ATTR_RULE = (
     "APPEND TWO FIELDS TO EVERY LINE: ATTR: user|attributed|observed || QUOTE: <contiguous "
     "words copied verbatim from the conversation>\n"

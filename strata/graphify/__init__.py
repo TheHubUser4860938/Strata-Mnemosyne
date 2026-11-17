@@ -786,6 +786,19 @@ class StrataGraphify:
             if not nxt:
                 break
         lines, used = [], 0
+        try:
+            # graphify's own walk when the library is importable: IDF-weighted scoring,
+            # hub-penalised paths, its budgeted renderer. The seeds above are ours (label-word
+            # overlap), so the payload names the rows the question chose either way.
+            from graphify import serve as gs
+            text = gs._query_graph_text(G, str(q), mode="bfs", depth=max(1, int(depth)),
+                                        token_budget=max(100, int(budget) // 3),
+                                        graph_path=str(self.graph_path), seeds=front)
+            if str(text).strip():
+                return {"status": "ok", "engine": "graphify", "seeds": front,
+                        "nodes": len(seen), "text": str(text)[:budget]}
+        except Exception:                                    # noqa: BLE001 - the lean walk answers
+            pass
         for nid in front:
             lines.append(f"* {G.nodes[nid].get('label') or nid}"[:200])
             used += len(lines[-1])
