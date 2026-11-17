@@ -267,11 +267,15 @@ class StrataGraphify:
         # The mode question is answered BEFORE the export: after gexport writes graph.json,
         # "does the file exist?" is always yes and a first merge pass would stamp itself
         # "merge" while it actually rebuilt the file (reporting bug found in the 2026-11-16 audit).
-        is_full = full or not self.graph_path.exists()
-        if is_full:
-            G = gbuild.build_from_json(extraction, root=self.corpus)
-        else:
+        # Full = read every shelf; merge = keep what the graph already learned. The two are
+        # orthogonal (2026-11-17): a full pass over all shelves should ADD to the standing
+        # graph, not replace it - the first full pass after a cover drain used to flatten
+        # ~1,400 accumulated named rows back to one pass's ~130. Only the first build, with
+        # no graph on disk, writes from nothing.
+        if self.graph_path.exists():
             G = gbuild.build_merge([extraction], graph_path=self.graph_path, root=self.corpus)
+        else:
+            G = gbuild.build_from_json(extraction, root=self.corpus)
         communities = gcluster.cluster(G)
         cohesion = gcluster.score_all(G, communities)
         gexport.to_json(G, communities, str(self.graph_path), force=True)
@@ -298,8 +302,8 @@ class StrataGraphify:
             "communities": len(communities),
             "tokens_in": extraction["input_tokens"], "tokens_out": extraction["output_tokens"],
             "model": served_model(), "watermark": self._store_max_id(),
-            "store_facts": len(rows) if is_full else self._n_facts(),
-            "mode": "full" if is_full else "merge",
+            "store_facts": self._n_facts(),
+            "mode": "full" if full else "merge",       # read scope: all shelves, or the queue
         }
         self._write(self.state_path, state)
         self.write_view()
@@ -825,6 +829,52 @@ class StrataGraphify:
             return (r[0] or "") if r else ""
         finally:
             conn.close()
+
+    # ---------------------------------------------------------------- live mirror
+    # graph.json stays canonical - the arm, the page, and explain/path/query all read it.
+    # The Neo4j side is a MIRROR: push again after any rebuild and MERGE keeps it idempotent.
+    # At 3k rows the file walk is sub-millisecond; the mirror earns its keep when the doc
+    # graph lands (33k nodes) and multi-hop Cypher wants indexes (2026-11-16, the owner's
+    # "build it before we need it").
+
+    def push(self, uri: str = "bolt://127.0.0.1:7687", user: str = "neo4j",
+             password: str = "") -> dict:
+        """Mirror the standing graph into a live Neo4j (FalkorDB speaks the same driver
+        family via its Bolt endpoint). Credentials come from the arguments or
+        STRATA_NEO4J_PASSWORD - a store never bakes a secret into its code.
+        An unreachable server is a named answer, not a stack trace."""
+        G = self._G()
+        if not G.number_of_nodes():
+            return {"status": "empty", "message": "no graph to push - run a pass first"}
+        from graphify.export import push_to_neo4j
+        comms: dict[int, list] = {}
+        for cid, members in (self._read(self.analysis_path).get("communities") or {}).items():
+            try:
+                comms[int(cid)] = members
+            except (TypeError, ValueError):
+                continue
+        pw = password or os.environ.get("STRATA_NEO4J_PASSWORD", "")
+        try:
+            counts = push_to_neo4j(G, uri, user, pw, communities=comms or None)
+        except Exception as exc:                             # noqa: BLE001 - the caller sees the reason
+            return {"status": "unreachable", "uri": uri,
+                    "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
+        self._write(self.dir / "mirror.json",
+                    {"pushed": _now(), "uri": uri, "nodes": G.number_of_nodes(),
+                     "edges": G.number_of_edges(), **{k: v for k, v in (counts or {}).items()}})
+        return {"status": "ok", "uri": uri, **(counts or {})}
+
+    def export_cypher(self, path: str | None = None) -> dict:
+        """The serverless mirror: one .cypher file any Neo4j can load, rewritten by the
+        next pass. No DB process, no RAM - the graph as a portable statement script."""
+        G = self._G()
+        if not G.number_of_nodes():
+            return {"status": "empty", "message": "no graph to export - run a pass first"}
+        from graphify.export import to_cypher
+        out = path or str(self.dir / "graph.cypher")
+        to_cypher(G, out)
+        return {"status": "ok", "file": out, "bytes": os.path.getsize(out),
+                "nodes": G.number_of_nodes(), "edges": G.number_of_edges()}
 
     # ---------------------------------------------------------------- curation hook
     def note(self, ids: Iterable[int]) -> int:
