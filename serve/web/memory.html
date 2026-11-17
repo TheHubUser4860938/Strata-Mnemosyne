@@ -19,6 +19,15 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
 .facts{display:block;list-style:none;margin:0;padding:0}.fact{display:flex;gap:14px;align-items:flex-start;padding:13px 18px;border-bottom:1px solid var(--st-line-soft)}.fact:last-child{border-bottom:0}
 .fact .body{flex:1;min-width:0}.fact .txt{overflow-wrap:anywhere;white-space:pre-wrap;max-height:148px;overflow-y:auto}.chip{font-size:11px;border-radius:5px;padding:2px 6px;background:var(--st-surface-2);color:var(--st-ink-muted);margin-right:6px;font-family:var(--st-font-mono)}.chip.cls{color:var(--st-accent-text);background:var(--st-accent-tint)}.chip.stale{color:var(--st-warn-text);background:var(--st-warn-tint)}
 .meta{font-size:12px;color:var(--st-ink-muted);margin-top:3px}.empty{padding:46px 24px;text-align:center;color:var(--st-ink-muted)}
+#g-note .nt-head{font-size:17px;font-weight:600;letter-spacing:-.2px}
+#g-note .nt-meta{margin-top:6px}#g-note .nt-meta .chip{margin:0 4px 0 0}
+#g-note .nt-body{margin-top:12px;overflow-wrap:anywhere;white-space:pre-wrap;line-height:1.55}
+#g-note .nt-conns{margin-top:6px;max-height:240px;overflow-y:auto;border-top:1px solid var(--st-line-soft);padding-top:6px}
+#g-note .nt-connlbl{margin-top:14px;font-size:12px;color:var(--st-ink-muted);text-transform:uppercase;letter-spacing:.8px}
+#g-note .nt-conns a{display:block;color:inherit;text-decoration:none;cursor:pointer;padding:3px 0;overflow-wrap:anywhere}
+#g-note .nt-conns a:hover{color:var(--st-accent-text)}
+#g-note .nt-tag{font-size:11px;color:var(--st-ink-muted);font-family:var(--st-font-mono)}
+#g-note .nt-conns .chip{margin-right:4px}
 .addrow{display:flex;gap:8px;padding:14px 18px;flex-wrap:wrap}.addrow input{width:150px}footer{margin-top:14px;font-size:12px;color:var(--st-ink-muted)}
 @media(max-width:800px){.cards{grid-template-columns:repeat(2,1fr)}main,header{padding-left:16px;padding-right:16px}}
 /* the page's own chips are inline meta pills, not the header's 30px controls (audit 2026-11-07:
@@ -117,7 +126,15 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
   <div class="small" id="g-cap" style="padding:10px 18px;border-top:1px solid var(--st-line-soft)"></div>
 </div>
 <div class="panel">
+  <div class="panel" id="g-notepanel" hidden>
+    <div class="panel-bar"><h2 style="margin:0;font-size:17px">Node</h2>
+      <span class="small" id="g-noteid"></span><span style="flex:1"></span>
+      <button id="g-notedbl" title="open the fact this node names in the ledger view">Ledger</button>
+      <button id="g-noteclose">Close</button></div>
+    <div style="padding:14px 18px" id="g-note"></div>
+  </div>
   <div class="panel-bar"><h2 style="margin:0;font-size:17px">Communities</h2><span class="small">biggest first · a community is the graph's own grouping, not a shelf label</span></div>
+  <div class="g-note" id="g-note" hidden></div>
   <ul class="facts" id="g-list"><li class="empty">-</li></ul>
 </div>
 </div>

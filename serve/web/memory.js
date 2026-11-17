@@ -584,7 +584,85 @@ function focusNode(i) {
   $("g-cap").innerHTML = "";
   $("g-cap").textContent = `${n.label} · community ${n.community} · degree ${n.degree}`
     + (n.fact ? ` · fact #${n.fact}` : "");
-  if (n.label) { $("q").value = n.label.slice(0, 70); show($("q").value); tier("t3"); }
+  inspectNode(n.id);
+}
+
+// ---- the node inspector (2026-11-16, the owner's Obsidian ask): a node is a note, its
+// connections are links, and clicking a link walks the vault. The body is the store's LIVE
+// row (explain joins it from the ledger), not the graph's 200-char label excerpt - the note
+// says what the fact says TODAY. Relation chips and confidence tags ride every link, so a
+// walk shows its own evidence.
+let GNOTE = null;                                    // node id currently open (for highlight)
+
+async function inspectNode(nid) {
+  if (!nid) return;
+  const panel = $("g-notepanel"), body = $("g-note");
+  panel.hidden = false;
+  body.innerHTML = `<div class="meta">opening ${esc(nid)}…</div>`;
+  let d;
+  try {
+    const r = await api("/memory", { op: "graph", action: "explain", name: String(nid) });
+    d = (r.result && r.result.graph) || r.graph || r;
+  } catch (e) { body.innerHTML = `<div class="meta">${esc(e.message)}</div>`; return; }
+  if (d.status !== "ok") {
+    body.innerHTML = `<div class="meta">no node for that name — ${esc(d.message || d.status)}</div>`;
+    return;
+  }
+  GNOTE = d.id;
+  $("g-noteid").textContent = d.id;
+  const head = document.createElement("div");
+  head.className = "nt-head";
+  head.textContent = d.label || d.id;
+  const meta = document.createElement("div");
+  meta.className = "nt-meta";
+  meta.innerHTML = `<span class="chip cls">community ${esc(d.community)}</span>`
+    + `<span class="chip">degree ${esc(d.degree)}</span>`
+    + (d.fact ? `<span class="chip">fact #${esc(d.fact)}</span>` : "")
+    + (d.file ? `<span class="chip">${esc(d.file)}</span>` : "")
+    + (d.type ? `<span class="chip">${esc(d.type)}</span>` : "");
+  body.append(head, meta);
+  if (d.text) {
+    const t = document.createElement("div");
+    t.className = "nt-body";
+    t.textContent = d.text;
+    body.append(t);
+  }
+  const conns = (d.connections || []);
+  if (conns.length) {
+    const lbl = document.createElement("div");
+    lbl.className = "nt-connlbl";
+    lbl.textContent = `connections (${conns.length})`;
+    const box = document.createElement("div");
+    box.className = "nt-conns";
+    for (const c of conns) {
+      const a = document.createElement("a");
+      a.href = "#";
+      a.innerHTML = `<span class="chip">${esc(c.relation)}</span>${esc(c.label || c.to)}`
+        + (c.confidence ? ` <span class="nt-tag">[${esc(c.confidence)}]</span>` : "");
+      a.title = c.to;
+      a.onclick = e => { e.preventDefault(); inspectNode(c.to); };
+      box.append(a);
+    }
+    body.append(lbl, box);
+  }
+}
+$("g-noteclose").onclick = () => { $("g-notepanel").hidden = true; GNOTE = null; };
+$("g-notedbl").onclick = () => {
+  const q = (GDATA && GDATA.nodes.find(n => n.id === GNOTE) || {}).label;
+  if (q) { $("q").value = q.slice(0, 70); show($("q").value); tier("t3"); }
+};
+
+// hit-test shared by hover, click and double-click: the nearest visible node within 13px.
+function nodeAt(mx, my) {
+  const d = GDATA;
+  if (!d || !d.px) return -1;
+  let best = 13 * 13, hit = -1;
+  for (let i = 0; i < d.nodes.length; i++) {
+    if (!GVIS.has(d.nodes[i].community)) continue;
+    const q = (d.px[i] - mx) ** 2 + (d.py[i] - my) ** 2;
+    if (q < best) { best = q; hit = i; }
+  }
+  return hit;
 }
 
 // camera: drag orbits, wheel zooms toward the pointer, resize repaints
@@ -598,9 +676,22 @@ $("g-canvas").onwheel = ev => {
   GCAM.k = k;
   paint();
 };
-let GDRAG = null;
-$("g-canvas").onpointerdown = ev => { GDRAG = [ev.clientX, ev.clientY, GCAM.yaw, GCAM.pitch, GCAM.x, GCAM.y]; ev.target.setPointerCapture(ev.pointerId); };
-$("g-canvas").onpointerup = () => { GDRAG = null; };
+let GDRAG = null, GCLICK = null;
+$("g-canvas").onpointerdown = ev => {
+  GDRAG = [ev.clientX, ev.clientY, GCAM.yaw, GCAM.pitch, GCAM.x, GCAM.y];
+  GCLICK = [ev.clientX, ev.clientY];          // the drag guard: a click is a press that did not travel
+  ev.target.setPointerCapture(ev.pointerId);
+};
+$("g-canvas").onpointerup = ev => {
+  GDRAG = null;
+  if (!GCLICK) return;
+  const travelled = Math.hypot(ev.clientX - GCLICK[0], ev.clientY - GCLICK[1]);
+  GCLICK = null;
+  if (travelled > 5) return;                  // orbiting is not choosing
+  const r = ev.target.getBoundingClientRect();
+  const i = nodeAt(ev.clientX - r.left, ev.clientY - r.top);
+  if (i >= 0) inspectNode(GDATA.nodes[i].id); // a node is a note: click opens it
+};
 $("g-canvas").onpointermove = ev => {
   const cv = ev.target;
   if (GDRAG) {
