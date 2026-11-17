@@ -47,6 +47,18 @@ def main(argv=None) -> int:
                    help="one pass over the graph's own communities, to put edges BETWEEN them")
     b.add_argument("--async", dest="background", action="store_true",
                    help="start the pass and return (progress lands in progress.json)")
+
+    e = sub.add_parser("explain", help="one node: source, community, degree, every connection")
+    e.add_argument("name", help="fact id (1519), node id, or words from a label")
+
+    p = sub.add_parser("path", help="shortest walk between two nodes, with per-hop confidence")
+    p.add_argument("a", help="start: fact id, node id, or label words")
+    p.add_argument("b", help="end, same forms")
+
+    q = sub.add_parser("query", help="plain words in, scoped subgraph out")
+    q.add_argument("q", help="the question, in words")
+    q.add_argument("--budget", type=int, default=1200, help="max characters of subgraph text")
+    q.add_argument("--depth", type=int, default=2, help="hops to walk from the seeds (1-6)")
     n = sub.add_parser("note", help="record fact ids for the next pass")
     n.add_argument("ids", nargs="+", type=int)
 
@@ -81,6 +93,12 @@ def main(argv=None) -> int:
                         f"  cover pass {p}: {res.get('status')} · {res.get('nodes')} nodes"
                         f" · {res.get('communities')} communities", file=sys.stderr, flush=True))
         _out(s)
+    elif a.command == "explain":
+        _out(g.explain(a.name))
+    elif a.command == "path":
+        _out(g.path(a.a, a.b))
+    elif a.command == "query":
+        _out(g.query(a.q, budget=a.budget, depth=a.depth))
     elif a.command == "build":
         if a.bridge:
             _out(g.bridge())

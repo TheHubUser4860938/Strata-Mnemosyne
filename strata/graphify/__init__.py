@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,12 @@ from typing import Iterable, Optional
 
 DEFAULT_STORE = "/home/eugene/Strata-data/memory-eval"
 DIR_NAME = "strata-graphify"
+
+WORDS = re.compile(r"[a-z0-9]+")           # the query verbs' tokenizer: one rule for all
+
+# networkx view cache: (graph.json mtime, G). The page and the CLI ask between rebuilds;
+# a rebuild costs one parse, not one per query call.
+_NX_CACHE: dict = {}
 
 # One chunk = 4 files. Measured on this box: 8 files per chunk costs 70,741 output tokens and
 # lands whole, and yields ~7 concepts per chunk; 4 files costs about half as much per call and
@@ -383,6 +390,9 @@ class StrataGraphify:
             "built": state.get("built"), "seconds": state.get("seconds"),
             "model": state.get("model"), "mode": state.get("mode"),
             "pending": len(self._read(self.pending_path, {}).get("ids", [])),
+            # god nodes: what everything flows through — the graph's own top-of-mind, from
+            # analysis.json written at build time (no LLM, no recompute).
+            "gods": (self._read(self.analysis_path).get("gods") or [])[:12],
             "running": bool(prog.get("running")),
             "progress": {"done": prog.get("done"), "total": prog.get("total"),
                          "files": prog.get("files")} if prog.get("running") else None,
@@ -622,6 +632,186 @@ class StrataGraphify:
         self._write(self.progress_path, {"running": False, "finished": _now(), "pid": os.getpid(),
                                          "mode": "bridge", "result": res})
         return res
+
+    # ---------------------------------------------------------------- queries
+    # The read side of the graph (2026-11-16, the owner's "once the graph is built you QUERY
+    # it"): explain one node, path between two, query in plain words. All three read
+    # graph.json through one cached networkx view, and all three answer from the store's own
+    # row when a node names one — the node is the map, the row is the territory.
+
+    def _G(self):
+        """The networkx graph, loaded once per rebuild (cache keyed by graph.json mtime)."""
+        import networkx as nx
+
+        key = str(self.graph_path)
+        try:
+            stamp = os.path.getmtime(self.graph_path)
+        except OSError:
+            return nx.Graph()
+        hit = _NX_CACHE.get(key)
+        if hit and hit[0] == stamp:
+            return hit[1]
+        g = self._read(self.graph_path)
+        G = nx.node_link_graph(g, edges="links") if g else nx.Graph()
+        _NX_CACHE[key] = (stamp, G)
+        return G
+
+    def _resolve(self, name: str) -> str | None:
+        """A node id from a fact number ('1519', 'fact 1519'), an exact id, or a label
+        substring — best match wins, ties by degree, so 'graphify' explains the hub."""
+        G = self._G()
+        if not G.number_of_nodes():
+            return None
+        s = str(name).strip()
+        if not s:
+            return None
+        want = s.lower()
+        digits = want.replace("fact", "").strip()
+        if digits.isdigit():
+            cands = [nid for nid in G.nodes if str(nid).endswith(f"_fact_{digits}")]
+            if cands:
+                return max(cands, key=lambda n: G.degree(n))
+        if s in G.nodes:
+            return s
+        cands = [nid for nid, attrs in G.nodes(data=True)
+                 if want == str(nid).lower() or want in (attrs.get("label") or "").lower()]
+        if not cands:                                    # any word of the name in a label
+        #  rare words carry the match: 'graphify concurrency' should find the concurrency hub
+            toks = [t for t in WORDS.findall(want) if len(t) > 3]
+            for nid, attrs in G.nodes(data=True):
+                if any(t in (attrs.get("label") or "").lower() for t in toks):
+                    cands.append(nid)
+        if not cands:
+            return None
+        return max(cands, key=lambda n: G.degree(n))
+
+    @staticmethod
+    def _edge_attrs(G, u: str, v: str) -> dict:
+        """One edge's attributes, MultiGraph-safe: graphify folds parallel edges as keys
+        (the `also_seen` list), so G.edges[u, v] is a KEY-dict on a multigraph, and
+        G.edges[u, v] on a plain graph is the attrs dict. Both mean the same to us."""
+        d = G.get_edge_data(u, v)
+        if not d:
+            return {}
+        if G.is_multigraph():
+            # the strongest edge speaks: keys are insertion order, first is the kept one
+            return next(iter(d.values()))
+        return d
+
+    def _edge_line(self, G, u: str, v: str) -> dict:
+        e = self._edge_attrs(G, u, v)
+        return {"to": v, "label": (G.nodes[v].get("label") or "")[:120],
+                "relation": e.get("relation") or "linked",
+                "confidence": e.get("confidence") or "",
+                "degree": G.degree(v)}
+
+    def explain(self, name: str) -> dict:
+        """One node, whole: what it is, where it came from, its community, its connections.
+        When the node names a store row, the row's live text rides along — the scar, current."""
+        G = self._G()
+        nid = self._resolve(name)
+        if nid is None:
+            return {"status": "not-found", "query": str(name)[:120],
+                    "message": "no node matches; try a fact id, a label word, or `query`"}
+        attrs = G.nodes[nid]
+        out = {"status": "ok", "id": nid, "label": attrs.get("label") or "",
+               "community": attrs.get("community"), "degree": G.degree(nid),
+               "file": attrs.get("source_file"), "type": attrs.get("file_type")}
+        s = str(nid)
+        if "_fact_" in s and s.rsplit("_fact_", 1)[1].isdigit():
+            out["fact"] = int(s.rsplit("_fact_", 1)[1])
+            text = self._row_text(out["fact"])
+            if text:
+                out["text"] = text[:1200]        # the live ledger row behind the node
+        outs = [self._edge_line(G, nid, nb) for nb in G.neighbors(nid)] if G.is_directed() \
+            else self._undirected_edges(G, nid)
+        out["connections"] = sorted(outs, key=lambda e: (-e["degree"], e["label"]))[:40]
+        return out
+
+    def _undirected_edges(self, G, nid: str) -> list[dict]:
+        return [{"to": nb, "label": (G.nodes[nb].get("label") or "")[:120],
+                 "relation": self._edge_attrs(G, nid, nb).get("relation") or "linked",
+                 "confidence": self._edge_attrs(G, nid, nb).get("confidence") or "",
+                 "degree": G.degree(nb)} for nb in G.neighbors(nid)]
+
+    def path(self, a: str, b: str) -> dict:
+        """The shortest walk between two nodes, every hop tagged with its relation and
+        confidence. The path's confidence is its WEAKEST hop — a route through an INFERRED
+        edge is an inferred route. This is the verb that shows the bridge earning its keep."""
+        import networkx as nx
+
+        G = self._G()
+        na, nb = self._resolve(a), self._resolve(b)
+        if na is None or nb is None:
+            return {"status": "not-found", "missing": str(a if na is None else b)[:120]}
+        U = G.to_undirected() if G.is_directed() else G
+        try:
+            nodes = nx.shortest_path(U, na, nb)
+        except nx.NetworkXNoPath:
+            return {"status": "no-path", "from": na, "to": nb}
+        hops, weakest = [], "EXTRACTED"
+        for u, v in zip(nodes, nodes[1:]):
+            e = self._edge_attrs(U, u, v)
+            conf = e.get("confidence") or ""
+            if conf == "INFERRED":
+                weakest = "INFERRED"
+            hops.append({"from": u, "to": v, "label": (G.nodes[v].get("label") or "")[:120],
+                         "relation": e.get("relation") or "linked", "confidence": conf})
+        return {"status": "ok", "from": na, "to": nb, "hops": len(hops),
+                "confidence": weakest if hops else "", "path": hops}
+
+    def query(self, q: str, budget: int = 1200, depth: int = 2, seeds: int = 5) -> dict:
+        """Plain words in, a scoped neighbourhood out: score nodes by label overlap, walk
+        `depth` hops from the best, print it inside `budget` characters. The graph arm votes
+        on the neighbours of top hits; this is the same walk with a human asking — and the
+        graph-first answer to 'what connects X to Y', where graphify's whole pitch lives."""
+        G = self._G()
+        toks = set(WORDS.findall(str(q).lower()))
+        if not toks or not G.number_of_nodes():
+            return {"status": "empty", "text": ""}
+        scored = []
+        for nid, attrs in G.nodes(data=True):
+            overlap = len(toks & set(WORDS.findall((attrs.get("label") or "").lower())))
+            if overlap:
+                scored.append((overlap, G.degree(nid), nid))
+        if not scored:
+            return {"status": "no-match", "text": ""}
+        scored.sort(reverse=True)
+        front = [nid for _, _, nid in scored[:max(1, seeds)]]
+        seen, frontier = set(front), set(front)
+        for _ in range(max(1, depth)):
+            nxt = {nb for n in frontier for nb in G.neighbors(n)} - seen
+            seen |= nxt
+            frontier = nxt
+            if not nxt:
+                break
+        lines, used = [], 0
+        for nid in front:
+            lines.append(f"* {G.nodes[nid].get('label') or nid}"[:200])
+            used += len(lines[-1])
+            for e in sorted(self._undirected_edges(G, nid), key=lambda x: x["label"]):
+                line = f"    --{e['relation']}--> {e['label']}" \
+                     + (f" [{e['confidence']}]" if e["confidence"] else "")
+                if used + len(line) > budget:
+                    return {"status": "ok", "seeds": front, "nodes": len(seen),
+                            "text": "\n".join(lines), "truncated": True}
+                lines.append(line)
+                used += len(line)
+        return {"status": "ok", "seeds": front, "nodes": len(seen),
+                "text": "\n".join(lines)[:budget]}
+
+    def _row_text(self, fact_id: int) -> str:
+        from serve.memory import attach
+        try:
+            conn = attach(str(self.store_dir))
+        except Exception:
+            return ""
+        try:
+            r = conn.execute("SELECT text FROM memories WHERE id = %s AND invalid_at IS NULL",
+                             (int(fact_id),)).fetchone()
+            return (r[0] or "") if r else ""
+        finally:
+            conn.close()
 
     # ---------------------------------------------------------------- curation hook
     def note(self, ids: Iterable[int]) -> int:

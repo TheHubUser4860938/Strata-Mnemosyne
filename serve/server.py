@@ -10945,6 +10945,15 @@ def make_handler(svc: Service):
                          if ids else {"status": "nothing pending"}}
                 elif action == "view":
                     r = {"graph": gr.read_view(int(req.get("max_communities") or 40))}
+                elif action == "explain":     # one node: label, community, degree, every edge
+                    r = {"graph": gr.explain(str(req.get("name") or req.get("id") or ""))}
+                elif action == "path":        # two nodes in, the walk out; weakest hop rules
+                    r = {"graph": gr.path(str(req.get("a") or req.get("from") or ""),
+                                          str(req.get("b") or req.get("to") or ""))}
+                elif action == "query":       # words in, scoped subgraph out — a graph walk, no LLM
+                    r = {"graph": gr.query(str(req.get("q") or req.get("query") or ""),
+                                           budget=int(req.get("budget") or 1200),
+                                           depth=int(req.get("depth") or 2))}
                 elif action == "note":
                     # the harvest's verb: "these facts are new, graph them on the next pass".
                     # Cheap and offline (a JSON list), so a drain never waits on an LLM call.

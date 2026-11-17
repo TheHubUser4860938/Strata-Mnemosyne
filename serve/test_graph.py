@@ -39,9 +39,10 @@ class GraphArm(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.dir, ignore_errors=True)
 
-    def _write_graph(self, links):
+    def _write_graph(self, links, nodes=None):
         os.makedirs(os.path.join(self.dir, "strata-graphify"), exist_ok=True)
-        nodes = [{"id": f"ops_fact_{i}"} for i in (self.a, self.b, self.c)]
+        nodes = nodes if nodes is not None else [
+            {"id": f"ops_fact_{i}"} for i in (self.a, self.b, self.c)]
         with open(os.path.join(self.dir, "strata-graphify", "graph.json"), "w") as f:
             json.dump({"nodes": nodes, "links": links, "hyperedges": []}, f)
 
@@ -132,6 +133,46 @@ class GraphArm(unittest.TestCase):
         s = g.cover(per_file=10, files_per_chunk=6, max_passes=5)
         self.assertEqual(s["in_graph"], 2, "the stub names two rows, and both land in the graph")
         self.assertEqual(s["cover_passes"], 2, "pass 2 gains nothing and stops on the plateau")
+
+
+    def test_explain_path_query_walk_the_graph(self):
+        """The read side: explain names a node and its scar, path reports the weakest hop,
+        query returns a budgeted neighbourhood — all without a model call."""
+        from strata.graphify import StrataGraphify
+        self._write_graph([{"source": f"ops_fact_{self.a}", "target": f"ops_fact_{self.b}",
+                            "relation": "about", "confidence": "EXTRACTED"},
+                           {"source": f"ops_fact_{self.b}", "target": f"ops_fact_{self.c}",
+                            "relation": "supports", "confidence": "INFERRED"}],
+                          nodes=[{"id": f"ops_fact_{self.a}", "label": "graphify extract "
+                                        "concurrency on a 4090 times out"},
+                                 {"id": f"ops_fact_{self.b}", "label": "the OPS shelf keeps "
+                                        "the serialized graphify calls"},
+                                 {"id": f"hw_fact_9", "label": "the nvidia 4090 is the one card"}])
+        g = StrataGraphify(self.dir)
+
+        e = g.explain(str(self.a))                       # by fact id
+        self.assertEqual(e["status"], "ok")
+        self.assertEqual(e["degree"], 1)
+        self.assertEqual(e["connections"][0]["relation"], "about")
+        self.assertIn("concurrency", e["text"], "the explain carries the live ledger row")
+
+        p = g.path(str(self.a), str(self.c))             # two hops, mixed tags
+        self.assertEqual(p["status"], "ok")
+        self.assertEqual(p["hops"], 2)
+        self.assertEqual(p["confidence"], "INFERRED", "the route is as strong as its weakest hop")
+
+        q = g.query("graphify concurrency 4090", budget=400)
+        self.assertEqual(q["status"], "ok")
+        self.assertLessEqual(len(q["text"]), 400, "the budget is the contract")
+        self.assertIn(f"ops_fact_{self.a}", str(q.get("seeds")), "the seed is the row the words name")
+
+    def test_explain_absent_node_says_so(self):
+        """Anti-vacuity: not-found is a named answer, not an empty dict."""
+        from strata.graphify import StrataGraphify
+        g = StrataGraphify(self.dir)
+        r = g.explain("nostradamus-9000")
+        self.assertEqual(r["status"], "not-found")
+        self.assertIn("message", r)
 
 
 if __name__ == "__main__":
