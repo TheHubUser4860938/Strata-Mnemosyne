@@ -339,7 +339,7 @@ class StrataGraphify:
                                                  "done": res.get("chunks", 0),
                                                  "total": res.get("chunks", 0),
                                                  "mode": res.get("mode"), "result": res})
-                self.clear_pending()
+                self.clear_pending(ids)      # facts stored DURING the pass stay queued for the next
             except Exception as exc:                          # noqa: BLE001 - the page must see the reason
                 self._write(self.progress_path, {"running": False, "finished": _now(),
                                                  "pid": os.getpid(),
@@ -889,8 +889,16 @@ class StrataGraphify:
         self._write(self.pending_path, {"ids": sorted(known), "updated": _now()})
         return len(known)
 
-    def clear_pending(self) -> None:
-        self._write(self.pending_path, {"ids": [], "updated": _now()})
+    def clear_pending(self, ids=None) -> None:
+        """Retire the queue a pass ACTUALLY read. ids=None empties the whole list (the full-
+        pass case: it read every shelf); an update pass passes its own id set, so facts the
+        harvest stored while it ran stay queued for the next one (2026-11-17 audit: a 60-min
+        pass used to clear the whole list on completion, eating facts stored mid-pass)."""
+        if ids is None:
+            self._write(self.pending_path, {"ids": [], "updated": _now()})
+            return
+        pend = {int(i) for i in self.pending_ids()} - {int(i) for i in ids}
+        self._write(self.pending_path, {"ids": sorted(pend), "updated": _now()})
 
     def pending_ids(self) -> list[int]:
         return list(self._read(self.pending_path, {}).get("ids") or [])

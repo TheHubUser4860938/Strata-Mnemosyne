@@ -1404,7 +1404,7 @@ def main():
                       f"{res.get('communities')} communities over {res.get('facts')} facts "
                       f"in {res.get('seconds')}s ({res.get('mode')}, "
                       f"{res.get('tokens_out')} tok out)", flush=True)
-                g.clear_pending()
+                g.clear_pending(ids)     # retire what this pass read; mid-drain notes survive
     lines = [f"curate verdict tag={a.tag} channel=off/temp0.8 muted passes={a.passes} "
              f"stored={'off' if a.no_store else 'on'}",
              f"  drained={drained} extract_fails={fails} candidates={len(candidates)} "
