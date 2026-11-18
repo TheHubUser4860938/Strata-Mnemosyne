@@ -3463,36 +3463,48 @@ class MemoryService:
                 "pending": len(_load("pending.json").get("ids") or []),
                 "running": running}
 
-    def _sim_adj(self) -> dict:
-        """Top-k vector neighbours of every row — the SIMILARITY LAYER of the graph arm
-        (2026-11-17, the owner's embedding-pass ask). The LLM graph names concepts and
-        cites a slice of the rows; these edges reach every row that carries a vector,
-        cost no model call (the matrix is the cosine arm's own cached build), and vote in
-        the arm's existing RRF currency. Cached on the matrix object's identity: the
-        write path's stamp handles invalidation, this layer never does.
+    def _sim_neighbours(self, ids) -> dict:
+        """Top-k vector neighbours of the rows ASKED FOR — the SIMILARITY LAYER of the graph
+        arm (2026-11-17, the owner's embedding-pass ask; seed-local 2026-11-18). The LLM graph
+        names concepts and cites a slice of the rows; these edges reach every row that carries
+        a vector and cost no model call — the matrix is the cosine arm's own cached build.
+
+        SEED-LOCAL, and the measurement is why. A whole-store N x N similarity matrix, at this
+        store's 36,439 vectorized rows, cost 93 s and 13.2 GB of peak RSS per build (measured
+        2026-11-18), and the matrix's identity moves whenever the harvest writes, so an
+        adjacency cache is rebuilt on a large share of turns — one A/B run sat on it for an
+        hour. Eight seeds x k neighbours is 17 ms and 0.5 GB, and needs no cache at all. Only
+        seeds cast votes, so only seeds need neighbours. The UNIT rows (a dot product is then
+        the cosine) are the one thing worth caching, keyed on the matrix object's identity: the
+        write path's stamp invalidates it, this layer never does.
         """
-        if self.graph_sim_k <= 0:
+        if self.graph_sim_k <= 0 or not ids:
             return {}
         meta = self._vec_matrix()
-        if self._sim_cache is not None and self._sim_cache[0] is meta:
-            return self._sim_cache[1]
+        ix = meta.get("ix")
+        if not ix:
+            return {}
         try:
             import numpy as np
-            ids, mat = meta["ids"], meta["mat"]
-            if len(ids) < 2:
-                out = {}
-                self._sim_cache = (meta, out)
-                return out
-            norms = np.linalg.norm(mat, axis=1)
-            M = mat / np.clip(norms, 1e-9, None)[:, None]
-            S = M @ M.T
-            k = min(self.graph_sim_k, len(ids) - 1)
-            part = np.argpartition(-S, k, axis=1)[:, :k]
-            out = {}
-            for i in range(len(ids)):
-                order = part[i][np.argsort(-S[i, part[i]])]
-                out[int(ids[i])] = [int(ids[j]) for j in order]
-            self._sim_cache = (meta, out)
+            if self._sim_cache is None or self._sim_cache[0] is not meta:
+                mat = meta["mat"]
+                M = mat / np.clip(np.linalg.norm(mat, axis=1), 1e-9, None)[:, None]
+                self._sim_cache = (meta, np.ascontiguousarray(M, dtype=np.float32))
+            M = self._sim_cache[1]
+            k = int(self.graph_sim_k)
+            out: dict = {}
+            for sid in ids:
+                row = ix.get(int(sid))
+                if row is None:
+                    continue                                   # a row with no vector casts none
+                sim = M @ M[row]
+                k_eff = min(k, sim.shape[0] - 1)
+                if k_eff < 1:
+                    continue
+                part = np.argpartition(-sim, k_eff)[:k_eff]
+                order = part[np.argsort(-sim[part])]
+                out[int(sid)] = [int(meta["ids"][j]) for j in order
+                                 if int(meta["ids"][j]) != int(sid)][:k_eff]
             return out
         except Exception:                                    # noqa: BLE001 - the arm runs LLM-only
             return {}
@@ -3515,10 +3527,12 @@ class MemoryService:
         adj = self._graph()
         if not cands:
             return cands
-        sim = self._sim_adj()
+        seeds = cands[:max(1, self.graph_seeds)]
+        # Seed-local: the vectors are read for the seeds alone (17 ms here, 93 s for the
+        # whole-store matrix), so an ask that never reaches the arm pays nothing.
+        sim = self._sim_neighbours([s["id"] for s in seeds])
         if not adj and not sim:
             return cands
-        seeds = cands[:max(1, self.graph_seeds)]
         # A vote is priced by who cast it: rank = seed position + position inside that seed's
         # neighbourhood, so a neighbour of the top hit outranks a neighbour of the eighth.
         # The similarity layer votes in the SAME currency, priced behind the seed's own LLM

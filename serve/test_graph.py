@@ -262,19 +262,17 @@ class SimLayer(unittest.TestCase):
                         "a vector neighbour undercut the seed's own concept link")
 
     def test_a_write_after_the_first_search_is_reachable(self):
-        """The cache is keyed on the matrix object's IDENTITY — `_vec_matrix` publishes a new
-        dict under the lock on every rebuild — so the write path's stamp is the only
-        invalidation this layer needs. A row committed after the cache filled must appear in
-        the adjacency, with a neighbourhood of its own, and the cache must not hand back the
-        object it built before the write."""
-        adj = self.store._sim_adj()
-        self.assertIn(self.a, adj, "the layer knows nothing even at rest")
+        """Seed-local (2026-11-18), so the layer reads the matrix on demand: the cached UNIT
+        matrix is keyed on the vector matrix's IDENTITY, and a row committed after a search
+        must be in the neighbourhood of everything asked for afterwards."""
+        adj = self.store._sim_neighbours([self.a, self.b, self.c])
+        self.assertEqual(set(adj), {self.a, self.b, self.c}, "the layer saw none of the rows")
         d = self.store.remember("the clerk drains sixty turns a tick behind 240 seconds of "
                                 "silence", klass="OPS", scope="default")
-        adj2 = self.store._sim_adj()
+        adj2 = self.store._sim_neighbours([self.a, d["id"]])
         self.assertIn(d["id"], adj2, "a row written after the cache filled is invisible to it")
         self.assertTrue(adj2[d["id"]], "the new row has no neighbourhood at k=2")
-        self.assertNotEqual(adj, adj2, "the cache returned the same object across a write")
+        self.assertIn(self.a, adj2, "a read after the write lost a row it had already seen")
 
 
 if __name__ == "__main__":
