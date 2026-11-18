@@ -92,6 +92,9 @@ EDITABLE = [
     ("memory.graph_seeds", ("section", "memory", "int>=1"),
      "How many of the top hits seed the graph arm's neighbourhood walk (default 8). "
      "Takes effect at the next restart"),
+    ("memory.graph_sim_k", ("section", "memory", "int>=0"),
+     "The similarity layer of the graph arm: each seed also votes for its k nearest rows "
+     "by embedding, no LLM. 0 turns it off. Takes effect at the next restart"),
 ]
 SPEC = {k: kind for k, kind, _ in EDITABLE}
 

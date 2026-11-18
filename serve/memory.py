@@ -1156,7 +1156,7 @@ class MemoryService:
                  expose_window: int = 0, expose_step: float = 0.0, expose_cap: int = 3,
                  route_shelves: bool = False, route_demote: float = 0.0,
                  derived_weight: float = 1.0, block_cover_terms: int = 0,
-                 graph_weight: float = 0.0, graph_seeds: int = 8,
+                 graph_weight: float = 0.0, graph_seeds: int = 8, graph_sim_k: int = 0,
                  cover_weight: float = 0.0, proof_weight: float = 0.0,
                  turn_recall_agg: int = 0, route_glossary: float = 0.0,
                  route_top: int = ROUTE_TOP, block_shelf_tags: bool = False,
@@ -1232,6 +1232,10 @@ class MemoryService:
         # the lexical and cosine arms already liked.
         self.graph_weight = max(0.0, float(graph_weight))
         self.graph_seeds = max(1, int(graph_seeds))
+        # similarity layer: top-k embedding neighbours vote as graph neighbours, priced
+        # behind the LLM neighbourhood of the same seed. 0 = the shipped two-arm graph.
+        self.graph_sim_k = max(0, int(graph_sim_k))
+        self._sim_cache = None          # (vmeta object, adjacency dict) - identity-keyed
         self._graph_cache: tuple | None = None      # (mtime, adjacency) - a rebuilt graph is a new stamp
         self.proof_weight = max(0.0, float(proof_weight))
         # AGGREGATION-AWARE TAIL (2026-11-08): counting questions want every row, lookups want the
@@ -3459,6 +3463,40 @@ class MemoryService:
                 "pending": len(_load("pending.json").get("ids") or []),
                 "running": running}
 
+    def _sim_adj(self) -> dict:
+        """Top-k vector neighbours of every row — the SIMILARITY LAYER of the graph arm
+        (2026-11-17, the owner's embedding-pass ask). The LLM graph names concepts and
+        cites a slice of the rows; these edges reach every row that carries a vector,
+        cost no model call (the matrix is the cosine arm's own cached build), and vote in
+        the arm's existing RRF currency. Cached on the matrix object's identity: the
+        write path's stamp handles invalidation, this layer never does.
+        """
+        if self.graph_sim_k <= 0:
+            return {}
+        meta = self._vec_matrix()
+        if self._sim_cache is not None and self._sim_cache[0] is meta:
+            return self._sim_cache[1]
+        try:
+            import numpy as np
+            ids, mat = meta["ids"], meta["mat"]
+            if len(ids) < 2:
+                out = {}
+                self._sim_cache = (meta, out)
+                return out
+            norms = np.linalg.norm(mat, axis=1)
+            M = mat / np.clip(norms, 1e-9, None)[:, None]
+            S = M @ M.T
+            k = min(self.graph_sim_k, len(ids) - 1)
+            part = np.argpartition(-S, k, axis=1)[:, :k]
+            out = {}
+            for i in range(len(ids)):
+                order = part[i][np.argsort(-S[i, part[i]])]
+                out[int(ids[i])] = [int(ids[j]) for j in order]
+            self._sim_cache = (meta, out)
+            return out
+        except Exception:                                    # noqa: BLE001 - the arm runs LLM-only
+            return {}
+
     def _graph_expand(self, cands: list[dict], limit: int,
                       scopes: tuple | list | None = None) -> list[dict]:
         """The third arm: neighbours of the fused top rows cast an RRF vote of their own.
@@ -3469,19 +3507,31 @@ class MemoryService:
         and the same RRF term the other arms use, scaled by `graph_weight` — a row the graph
         vouches for can rise, and a row both arms already like keeps its place.
 
-        Seeds are the top `graph_seeds` fused rows: the graph is a map of the case, so the
-        neighbour of a good answer is the rest of that answer.
+        Two edge sources, one vote: the LLM graph (concepts the pass lifted out of the text)
+        and, when `graph_sim_k` > 0, the store's own vectors (top-k cosine neighbours, no
+        model call). Seeds are the top `graph_seeds` fused rows: the graph is a map of the
+        case, so the neighbour of a good answer is the rest of that answer.
         """
         adj = self._graph()
-        if not adj or not cands:
+        if not cands:
+            return cands
+        sim = self._sim_adj()
+        if not adj and not sim:
             return cands
         seeds = cands[:max(1, self.graph_seeds)]
         # A vote is priced by who cast it: rank = seed position + position inside that seed's
         # neighbourhood, so a neighbour of the top hit outranks a neighbour of the eighth.
+        # The similarity layer votes in the SAME currency, priced behind the seed's own LLM
+        # neighbours - concept links first, vector links second, one arm, two edge sources.
         vote: dict[int, int] = {}
         for si, s in enumerate(seeds, 1):
-            for ni, nb in enumerate(sorted(adj.get(s["id"], ())), 1):
+            nbrs = sorted(adj.get(s["id"], ()))
+            for ni, nb in enumerate(nbrs, 1):
                 rank = si + ni
+                if nb not in vote or rank < vote[nb]:
+                    vote[nb] = rank
+            for ni, nb in enumerate(sim.get(s["id"], []), 1):
+                rank = si + len(nbrs) + ni
                 if nb not in vote or rank < vote[nb]:
                     vote[nb] = rank
         if not vote:
@@ -4656,6 +4706,7 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         # number of fused rows whose neighbours get pulled in are both box-tunable
         graph_weight=num("graph_weight", 0.0, float),
         graph_seeds=num("graph_seeds", 8),
+        graph_sim_k=num("graph_sim_k", 0),
         block_doc_cap=num("block_doc_cap", 1200),
         expose_window=num("expose_window", 0),
         expose_step=num("expose_step", 0.0, float),

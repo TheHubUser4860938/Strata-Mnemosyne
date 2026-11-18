@@ -175,5 +175,107 @@ class GraphArm(unittest.TestCase):
         self.assertIn("message", r)
 
 
+class SimLayer(unittest.TestCase):
+    """The similarity layer (2026-11-17, the owner's embedding-pass ask): `graph_sim_k` > 0
+    makes the store's OWN vectors a second edge source for the graph arm, so a neighbour the
+    LLM pass never cited can still be pulled in on a vector vote.
+
+    Four things pinned: the arm fires with NO graph file (the layer is a source of edges by
+    itself); the vote is signed; concept links are priced ahead of vector links when a seed has
+    both; and the identity-keyed cache follows a write, so a row committed after the first
+    search is reachable without a restart.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from serve.test_memory import StubEmbedder
+        cls.dir = tempfile.mkdtemp(prefix="graph-sim-")
+        cls.store = MemoryService(cls.dir, embedder=StubEmbedder({
+            "the graph drain runs two chunks at a time on one 4090": [1.0, 0.0, 0.0, 0.0],
+            # near-identical vector, disjoint words: the layer's whole point — a row no word
+            # query reaches, sitting next door in embedding space
+            "expert slots are evicted per layer so admitted experts get used":
+                [0.97, 0.24, 0.0, 0.0],
+            "the Radeon 780M plays Starfield at 1080p": [0.0, 0.0, 0.0, 1.0],
+        }))
+        cls.a = cls.store.remember("the graph drain runs two chunks at a time on one 4090",
+                                   klass="OPS", scope="default")["id"]
+        cls.b = cls.store.remember("expert slots are evicted per layer so admitted experts "
+                                   "get used", klass="OPS", scope="default")["id"]
+        cls.c = cls.store.remember("the Radeon 780M plays Starfield at 1080p",
+                                   klass="OPS", scope="default")["id"]
+        cls.q = "the graph drain runs two chunks at a time on one 4090"
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def setUp(self):
+        """The three rows and the stub embedder are built once per class, so each test starts
+        from the same slate: no LLM graph file, no cached adjacency of either source."""
+        p = os.path.join(self.dir, "strata-graphify", "graph.json")
+        if os.path.exists(p):
+            os.remove(p)
+        self.store._graph_cache = None
+        self.store._sim_cache = None
+        self.store.graph_weight = 0.0
+        self.store.graph_sim_k = 2       # the layer's own knob; _search() sets it per call
+
+    def _search(self, weight: float, sim_k: int, q: str | None = None):
+        self.store.graph_weight = weight
+        self.store.graph_sim_k = sim_k
+        return {h["id"]: h for h in self.store.search(q or self.q, limit=12)}
+
+    def test_the_layer_fires_with_no_graph_file(self):
+        """The layer is an EDGE SOURCE, not a modifier of the LLM arm: with no graph file on
+        disk, `_graph_expand` used to return the candidates untouched. It must now cast votes
+        off the store's own vectors, and the seed's neighbour must pay for them."""
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "strata-graphify", "graph.json")),
+                         "the store has no LLM graph — every edge here is a vector")
+        off = self._search(0.6, 0)
+        on = self._search(0.6, 2)
+        self.assertGreater(on[self.b]["score"], off[self.b]["score"],
+                           "the vector neighbour cast no vote")
+        self.assertTrue(on[self.b].get("graph_rank"), "the arm signs the vote it cast")
+        self.assertNotIn("graph_rank", off[self.b], "k=0 must leave the arm's signature off")
+
+    def test_sim_k_zero_is_the_shipped_two_arm(self):
+        """The default path stays byte-identical: k=0 is the release before the layer."""
+        base = [h["id"] for h in self._search(0.0, 0).values()]
+        moved = [h["id"] for h in self._search(0.6, 0).values()]
+        self.assertEqual(base, moved)
+
+    def test_concept_links_are_priced_ahead_of_vector_links(self):
+        """One seed, two edge sources. The seed is `a`; its LLM neighbour is `c`, its vector
+        neighbour is `b`. `rank = si + len(nbrs) + ni` prices the concept link first, so `c`
+        must carry the better graph rank — the owner's ruling, concept links first."""
+        os.makedirs(os.path.join(self.dir, "strata-graphify"), exist_ok=True)
+        with open(os.path.join(self.dir, "strata-graphify", "graph.json"), "w") as f:
+            json.dump({"nodes": [{"id": f"ops_fact_{i}"} for i in (self.a, self.b, self.c)],
+                       "links": [{"source": f"ops_fact_{self.a}", "target": f"ops_fact_{self.c}",
+                                  "relation": "about"}],
+                       "hyperedges": []}, f)
+        self.store._graph_cache = None
+        hits = self._search(0.6, 3)
+        self.assertTrue(hits[self.c].get("graph_rank"), "the LLM neighbour got no vote")
+        self.assertLess(hits[self.c]["graph_rank"], hits[self.b]["graph_rank"],
+                        "a vector neighbour undercut the seed's own concept link")
+
+    def test_a_write_after_the_first_search_is_reachable(self):
+        """The cache is keyed on the matrix object's IDENTITY — `_vec_matrix` publishes a new
+        dict under the lock on every rebuild — so the write path's stamp is the only
+        invalidation this layer needs. A row committed after the cache filled must appear in
+        the adjacency, with a neighbourhood of its own, and the cache must not hand back the
+        object it built before the write."""
+        adj = self.store._sim_adj()
+        self.assertIn(self.a, adj, "the layer knows nothing even at rest")
+        d = self.store.remember("the clerk drains sixty turns a tick behind 240 seconds of "
+                                "silence", klass="OPS", scope="default")
+        adj2 = self.store._sim_adj()
+        self.assertIn(d["id"], adj2, "a row written after the cache filled is invisible to it")
+        self.assertTrue(adj2[d["id"]], "the new row has no neighbourhood at k=2")
+        self.assertNotEqual(adj, adj2, "the cache returned the same object across a write")
+
+
 if __name__ == "__main__":
     unittest.main()

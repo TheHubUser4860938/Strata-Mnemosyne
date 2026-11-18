@@ -64,19 +64,21 @@ def main():
           + ("  (gold = the row the graph links to, query = a neighbour's words)"
              if a.set == "linked" else "  (gold = the row the query was cut from)"))
 
-    for w in [float(x) for x in a.weights.split(",")]:
-        svc = MemoryService(STORE, graph_weight=w)
+    for spec in a.weights.split(","):
+        w = float(spec.split(":")[0])
+        sk = int(spec.split(":")[1]) if ":" in spec else 0
+        svc = MemoryService(STORE, graph_weight=w, graph_sim_k=sk)
         ranks, t0 = [], time.time()
         for rid, q in probes:
             hits = svc.search(q, limit=a.limit)
             order = [h["id"] for h in hits]
             ranks.append(order.index(rid) + 1 if rid in order else a.limit + 1)
         top8 = sum(1 for r in ranks if r <= 8)
-        print(f"  graph_weight {w:<5}  mean rank {statistics.mean(ranks):6.2f}"
+        print(f"  graph_weight {w:<5} sim_k {sk:<3}  mean rank {statistics.mean(ranks):6.2f}"
               f"  median {statistics.median(ranks):5.1f}"
               f"  top-8 {top8}/{len(ranks)}"
               f"  {time.time() - t0:5.1f}s")
-        if w == 0.0:
+        if w == 0.0 and sk == 0:
             first = ranks
         else:
             moved = [(p[0], f, r) for p, f, r in zip(probes, first, ranks) if f != r]
