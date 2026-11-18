@@ -1,5 +1,6 @@
 """#5080: the web page's About card said "MTP drafts up to 5 tokens" for an engine that ran the DFlash2 drafter (or none): the row named the MTP
-whatever /metrics said. The row now says that only when the engine's ``drafting`` is the MTP, or not reported (an older engine, which had only the MTP)."""
+whatever /metrics said. The row now names the drafter the engine reports - the MTP when the MTP drafts, DFlash2 when DFlash2 does (this fork serves
+DFlash2 on the 4090), and the MTP for an older engine that reports no ``drafting`` at all, which is all it had."""
 
 import json
 import re
@@ -35,7 +36,8 @@ class SpeculationRow(unittest.TestCase):
             path = Path(d) / "row.js"
             path.write_text(script, encoding="utf-8")
             got = json.loads(subprocess.run([shutil.which("node"), str(path)], capture_output=True, text=True, check=True, timeout=60).stdout)
-        self.assertIsNone(got["dflash2"], "a DFlash2 engine is not said to draft with the MTP")
+        self.assertEqual(got["dflash2"], "DFlash2 drafts up to 5 tokens, prompt lookup on",
+                         "a DFlash2 engine says DFlash2 (#5080's complaint was the row naming the MTP)")
         self.assertIsNone(got["off"])
         self.assertEqual(got["mtp"], "MTP drafts up to 3 tokens")
         self.assertEqual(got["old"], "MTP drafts up to 3 tokens, prompt lookup on")

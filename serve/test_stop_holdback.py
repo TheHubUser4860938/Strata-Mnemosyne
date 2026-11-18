@@ -45,7 +45,7 @@ class DsEngine(MockEngine):
         self.script = self.scripts[0]
         self.last = {}
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         got = 0
         try:
             for t in super().generate(ids, max_new, sampling, cancel, embeddings):
