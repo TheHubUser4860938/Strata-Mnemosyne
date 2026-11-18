@@ -15,4 +15,5 @@ import pic from '../locales/pic-ru.json';
 import gui from '../locales/gui-ru.json';
 import sav from '../locales/sav-ru.json';
 import dmg from '../locales/dmg-ru.json';
-export default {...base,...tune,...tools,...fix,...gh,...ui,...engine,...pick,...df2,...upd,...r3,...pic,...gui,...sav,...dmg} as Record<string,string>;
+import net from '../locales/net-ru.json';
+export default {...base,...tune,...tools,...fix,...gh,...ui,...engine,...pick,...df2,...upd,...r3,...pic,...gui,...sav,...dmg,...net} as Record<string,string>;

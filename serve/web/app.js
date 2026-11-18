@@ -633,10 +633,10 @@ function renderAbout(eng, hw, st) {
     ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
     // The drafter's name and the window it captured: `spec` is the engine's resolved width (the build clamps it),
     // `mtp_max` is the requested one - they differ on an 8-row CUDA build asked for 12.  MTP keeps its own field.
-    // The drafter's name and the window it captured: `spec` is the engine's resolved width (the build clamps it),
-    // `mtp_max` is the requested one - they differ on an 8-row CUDA build asked for 12.  MTP keeps its own field.
     // `draft_conf` is the bar in force: the config's at a start, a POST /v1/conf's afterwards.
-    ["Speculation", eng.spec ? `${eng.drafting === "dflash2" ? "DFlash2" : eng.drafting === "mtp" ? "MTP" : "MTP"} drafts up to ${Math.max(0, ((eng.drafting === "mtp" && eng.mtp_max) || eng.spec) - 1)} tokens${eng.draft_conf != null ? `, conf ${eng.draft_conf}` : ""}${eng.lookup ? ", prompt lookup on" : ""}` : null],
+    // #5080: the line only when a drafting mode runs (eng.drafting, strata_control/drafting.py engine_info; an
+    // engine too old to say had only the MTP). The fork names DFlash2 beside the MTP.
+    ["Speculation", eng.spec && (eng.drafting == null || eng.drafting === "mtp" || eng.drafting === "dflash2") ? `${eng.drafting === "dflash2" ? "DFlash2" : "MTP"} drafts up to ${Math.max(0, ((eng.drafting === "mtp" && eng.mtp_max) || eng.spec) - 1)} tokens${eng.draft_conf != null ? `, conf ${eng.draft_conf}` : ""}${eng.lookup ? ", prompt lookup on" : ""}` : null],
     ["Images", eng.images ? "on" : "off"],
     ["Experimental speed projection", projectionText(eng.cvec)],
   ]);

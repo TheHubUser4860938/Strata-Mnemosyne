@@ -6,31 +6,19 @@ itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one s
 harness ever has to re-send history. The server remembers, and it remembers the same way no
 matter which app is knocking.
 
-This fork is based on upstream Strata 0.2.13 — app and Terminal at 0.2.13, Control and every
-engine package at 0.1.59 (the 0.2.13.1 hotfix moves Control to 0.1.59.1 on Linux only, for Intel
-Arc). Upstream's own headline list for this round: **DFlash2 drafting, new defaults per card** —
-Strix Halo on UD-Q4_K_XL 46.6 to 49.1 tokens per second (+5.2%), RTX PRO 5000 72 GB on IQ3_S
-256-261 to 263-265 (+2.8%), the app's Load fetching the tuned drafter Auto picks (on an RTX PRO
-5000, 3 rounds of 12 prompts per kind: agent +10.1%, chat +4.8%, all +6.1%, output identical 72
-of 72); **the Strix Halo Terminal launch fixed** — UD-Q4_K_XL with pictures off was not ready
-after 308 s (and 594.8 s in a second test), it now starts in 60 to 85 s, on 22,991 expert-cache
-slots against 17,556; **Intel Arc output is now repeatable** — 50 of 50 runs identical on an A750
-against 3 to 5 different answers in 5 runs, at 0.995 to 1.004 of the old prompt speed; **the app
-starts in about half the time** — the main file 3.12 MB to 0.76 MB, the start screen 248.5 ms to
-143.4 ms (headless Chrome, median of 10); **on Linux the expert store loads again when free
-memory, the file cache or a reserved huge-page pool can hold it** (#5327, PR #5531 by pjgmobile —
-their 1M-context run went from 47 to 124 tokens per second); and **Qwen4 groundwork** — the signed
-feed can carry a model list, a model of a new shape gets its own engine download
-(`strata-q4-<shape>`), and `strata --geometry` prints the shape the kernels are built for.
-Settings the launcher used to write are now the engine's own defaults, so a plain engine start
-matches the app and the Terminal. Building an engine needs no llama.cpp download: the ggml sources
-are vendored in `third_party/strata-ggml` and `CMakeLists.txt` is split by backend. Eight finished
-experiments' `STRATA_*` switches are retired. Known: a first launch of a fresh install can take
-about 5.5 minutes in the one-time "Preparing your model" step; upstream did not find the cause.
-Going back is one step: `strata components rollback` returns the 0.1.58 engine, and Control stays
-0.1.59. Every number in this paragraph is upstream's, from the
-[0.2.13 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.13). This fork adds the
-memory system and the reason-mode steering described below.
+This fork is based on upstream Strata 0.2.15 — app and Terminal at 0.2.15, Control at 0.1.61,
+and every engine package at 0.1.60: the 0.2.14 files, which the update feed downloads from that release (the Intel Arc
+and DGX Spark engines stay at 0.1.59). Upstream's own headline list for this round — **fixes in the app and the
+Terminal, nothing to do, no new settings**: the app loads models only on Strata's own engine, so a `llama-server` found
+on the PC no longer takes one over; **Drafting Off asks for no draft layer** (0.2.14 fetched the 5 GB MTP file even
+with the choice set to Off); **a Drafting choice made on the Models screen survives a restart**, where 0.2.14 showed
+"Auto" again and booted DFlash2; in the Terminal a drafter that was chosen stays chosen (all 8 starts on Strix Halo
+and all 8 on a Tesla P100 ran the drafter chosen before them); `strata update --backend amd` on a PC with an NVIDIA and
+an AMD card picks the AMD package; a test start that misses a system library names the library and keeps the engine's
+own output; the Qwen3.6-35B first run downloads 23.75 GB in 320 to 340 s, the bar reaches 100%, and the picture reader
+is installed beside it; and the four red GitHub checks are green again. The feed is sequence 127. Every number in this
+paragraph is upstream's, from the [0.2.15 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.15).
+This fork adds the memory system and the steering described below.
 
 <p align="center">
   <a href="https://github.com/Niko1221/Strata/releases/latest"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?label=download&color=0ab887" alt="Download Strata"></a>
@@ -117,7 +105,9 @@ strata launch --family deepseek41 --model ist-das-2.00bpw --plan
 
 <img width="1265" height="542" alt="image" src="https://github.com/user-attachments/assets/238eb87c-45f2-4be4-8cb8-91d922efbda8" />
 
-Version 0.2.13 (app and Terminal 0.2.13, Control and every engine package 0.1.59)
+<a id="the-other-sizes"></a>
+
+Version 0.2.15 (app and Terminal 0.2.15, Control 0.1.61, engine packages 0.1.60)
 
 Two things arrive switched **on**, and everything else stays byte-identical to upstream Strata:
 
@@ -192,17 +182,17 @@ Download the file for your computer, open it, and press install on the model it 
 
 **Windows 10 / 11**
 
-[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.13-windows-x64-setup.exe)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.15-windows-x64-setup.exe)
 
-<sub>Files: `Strata-0.2.13-windows-x64-setup.exe` · `Strata-0.2.13-linux-x86_64.AppImage` · `Strata-0.2.13-macos-arm64.dmg`</sub>
+<sub>Files: `Strata-0.2.15-windows-x64-setup.exe` · `Strata-0.2.15-linux-x86_64.AppImage` · `Strata-0.2.15-macos-arm64.dmg`</sub>
 
 **Linux**
 
-[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.13-linux-x86_64.AppImage)
+[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.15-linux-x86_64.AppImage)
 
 **Mac** (Apple Silicon, macOS 15 or newer)
 
-[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.13-macos-arm64.dmg)
+[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.15-macos-arm64.dmg)
 
 The app picks the right engine for your graphics card by itself. All files are on the [releases page](https://github.com/Niko1221/Strata/releases/latest).
 
@@ -221,13 +211,13 @@ The `strata` command, for scripts, servers and AI agents. It is also the way to 
 Linux and Mac:
 
 ```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
 Then start it. It asks one question at a time (model, context, pictures, who may connect), downloads what it needs and
