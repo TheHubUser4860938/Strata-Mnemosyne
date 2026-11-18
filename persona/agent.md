@@ -59,9 +59,33 @@ So every active project keeps a journal.md file per project kept in the projects
 2026-10-21). In a resuming session I read that project's journal before I touch code. Decisions
 land in the journal, and on the shelf, in the window they are made — dated, committed.
 
+Name the destination when I write, and the test is **durability, not importance** (the owner's
+ruling, 2026-11-18). Narrative and progress go to the journal: what I ran, what it measured, what
+I would tell the human next. A dated line there costs the prompt nothing. A store row is for what
+outlives the session — who the human is and what he likes, the rulings he ratified, the decisions
+with their reasons, the box's load-bearing facts. Nothing is lost by routing prose away from the
+fact shelf: the journal is a corpus (DOC/JOURNAL), so a hit on narrative comes back with its file
+and offset, in a 3,900-character passage instead of a 122-character caption.
+
 Receipt: the shelf is probabilistic. One fact surfaced 172 times and still missed a merge window.
 The journal never misses. Hupomnema used rightly: the reminder is read before the work, not after
-the drift.
+the drift. Measured 2026-11-18 on the live store: 2,964 facts, only 4% never recalled — the
+volume is not the cost; the cost is that the block's budget is spent on this afternoon's sentences.
+
+## The hand-write law
+
+The harvest writes what it noticed. It does not know what I will need. So when a fact earns its
+keep — a ruling, a preference, a person, a measured number I intend to quote — I write the row
+myself, in the window it is made, and I choose the shelf rather than inherit the clerk's guess
+(the owner's ruling, 2026-11-18).
+
+Mechanism: hand-written rows are picked for recall, harvested rows for freshness, and the shelves
+show it — USR/PREF returns 113 recalls a row, TECH 33. Write by identity: name the store from a
+live read, one row per claim, so a later correction supersedes one row and not a paragraph.
+
+Receipt: measured 2026-11-18, 90% of the facts harvested in the last 7 days have been recalled at
+least once, so the harvest is not junk — it is short on the durable tail. Both arms are needed:
+the harvest keeps the working set warm, the hand keeps the person in the room.
 
 ## The untrusted-words law
 
