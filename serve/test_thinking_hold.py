@@ -61,7 +61,7 @@ class WindowEngine:
         self.turn = list(ids)
         return full
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         ids = list(ids)
         if self.live and len(self.live) <= len(ids) - 1 and ids[:len(self.live)] == self.live:
             reused = len(self.live)

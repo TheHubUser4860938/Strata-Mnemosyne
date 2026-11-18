@@ -211,7 +211,10 @@ class AKnownSetUnderAnotherName(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             first = self.shards(tmp)
             with self.fake(self.ROW["tensors"], self.ROW["bytes"], experts):
-                self.assertEqual(models.known_set_by_header(first), "qwen/IQ3_S")
+                # the fork publishes DavidAU's repack (daureg/IQ3_S) as a fingerprint row that is the
+                # same tensors, bytes and expert formats under another repo - so a header match names
+                # one of the two published names, and both carry the set's table entry.
+                self.assertIn(models.known_set_by_header(first), ("qwen/IQ3_S", "daureg/IQ3_S"))
             with self.fake(self.ROW["tensors"], self.ROW["bytes"] + 1, experts):
                 self.assertIsNone(models.known_set_by_header(first), "one byte of payload more: not that set")
             with self.fake(self.ROW["tensors"], self.ROW["bytes"], experts | {"Q8_0"}):
@@ -221,7 +224,8 @@ class AKnownSetUnderAnotherName(unittest.TestCase):
             with self.fake(self.ROW["tensors"], self.ROW["bytes"], experts, arch="llama"):
                 self.assertIsNone(models.known_set_by_header(first))
             with self.fake(self.ROW["tensors"], self.ROW["bytes"], experts, second_arch="qwen4exp"):
-                self.assertEqual(models.known_set_by_header(first), "qwen/IQ3_S", "a later shard may name the architecture too")
+                self.assertIn(models.known_set_by_header(first), ("qwen/IQ3_S", "daureg/IQ3_S"),
+                              "a later shard may name the architecture too")
             with self.fake(self.ROW["tensors"], self.ROW["bytes"], experts, second_arch="llama"):
                 self.assertIsNone(models.known_set_by_header(first), "a later shard of another architecture")
             with mock.patch.object(models, "_candidate_by_layout", side_effect=AssertionError("the layout guess is never used")), self.fake(self.ROW["tensors"], self.ROW["bytes"] // 2, experts):
