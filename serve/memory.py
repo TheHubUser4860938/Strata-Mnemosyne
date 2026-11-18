@@ -3236,10 +3236,19 @@ class MemoryService:
         with self.lock:
             self._vmeta = meta
             self._ecount = n
-            if self._vdirty:
+            # F8b (2026-11-03) kept the cache honest against a write that lands DURING the build:
+            # `rows` is missing it, so the flag must stay set. The flag alone cannot tell a
+            # mid-build write from the one set at construction, so compare the store's own stamp:
+            # unchanged counts mean nothing moved while we were stacking, and the cache is fresh.
+            # (Read as a bare `if self._vdirty:` this never cleared, and every read rebuilt:
+            # measured 2026-11-18, 318 ms a call against 0.8 ms cached, at 36,465 vectors.)
+            if self.conn.execute(
+                    "select count(*), count(*) filter (where true" + compat + ") from embeddings e",
+                    cargs).fetchone() != n:
+                self.conn.commit()
                 return meta                       # dirtied mid-build: next caller rebuilds
+            self.conn.commit()
             self._vdirty = False
-        return meta
         return meta
 
     @_heals

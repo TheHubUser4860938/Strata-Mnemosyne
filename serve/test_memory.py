@@ -2483,6 +2483,21 @@ class MatrixStaleness(unittest.TestCase):
         self.assertEqual(meta2["class"][0], "MEM/GRAPH",
                          "classify must dirty the matrix: the cosine arm's shelf_mask reads its class column")
 
+    def test_the_cache_lands_so_a_second_read_does_not_rebuild(self):
+        """2026-11-18: the publish read the flag that __init__ set, and took "dirty at entry" for
+        "dirtied mid-build" - so it returned without clearing and EVERY read rebuilt the matrix
+        (318 ms against 0.8 ms cached, measured at 36,465 vectors). The store's own stamp pair is
+        the mid-build test now. Cache lands; a write still moves it."""
+        m = self._svc()
+        m.remember("one row to read twice", scope="fw")
+        first = m._vec_matrix()
+        self.assertFalse(m._vdirty, "the build must clear the flag when the store did not move")
+        self.assertIs(m._vec_matrix(), first, "a second read is the cached object, not a rebuild")
+        m.remember("a second row", scope="fw")
+        second = m._vec_matrix()
+        self.assertIsNot(second, first, "a write must dirty the matrix")
+        self.assertEqual(len(second["ids"]), 2, "the rebuild sees the new row")
+
     def test_invalidate_retires_the_vector_with_the_row(self):
         # v2.1, the owner's dead-weight ruling (2026-10-17): no path un-invalidates and every
         # reader filters on active rows, so a vector on a retired row is never read again - it
