@@ -28,27 +28,43 @@ fetched, with its path. What I paraphrase says so.
 
 ## The code-map law
 
-A repository is territory; its `graphify-out/graph.json` is a map. Before I answer a question
-about a codebase's shape — what touches this, which files are load-bearing, what breaks if I
-move it, how two things reach each other — I consult the map first, with the CLI path in
-always.md, and I say I did.
+A repository is territory; its `graphify-out/graph.json` is a map. The map is the **default**, not
+the rescue: at the first substantive action of any coding task — a change, a bug hunt, a review, an
+answer about shape — I make one map call before I reach for grep, and I say which one. Grep answers
+"where is this string"; the map answers "what breaks when I move this", and only one of those costs
+an hour when I get it wrong.
+
+Match the call to the job:
 
 - `graphify god-nodes --top 10` — the hubs, before I read an unfamiliar repo.
 - `graphify query "<question>"` — a BFS over the map, not the files.
 - `graphify path "A" "B"` — how two things reach each other.
 - `graphify explain "X"` — one node and its neighbours.
-- `graphify affected "X"` — the reverse walk: what depends on it.
+- `graphify affected "X"` — the reverse walk: what depends on it. **The call to make before
+  changing a signature**, because a server keyword lands on every mock that stands in for it.
 
-Run it from the repo that owns the graph. The map is code-only and cheap: tree-sitter, no model,
-no network. A repo with no map gets one from `graphify extract .` (minutes). `graphify update .`
-re-extracts only the files whose content changed. The box refreshes its graphs nightly (the timer
-is in always.md); a graph older than the tree I am reasoning about gets an update before I quote
-it, and an update that would shrink the graph is refused unless forced — that guard stays on.
+Three mechanics that decide whether the map is worth opening:
+
+- **The binary is not on PATH** on this box: `~/.venvs/graphify/bin/graphify` (also in the repo's
+  own `.venv/bin`). A `command not found` is the reason I fall back to grep; it is not a fact about
+  the tool. The path lives in always.md.
+- **`query` budgets ~2,000 tokens and says so** — "TRUNCATED: showing 63 of 241". When the answer
+  may be in the cut set, re-run with `--budget N` (the CLI prints the number it needs) or narrow
+  with `context_filter=['call']`.
+- **A graph older than the tree is a stale map.** `graphify update .` re-extracts only what
+  changed; after a merge that touched thousands of files, update before I quote the graph. The box
+  refreshes nightly (the timer is in always.md), and an update that would shrink the graph is
+  refused unless forced — that guard stays on.
 
 The map answers structure, not behavior: for "what does this function do", read the function.
-Receipt: the Strata graph built 2026-11-15 named the load-bearing files and communities in one
-query, then sat unused for two days of edits while I kept grepping. The tool did not fail; the
-habit did. The owner asked why on 2026-11-17, and "grep is muscle memory" is not a reason.
+A repo with no map gets one from `graphify extract .` (minutes).
+
+Receipts, both from leaving the map on the shelf. The Strata graph built 2026-11-15 named the
+load-bearing files in one query and then sat unused through two days of grepping — "grep is muscle
+memory" is not a reason (the owner, 2026-11-17). On 2026-11-18 the merge of v0.2.15 produced three
+signature-drift bugs (`prefill_only=`, `split=`, `rid`), 72 red tests between them; one
+`affected sampling_keys()` walk names `sycl/serve/server_intel.py` and six
+`tools/conversation_cache_*.py` callers that grep never opened.
 
 ## The journal law
 
