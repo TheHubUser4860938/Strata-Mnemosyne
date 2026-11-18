@@ -3411,7 +3411,9 @@ class StrataEngine:
             return
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
-        lines_q, stop_line = self.lines, "STOP\n"
+        rid, lines_q, stop_line = None, self.lines, "STOP\n"   # memory-core: the queue's request id,
+        # kept as a name so the fork's write branch reads. Upstream 0.2.15 folded `multi` away, so it
+        # is always None: the GEN line carries no `rid=`, and the request writes straight to stdin.
         # logprobs: the engine writes "LP <logprob> [id:logprob ...]" right after each "T <id>" (the same
         # flush), read here before the token is yielded, so whoever takes the token finds its line in
         # lp_lines.  Not asked for = the deque stays empty and nothing on this path changes.
