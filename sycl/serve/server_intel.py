@@ -195,9 +195,13 @@ def install_logprobs():
 
     keys = Eng.sampling_keys
 
-    def sampling_keys(sampling):
+    def sampling_keys(sampling, split=False):
+        # `split` rides through to the real builder: the server calls this with
+        # split=self.split_engine, and a wrapper that drops it hands the split engine the
+        # shared engine's key set (a cache miss on every prompt) - and a wrapper that
+        # forgets the parameter raises TypeError on the first request of an Arc boot.
         k = top_logprobs(sampling or {})
-        return keys(sampling) + (f" logprobs={k}" if k is not None else "")
+        return keys(sampling, split=split) + (f" logprobs={k}" if k is not None else "")
     Eng.sampling_keys = staticmethod(sampling_keys)
 
     generate = Eng.generate
