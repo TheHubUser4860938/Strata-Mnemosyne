@@ -232,7 +232,8 @@ class StrataGraphify:
 
     def build(self, ids: Optional[Iterable[int]] = None, full: bool = True,
               files_per_chunk: int = FILES_PER_CHUNK, per_file: int = FACTS_PER_FILE,
-              corpus_files: Optional[list[Path]] = None, on_progress=None) -> dict:
+              corpus_files: Optional[list[Path]] = None, on_progress=None,
+              workers: int = 1) -> dict:
         """Run a graph pass and persist it. `full` rebuilds every shelf; otherwise the
         existing graph is kept and the new rows are merged into it (build_merge), so a
         curated fact joins the graph it belongs to instead of replacing the file.
@@ -257,11 +258,23 @@ class StrataGraphify:
         chunks = self._chunks(files, files_per_chunk)
         total = len(chunks)
         parts, done, t0 = [], 0, time.time()
-        for chunk in chunks:
-            parts.append(self._extract(chunk))
-            done += 1
-            if on_progress:
-                on_progress(done, total, len(files))
+        if workers and workers > 1 and total > 1:
+            # Measured 2026-11-16: four concurrent chunks starved the 4090 and produced
+            # timeouts, so the drain's default is serial. The knob stays for a box with a
+            # faster card, and results keep chunk order (map, not as_completed).
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=min(int(workers), total)) as pool:
+                for part in pool.map(self._extract, chunks):
+                    parts.append(part)
+                    done += 1
+                    if on_progress:
+                        on_progress(done, total, len(files))
+        else:
+            for chunk in chunks:
+                parts.append(self._extract(chunk))
+                done += 1
+                if on_progress:
+                    on_progress(done, total, len(files))
         extraction = self._merge_extractions(parts)
 
         # The mode question is answered BEFORE the export: after gexport writes graph.json,
@@ -557,7 +570,7 @@ class StrataGraphify:
         return len(self._rows_meta())
 
     def cover(self, per_file: int = 10, files_per_chunk: int = 6, max_passes: int = 12,
-              on_progress=None) -> dict:
+              on_progress=None, workers: int = 1) -> dict:
         """Drain the store into the graph: repeated merge passes over the rows no node names yet.
 
         Why passes and not one big pass: a pass reads everything and the model writes about one
@@ -579,7 +592,7 @@ class StrataGraphify:
                                              "pass": passes, "queued": len(todo),
                                              "done": 0, "total": 0})
             res = self.build(ids=todo, full=False, per_file=per_file,
-                             files_per_chunk=files_per_chunk,
+                             files_per_chunk=files_per_chunk, workers=workers,
                              on_progress=lambda d, t, n: self._write(self.progress_path, {
                                  "running": True, "started": _now(), "pid": os.getpid(),
                                  "mode": "cover", "pass": passes, "queued": len(todo),

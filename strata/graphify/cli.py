@@ -41,6 +41,8 @@ def main(argv=None) -> int:
     c.add_argument("--per-file", type=int, default=10, help="facts per corpus file (10 names ~1 concept per 1.5 facts)")
     c.add_argument("--files-per-chunk", type=int, default=6, help="files per LLM call")
     c.add_argument("--max-passes", type=int, default=12, help="stop after N passes")
+    c.add_argument("--workers", type=int, default=1,
+                   help="concurrent LLM calls per pass (1 is the measured-stable drain)")
 
     b = sub.add_parser("build", help="full pass over every shelf")
     b.add_argument("--bridge", action="store_true",
@@ -88,7 +90,7 @@ def main(argv=None) -> int:
         _out(g.build(ids=ids, full=False))
     elif a.command == "cover":
         s = g.cover(per_file=a.per_file, files_per_chunk=a.files_per_chunk,
-                    max_passes=a.max_passes,
+                    max_passes=a.max_passes, workers=a.workers,
                     on_progress=lambda p, res: print(
                         f"  cover pass {p}: {res.get('status')} · {res.get('nodes')} nodes"
                         f" · {res.get('communities')} communities", file=sys.stderr, flush=True))
