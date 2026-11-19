@@ -1,5 +1,12 @@
 # Strata Mnemosyne — Strata with built-in long-term memory (In daily use — the find-more-bugs phase)
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
+    <img src="app/host/public/brand/strata-lockup-light.svg" alt="Strata" width="340">
+  </picture>
+</p>
+
 An 180-billion-parameter model running on a normal PC — one graphics card, some system RAM —
 that **remembers**. Not in the client, not per-app: the memory lives at the inference server
 itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one store, and no
@@ -26,6 +33,8 @@ This fork adds the memory system and the steering described below.
   <a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor-EA4AAA?logo=githubsponsors&logoColor=fff" alt="Sponsor Strata on GitHub Sponsors"></a>
   <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=000" alt="Support Strata on Buy Me a Coffee"></a>
 </p>
+
+<p align="center"><sub><b>English</b> · <a href="docs/lang/README.zh-CN.md">简体中文</a> · <a href="docs/lang/README.ja.md">日本語</a> · <a href="docs/lang/README.de.md">Deutsch</a> · <a href="docs/lang/README.fr.md">Français</a> · <a href="docs/lang/README.es.md">Español</a> · <a href="docs/lang/README.pt-BR.md">Português</a> · <a href="docs/lang/README.pl.md">Polski</a></sub></p>
 
 ## The two names, and they are not decoration
 
@@ -184,7 +193,7 @@ Download the file for your computer, open it, and press install on the model it 
 
 [![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.15-windows-x64-setup.exe)
 
-<sub>Files: `Strata-0.2.15-windows-x64-setup.exe` · `Strata-0.2.15-linux-x86_64.AppImage` · `Strata-0.2.15-macos-arm64.dmg`</sub>
+<sub>Files: `Strata-0.2.16-windows-x64-setup.exe` · `Strata-0.2.16-linux-x86_64.AppImage` · `Strata-0.2.16-macos-arm64.dmg`</sub>
 
 **Linux**
 
@@ -713,9 +722,12 @@ ISTA-DASLab also made the DeepSeek V4.1-Flash sets. Strata uses parts of [llama.
 [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#credits). Strata is open source under the [MIT License](LICENSE). A few
 parts and every model have their own licenses ([which ones](docs/HOW_IT_WORKS.md#license)).
 
+[All guides](docs) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Report a bug](https://github.com/Niko1221/Strata/issues/new/choose) ·
+[Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](.github/CONTRIBUTING.md)
+
 ## Contributing
 
-Found a bug, or want to send a change or a benchmark? Read [CONTRIBUTING.md](CONTRIBUTING.md) first. It says what to
+Found a bug, or want to send a change or a benchmark? Read [CONTRIBUTING.md](.github/CONTRIBUTING.md) first. It says what to
 include so that others can check your work.
 
 ## Support Strata
@@ -740,6 +752,8 @@ Thank you to everyone who supports Strata.
 <a href="https://github.com/jackyini"><img src="https://github.com/jackyini.png?size=96" width="48" height="48" alt="jackyini" title="jackyini"></a>
 <a href="https://github.com/router0mail"><img src="https://github.com/router0mail.png?size=96" width="48" height="48" alt="router0mail" title="router0mail"></a>
 <!-- supporters:end -->
+
+All supporters and how to support Strata: [SUPPORTERS.md](SUPPORTERS.md)
 
 [MIT license](LICENSE) · [Credits and model licenses](docs/HOW_IT_WORKS.md#credits) · [Privacy](docs/SAFETY.md)
 
