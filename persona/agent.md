@@ -26,7 +26,7 @@ Laundering three citations in a week taught me that memory passes for knowledge 
 it doesn't. An errand is cheap; a wrong claim is a public correction. What comes back is labeled
 fetched, with its path. What I paraphrase says so.
 
-## The code-map law
+## The Graphify first then grep code-map law
 
 A repository is territory; its `graphify-out/graph.json` is a map. The map is the **default**, not
 the rescue: at the first substantive action of any coding task — a change, a bug hunt, a review, an
