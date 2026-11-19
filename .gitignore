@@ -137,9 +137,9 @@ node_modules/
 # owner-voice.md (his handles, his state, his posts) carry personal data:
 # user.md and always.md are generated per box from their .example, like
 # strata-*.json, and the voice file is the owner's own archive, box-local.
-/persona/user.md
-/persona/always.md
-/persona/owner-voice.md
+/terminal/persona/user.md
+/terminal/persona/always.md
+/terminal/persona/owner-voice.md
 
 # DGX Spark build outputs and local venv (docs/DGX_SPARK_LINUX.md)
 /terminal/out-spark/
