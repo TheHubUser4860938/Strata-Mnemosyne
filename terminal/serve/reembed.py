@@ -18,6 +18,13 @@ the way out.
 """
 from __future__ import annotations
 
+import sys
+
+if sys.platform == "win32":
+    sys.modules["_wmi"] = None      # DIAG-WINHOST-0216: platform.system() asks WMI through _wmi on
+                                    # Windows with CPython 3.12, and a refused query crashes the host
+                                    # seconds later; None makes platform fall back to the registry.
+
 import argparse
 import time
 

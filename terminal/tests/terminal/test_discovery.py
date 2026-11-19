@@ -79,12 +79,15 @@ class GuiLayout(unittest.TestCase):
         (self.terminal / "data").mkdir(parents=True)
         shutil.copy(Path(models.__file__).resolve().parents[1] / "data" / "gguf_fingerprints.json", self.terminal / "data")
         # memory-core: the dev box keeps its live run configs (strata-*.json) at the checkout root, where an
-        # upstream checkout has none - the launch Catalog resolves src from __file__ (the real checkout), so it
-        # would rank the checkout first while the wizard reads the patched models.ROOT below.  Make the fixture's
-        # Terminal a complete installer folder and point the Catalog at it, so both read the same layout.
-        shutil.copy(Path(models.__file__).resolve().parents[1] / "setup.py", self.terminal)
-        (self.terminal / "tools").mkdir()
-        shutil.copy(Path(models.__file__).resolve().parents[1] / "tools" / "strata_mcp.py", self.terminal / "tools")
+        # upstream checkout has none - the launch Catalog resolves its OWN folder from __file__ (the real
+        # checkout), not from the patched models.ROOT below, so it would rank the checkout first while the
+        # wizard reads the fixture's. Make the fixture's Terminal a complete installer folder and point the
+        # Catalog at it, so both read the same layout. v0.2.16 added its own copy of this staging; one block
+        # now, and mkdir is idempotent so a future merge cannot stage the folder twice.
+        real = Path(models.__file__).resolve().parents[1]
+        shutil.copy(real / "setup.py", self.terminal)
+        (self.terminal / "tools").mkdir(exist_ok=True)
+        shutil.copy(real / "tools" / "strata_mcp.py", self.terminal / "tools")
         from strata_cli.launch import catalog as launch_catalog
         p2 = mock.patch.object(launch_catalog, "installer_folder", lambda explicit=None: self.terminal)
         p2.start()
@@ -92,12 +95,6 @@ class GuiLayout(unittest.TestCase):
         p = mock.patch.object(models, "ROOT", self.terminal)
         p.start()
         self.addCleanup(p.stop)
-        # the Catalog finds its own folder from the package file, not models.ROOT: make it this fake Terminal folder
-        # too, so a real checkout with its own run configs cannot become a "here" install under the test.
-        real = Path(models.__file__).resolve().parents[1]
-        shutil.copy(real / "setup.py", self.terminal)
-        (self.terminal / "tools").mkdir()
-        shutil.copy(real / "tools" / "strata_mcp.py", self.terminal / "tools")
         p = mock.patch("strata_cli.launch.catalog.installer_folder", return_value=self.terminal)
         p.start()
         self.addCleanup(p.stop)
