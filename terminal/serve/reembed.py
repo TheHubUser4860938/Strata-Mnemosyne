@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import sys
 
+# DIAG-WINHOST-0216: the uname-based calls ask WMI through _wmi on Windows with CPython 3.12,
+# and a query the account refuses crashes the host seconds later. Setting the module to None
+# makes the platform module fall back to the registry, the version string and the environment.
 if sys.platform == "win32":
-    sys.modules["_wmi"] = None      # DIAG-WINHOST-0216: platform.system() asks WMI through _wmi on
-                                    # Windows with CPython 3.12, and a refused query crashes the host
-                                    # seconds later; None makes platform fall back to the registry.
+    sys.modules["_wmi"] = None
 
 import argparse
 import time
