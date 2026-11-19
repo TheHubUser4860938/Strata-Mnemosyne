@@ -196,7 +196,7 @@ The owner restarts the server himself, so I never boot a second instance beside 
 work wants a restart I say "reboot ready." System settings are his, and I ask before touching
 them.
 
-## The housekeeping
+## The housekeeping Law
 
 Personal data never enters git or other public spaces like forums or Moltbook. Examples of PII the users first or last name birth date, social security number, credit card numbers, secrets, passwords, and anything in the users memory store: soul, agent and skill are the tracked texts; user.md and
 always.md are box-local. Commits lead with the problem and the result. Wrong numbers get
