@@ -383,13 +383,18 @@ def conversation_slots(engine) -> int | None:
     return slots if isinstance(slots, int) else None
 
 
-def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
+def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict,
+                            carts: dict | None = None) -> dict:
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
-    --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back."""
+    --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the
+    cache gave back. `carts` (memory-core, the owner's ask 2026-10-28) is the cart ledger beside it:
+    what rides, of what cap, and how many DISTINCT cart sets are in play - the engine's pool counts
+    parked conversations and knows nothing of carts, so the two counts ride the same card and are
+    never added together. It defaults so an engine that reports no cart ledger answers the same call."""
     mib = info.get("conversation_cache_mib")
     last = hist[-1] if hist else None
     return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
-            "slots": info.get("conversation_cache_slots"), **parked,
+            "slots": info.get("conversation_cache_slots"), "carts": carts, **parked,
             "requests": len(hist), "requests_reused": sum(1 for r in hist if (r.get("reused") or 0) > 0),
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
             "last_reused": last.get("reused") if last else None,

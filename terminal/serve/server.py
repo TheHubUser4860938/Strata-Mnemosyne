@@ -1316,19 +1316,6 @@ class ConvCacheLog:
         return dict(self.state)
 
 
-def conversation_slots(engine) -> int | None:
-    """How many conversations the engine's cache holds: its --conversation-cache-slots argument, which is known
-    before the engine has started (a lazy start has reported no INFO line yet), else the INFO line it reported."""
-    args = engine.spawn[1] if hasattr(engine, "spawn") else []
-    if "--conversation-cache-slots" in args[:-1]:
-        try:
-            return int(args[args.index("--conversation-cache-slots") + 1])
-        except ValueError:
-            pass
-    slots = (getattr(engine, "info", None) or {}).get("conversation_cache_slots")
-    return slots if isinstance(slots, int) else None
-
-
 def conversation_cart_slots(engine) -> int | None:
     """The engine's CART quota (--conversation-cache-cart-slots, memory-core's fence 2026-10-28): the run
     config's argument, which is known before the engine has started, else the INFO line it reported, else
@@ -1342,24 +1329,6 @@ def conversation_cart_slots(engine) -> int | None:
             pass
     n = (getattr(engine, "info", None) or {}).get("conversation_cache_cart_slots")
     return n if isinstance(n, int) and n > 0 else None
-
-
-def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict,
-                            carts: dict | None = None) -> dict:
-    """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
-    --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the
-    cache gave back. `carts` (memory-core, the owner's ask 2026-10-28) is the cart ledger beside it:
-    what rides, of what cap, and how many DISTINCT cart sets are in play - the engine's pool counts
-    parked conversations and knows nothing of carts, so the two counts ride the same card and are
-    never added together."""
-    mib = info.get("conversation_cache_mib")
-    last = hist[-1] if hist else None
-    return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
-            "slots": info.get("conversation_cache_slots"), "carts": carts, **parked,
-            "requests": len(hist), "requests_reused": sum(1 for r in hist if (r.get("reused") or 0) > 0),
-            "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
-            "last_reused": last.get("reused") if last else None,
-            "last_prompt": last.get("prompt_tokens") if last else None}
 
 
 _BTRACE = bool(os.environ.get("STRATA_BATCH_TRACE"))
