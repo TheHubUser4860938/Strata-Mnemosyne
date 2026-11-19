@@ -904,7 +904,7 @@ class ForcingEngine(MockEngine):
         super().__init__(tok, "x", max_context=16384)
         self.prompts = []
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         self.prompts.append(list(ids))
         prompt = self.tok.decode(ids)
         if prompt.endswith("<tool_call>\n"):
@@ -1212,7 +1212,7 @@ class HeldEngine(MockEngine):
         super().__init__(*args, **kw)
         self.holding, self.release = threading.Event(), threading.Event()
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         yield from self.script[:self.tokens]
         self.holding.set()
         while not (cancel.is_set() or self.release.is_set()):

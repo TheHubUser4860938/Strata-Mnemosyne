@@ -64,12 +64,11 @@ EDITABLE = [
     ("effort_position", ("enum", ["start", "end"]),
      "Where a non-default reasoning effort goes: start (the default) or end (keeps the cache when it changes)"),
     ("reason_modes", "bool",
-     "Hybrid mode for DavidAU's Turbo-Brilliance models: his thinking constructs (personas) ride "
-     "the server and the agent switches them itself; stays off on other models. Applies at once, "
-     "no restart; persists here"),
+     "Turbo-Brilliance models only: the agent switches his thinking constructs itself. "
+     "Applies at once"),
     ("reason_mode", ("enum", REASON_MODE_CHOICES),
-     "Starting construct in hybrid mode: a name (coder, house, ultra...), a reason+answer pair "
-     "(007+coder), auto (the server picks per task), or empty for none"),
+     "Starting construct in hybrid mode: a name (coder, house...), a reason+answer pair "
+     "(007+coder), auto (the server picks), or empty for none"),
     ("aliases", "names", "Other model names the server lists and answers to (comma-separated)"),
     ("idle_unload_s", "num>=0", "Unload the model after this many seconds without requests (0 or empty: never)"),
     ("mtp", "bool", "Draft layer (MTP): off starts the engine without it (about 1 GB less graphics memory, slower words per second); "
@@ -81,20 +80,20 @@ EDITABLE = [
     ("vram_reserve_mib", ("arg", "--vram-reserve-mib"),
      "VRAM in MiB the engine leaves free for other programs (engine default 700)"),
     ("memory.block_doc_cap", ("section", "memory", "int>=0"),
-     "How much of a corpus chunk rides in the recall block before the ellipsis (0: whole rows; "
-     "the memory_search tool always returns the passage). Takes effect at the next restart"),
+     "How much of a corpus chunk rides in the recall block before the ellipsis (0: whole "
+     "rows). Restarts with the model"),
     ("memory.recall_limit", ("section", "memory", "int>=1"),
      "Facts the recall block shows at most per conversation (the head block; the tail has its own). "
      "Takes effect at the next restart"),
     ("memory.graph_weight", ("section", "memory", "num>=0"),
-     "The graph arm's vote in search: neighbours of the top hits in the store's own knowledge "
-     "graph rise by this weight. 0 turns the arm off. Takes effect at the next restart"),
+     "The graph arm's vote in search: the store's graph lifts its neighbours by this "
+     "weight. 0 turns the arm off. Restarts with the model"),
     ("memory.graph_seeds", ("section", "memory", "int>=1"),
      "How many of the top hits seed the graph arm's neighbourhood walk (default 8). "
      "Takes effect at the next restart"),
     ("memory.graph_sim_k", ("section", "memory", "int>=0"),
-     "The similarity layer of the graph arm: each seed also votes for its k nearest rows "
-     "by embedding, no LLM. 0 turns it off. Takes effect at the next restart"),
+     "The graph arm's similarity layer: each seed also votes for its k nearest rows by embedding, "
+     "no LLM. 0 turns it off. Restarts with the model"),
 ]
 SPEC = {k: kind for k, kind, _ in EDITABLE}
 

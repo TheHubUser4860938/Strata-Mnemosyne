@@ -32,8 +32,9 @@ class FailingEngine(MockEngine):
         super().__init__(tok, ANSWER, max_context=4096)
         self.fail, self.armed = fail, True
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
-        for i, t in enumerate(super().generate(ids, max_new, sampling, cancel, embeddings)):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
+        for i, t in enumerate(super().generate(ids, max_new, sampling, cancel, embeddings,
+                                               prefill_only=prefill_only)):
             if self.armed and i == 20:
                 self.armed = False
                 raise self.fail()

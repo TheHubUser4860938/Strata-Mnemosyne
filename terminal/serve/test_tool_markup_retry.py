@@ -157,7 +157,7 @@ class Scripted(MockEngine):
         super().__init__(tok, "x", max_context=32768)
         self.texts, self.prompts = list(texts), []
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         self.prompts.append(list(ids))
         text = self.texts[min(len(self.prompts) - 1, len(self.texts) - 1)]
         yield from (self.tok.encode(text) + self.tok.encode("<|im_end|>", parse_special=True))[:max_new]

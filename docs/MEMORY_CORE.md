@@ -2952,9 +2952,9 @@ per-file replace, prune, nested paths, shelf recall, the HTTP op), three sabotag
 by a failing test (gate, class, replace). The reading stage (block caps for chunk-shaped rows,
 an LLM-rerank arm on the fused candidates) is the named next work.
 
-## The graph: `strata/graphify` — the store's own concept map (built 2026-11-15)
+## The graph: `terminal/strata/graphify` — the store's own concept map (built 2026-11-15; the folder moved under `terminal/` with the v0.2.16 layout)
 
-The store keeps rows; a graph keeps relationships. `strata/graphify` reads the shelved facts
+The store keeps rows; a graph keeps relationships. `terminal/strata/graphify` reads the shelved facts
 out of Postgres, asks the running model what belongs with what, and writes a node-and-edge
 map that lives **beside** the store, not inside it: `<store>/strata-graphify/` holds
 `graph.json` (the map), `analysis.json` (communities, cohesion, god nodes), `view.json` (the
