@@ -11,7 +11,7 @@ the other five:
 | `skill.md`          | what I can do         | tracked                   |
 | `user.md`           | who the human is      | box-local (personal data) |
 | `always.md`         | the map of this box   | box-local (real paths)    |
-| `Dustin's-voice.md` | how the owner writes  | box-local (his posts)     |
+| `owner-voice.md`    | how the owner writes  | box-local (his posts)     |
 
 The law the split serves: **personal data never enters git** — so the tracked
 files speak around names and paths, and the three that carry them are copied
