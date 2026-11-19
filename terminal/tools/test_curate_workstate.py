@@ -38,9 +38,9 @@ KEEP = [  # real durable facts - the filter must not eat these
     "The project includes a module named curate_loop.py.",
     "Family-based admissions have accounted for roughly 60-65 percent of all legal permanent "
     "residents since the 1980s.",
-    "The user lives at 8057 S 500 W Claypool, Indiana.",
+    "The user keeps the server at home in the American Midwest.",
     "On 2026-10-16 the dev build was updated to Strata 0.1.44.1.",
-    "The user's name is Eugene and the assistant persona is named Clio.",
+    "The user's name is not public; the assistant persona is named Clio.",
     "The memory system is ON by default in this fork; opt-out is memory.enabled=false.",
     "journal_turn now updates the newest same-user_text row per scope.",
     "The 128 GB RAM upgrade arrives around 2026-10-22.",
