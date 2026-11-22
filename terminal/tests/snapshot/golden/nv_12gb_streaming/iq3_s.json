@@ -75,7 +75,7 @@
      "embedder": {
       "name": "embeddinggemma-2",
       "dir": "/home/eugene/Strata-data/embeddings/embeddinggemma-2",
-      "threads": 6
+      "threads": 7
      },
      "inject": false,
      "block_position": "head",

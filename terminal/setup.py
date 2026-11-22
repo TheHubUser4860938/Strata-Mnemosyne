@@ -76,6 +76,7 @@ from strata_control import atomic
 from strata_control import draft_layer
 from strata_control import engine_component
 from strata_control import sysinfo
+from strata_control.datafolder import data_dir      # the one data folder: remembered --data-dir first, else beside the install (2026-10-23)
 from strata_control.discovery import in_trash
 from strata_control import user_args
 
@@ -932,6 +933,259 @@ def build_inkling_import_args(
 # Every model file Strata downloads has a fixed size and SHA-256: (repository, file name) -> (bytes, sha256).  download()
 # checks the file against it as soon as it is whole (a wrong file is deleted and setup stops), and stops before the
 # download when the server's size is not the pinned one.  The files are fetched from the commits in HF_REVISIONS.
+#: memory-core fork: the shard tables the fork's families pin (DavidAU's Turbo-Brilliance re-quants, the
+#: huihui and heretic arms, and the Q8 PLE tree). Read by hf_shard / get_ple_q8 / the run-config writer.
+DAU_IQ3_S_SHARDS = {
+    "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf":
+        (55063664928, "78706315c2fe912777c006b4ae18be1024c9f4353bd25d33b8a306c9c55f9e34"),
+    "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf":
+        (28800138432, "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"),
+}
+# DavidAU's REGULAR (non-abliterated) Turbo-Brilliance re-quant of the same original IQ3_S (the repo the owner
+# pointed at 2026-10-17 evening): same file series, same reason-mode system per his card (27 reasoning + 27
+# instruct + 9 xhigh modes, the pairing guide, and example generations in the pkd/house/business/neo voices).
+# His shard 2 is the family's shared n-gram PLE table again - 28,800,138,432 bytes, sha 316b46f3... byte-
+# identical to the abliterated family's and the original's - so an owner switching between the two DAU families
+# downloads only the first shard (54,817,741,024 bytes, the regular weights; the abliterated shard 1 is
+# 55,063,664,928 - different bytes, same size class). Sizes and SHA-256 are the Hub's LFS pointers, checked
+# 2026-10-17.  The reason-mode flavor is content-based (the server reads the template the tokenizer export
+# writes from his file: reason_mods + {REASON} present = dau dialect, absent = the feature stays off with a
+# banner that says so) - the regular card documents the modes, and the server decides by bytes, not by trust.
+
+
+# Every model file Strata downloads has a fixed size and SHA-256: (repository, file name) -> (bytes, sha256).  download()
+# checks the file against it as soon as it is whole (a wrong file is deleted and setup stops), and stops before the
+# download when the server's size is not the pinned one.  The files are fetched from the commits in HF_REVISIONS.
+# DavidAU's Turbo-Brilliance re-quants (the reason-mode families, 2026-10-17): the regular repo's IQ3_S shards
+# are the ISTA bytes (same SHA-256, verified against HF's tree API 2026-10-19); the abliterated one's shard 1 is
+# SC117's tensor-transplant layer (55,063,664,928 bytes, its own SHA-256) and its shard 2 is the ISTA shard 2 again.
+DAU_FILES = {
+    "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf":
+        (55063664928, "78706315c2fe912777c006b4ae18be1024c9f4353bd25d33b8a306c9c55f9e34"),
+    "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf":
+        (28800138432, "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"),
+}
+
+
+# DavidAU's REGULAR (non-abliterated) Turbo-Brilliance re-quant of the same original IQ3_S (the repo the owner
+# pointed at 2026-10-17 evening): same file series, same reason-mode system per his card (27 reasoning + 27
+# instruct + 9 xhigh modes, the pairing guide, and example generations in the pkd/house/business/neo voices).
+# His shard 2 is the family's shared n-gram PLE table again - 28,800,138,432 bytes, sha 316b46f3... byte-
+# identical to the abliterated family's and the original's - so an owner switching between the two DAU families
+# downloads only the first shard (54,817,741,024 bytes, the regular weights; the abliterated shard 1 is
+# 55,063,664,928 - different bytes, same size class). Sizes and SHA-256 are the Hub's LFS pointers, checked
+# 2026-10-17.  The reason-mode flavor is content-based (the server reads the template the tokenizer export
+# writes from his file: reason_mods + {REASON} present = dau dialect, absent = the feature stays off with a
+# banner that says so) - the regular card documents the modes, and the server decides by bytes, not by trust.
+DAUREG_IQ3_S_SHARDS = {
+    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf":
+        (54817741024, "8a14ab07ca7b54619e6b250cd1d83f97f79ab7eef3caf8ee9e6543bc9ac6a193"),
+    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf":
+        (28800138432, "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"),
+}
+# Round 0214: Unsloth re-published the repository on 2026-11-04 (commit d9620119, "Dynamic v3.1").  The files of UD-Q4_K_XL, UD-IQ4_XS (three shards),
+# UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 stay at the commit in HF_REVISIONS (38bb39ee, pinned since 0.1.31); the sets that are new there (UNSLOTH_V31_SHARDS) name this
+# commit in their MODELS entry ("revision"), so a repository has more than one revision and the pin of a file is found by the commit its URL names (file_pin).
+
+
+DAUREG_FILES = {
+    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf":
+        (54817741024, "8a14ab07ca7b54619e6b250cd1d83f97f79ab7eef3caf8ee9e6543bc9ac6a193"),
+    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf":
+        (28800138432, "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"),
+}
+
+
+# trubisky's quants of jeffpeng3's heretic v2 of ukisai's Swift 1.5 (the "heretic" family): two sizes in one
+# repository, the IQ4_NL set at the root and the IQ4_XS-plus set under IQ4_XS/.  Sizes and SHA-256 are the Hub's
+# LFS pointers at the pinned revision, read 2026-10-30.  Note the two shard-2 files: they are the SAME
+# 28,800,138,432 B n-gram table (IQ4_NL in both) with DIFFERENT sums, and the table bytes are identical -
+# 1 MiB digests at five offsets spanning the whole tensor match - so what differs is the container metadata
+# around it (the imatrix name the file records, and nothing in the weights).  Which is exactly why every file
+# here is pinned by sum, not by name or size: a sum can move with the values untouched, and a name can stay
+# with the values moved.
+# MEASURED from the GGUF headers the same day (per-tensor sizes read off the tensor-info offsets; the method
+# reproduces this file's own 77.0 GB experts figure for huihui's UD-Q4_K_XL as 77.02): the IQ4_NL set is
+# 108.89 GB with 74.61 GB of experts, the IQ4_XS-plus set is 94.70 GB with 60.54 GB.  Both carry the same
+# 28.80 GB table, the same ~2.9 GB of attention (all Q8_0) and ~1.2 GB of dense side, so the entire quality
+# difference between the two sizes sits in the experts, as their bpw says it should.
+HERETIC_SHARDS = {
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00001-of-00008.gguf":
+        (3208309664, "9344341eab2c2d9d59c8a4a9533c8cfc515547675d7a139d17957968a3019c5b"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00002-of-00008.gguf":
+        (28800138432, "56a185873792b560485ee971ba5c4f9c5558def5e3e70dbf0f8925e9849eb513"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00003-of-00008.gguf":
+        (13700060352, "e6c22d9c0a22e39fb25decc81d8862667d8184907c623b182d9e2771ebfb9e03"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00004-of-00008.gguf":
+        (13766580576, "a8e29ba699751bf05250824b7075aee2383048b39290ab55fb50c677925a1a37"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00005-of-00008.gguf":
+        (13643236928, "afa6f9afdeccef869b8f9ed1b3800246a626a9ff4e34859926800ed17e0cbdec"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00006-of-00008.gguf":
+        (13670914048, "da51b3a9d3f485a54e69f16338f7f1dc21f0032b470116c75c508f1422446848"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00007-of-00008.gguf":
+        (13751645536, "a232c44cfc9fe5555ab5dde1c629120eada854f598a8c26247aac552b68697c2"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00008-of-00008.gguf":
+        (8352778560, "2148d4cf9c7d03c953ec3c95fc28f23cbad13547be4ebfd4ecf4d590d1498cd3"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00001-of-00006.gguf":
+        (539422592, "b963118b880fe3b7413e53b474c1d8d3faefc1ae0d2d6bae7a7c3e9f68217b46"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00002-of-00006.gguf":
+        (28800138432, "0e9027aa7de4817c91b5954039b563484466392e29a6b051b096f9c47a71a1c6"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00003-of-00006.gguf":
+        (16681220224, "95c25e4ada4fa9ce4380683e55fb9f55aa8e411dcca13bec789f3cc106ffd403"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00004-of-00006.gguf":
+        (16984320096, "5458253ef234558243c522c8d5289b923fe28601ec6aca26239de14f03ed1951"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00005-of-00006.gguf":
+        (16662985152, "ae9f3f684493f0107f0aa01dd603844266ee8b9a53bad53475761f2acc31202a"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00006-of-00006.gguf":
+        (15036859296, "bcebb4fecfaaf887c2a763c252ecca17749efe175e6c9c1c45d555c0e68906c0"),
+    # The third size (2026-10-30): IQ3_S-85G, 84.59 GB, 8 shards, in its own folder.  Its file names carry a
+    # stray ".gguf" before the split suffix - "…-IQ3_S-85G.gguf-00001-of-00008.gguf" - which is why the size
+    # entry below spells its own file template.  Its shard 2 is the SAME LFS object as IQ4_NL's
+    # (56a18587…), so the three sizes share one n-gram table file, not merely one tensor - the Q8 sidecar
+    # pairing is the same act on all three.
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00001-of-00008.gguf":
+        (693380992, "8b898216c1b83453ba119dfa5d54523a39d893f17efdc66d46f359fde1d1621c"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00002-of-00008.gguf":
+        (28800138432, "56a185873792b560485ee971ba5c4f9c5558def5e3e70dbf0f8925e9849eb513"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00003-of-00008.gguf":
+        (10800339776, "f48ed21f8ab3ce791f0c4540d18b51916730d1aad24d051dea8214e9ebdb0d63"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00004-of-00008.gguf":
+        (10879505216, "4b480bd8bf838d7cd3eabf45ab7301030da8b26a5ff0f41978ee320cebc80374"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00005-of-00008.gguf":
+        (10949843008, "38ad22083b39712dab15f6e4b6f1e15d70abdf6f82b1ef3ce3ca943703de637e"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00006-of-00008.gguf":
+        (10987969088, "427fddfe7677677d2ed664804c227d6b84404ec5081077828914f6f31db006b2"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00007-of-00008.gguf":
+        (10884261536, "a4e7df6bef6cc65023f7c491a08c1d90b7dd46837a959c47f078f5c4da544559"),
+    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00008-of-00008.gguf":
+        (595779968, "8506cacd6afdfc1b9efb83c35edf735d2cda0664a8f7da4fe6e86cf6353e43ba"),
+}
+
+# The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
+
+
+# huihui-ai's re-quants of their abliterated v2 of the original model (the "huihui" family): the same Unsloth
+# Dynamic sizes, shard counts and file names as the unsloth family, from a different base - theirs has the
+# refusal shaping removed and is quantized against their own imatrix.  Sizes and SHA-256 are the Hub's LFS
+# pointers at the pinned revision, checked against the repository tree 2026-10-19; the sums match the MODELS
+# download figures (93.7 / 111.3 / 158.3 / 169.2 / 188.2 GB).  Same file names, different bytes where the
+# experts differ - UD-Q5_K_XL shard 4 is 49,990,245,824 B / 9ee6bbe4... at unsloth and the same size /
+# d9c78b3c... here - which is exactly why every repository is pinned per file, not by name.  The head shard
+# and the 54 GB n-gram table (the Q5/Q6/Q8 shards 2 and 3) are the family's shared files again, byte-
+# identical across the two repositories.  Their swift-* folders (the Swift 1.5 base under its own names) are not
+# offered.  UD-Q4_K_XL is OFFERED FROM A DIFFERENT FOLDER now: their unsloth-UD-Q4_K_XL-V2/ re-quant of
+# 2026-10-26 (imatrix_micro3 + calibration3, same shard names and sizes, slightly lower PPL - the owner's daily
+# arm runs it).  The three expert sums were re-pinned 2026-10-27 from the Hub's LFS pointers and cross-checked
+# byte-exact against this box's local files (sha256sum, bench/p1/v2_sha256.txt); the shared head shard is
+# unchanged, which is the two-folders-same-base story told honestly.  The older unsloth-UD-Q4_K_XL/ folder is
+# the one not offered now.  The URL law is hf_shard(): one template, the folder_q map for its one exception.
+HUIHUI_SHARDS = {
+    "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf":
+        (10946624, "5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4"),
+    "Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf":
+        (49835229856, "ede87d3bd3e354d43f0e710b2df6791d3479e396847e53adbe2b48be7ba6d663"),
+    "Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf":
+        (43836407744, "f8aa8bd7ba134b3b7fe4fc95b9131fc8f6678ace374a0fa6e632225031665995"),
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf":
+        (10946624, "4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082"),
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf":
+        (49859583136, "ab283aba22daee321944dad65b09180810140fc75502c0791200cf01b85f9c75"),
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf":
+        (49376141504, "2a8d2e69ba47fef6b42c953c07a24b5d4c59c1c2cdc89b2bc17e13e000a62fa0"),
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf":
+        (12087983520, "0d626450754c554235f93653b8f7c874c7c2d35380b9efab5b0852d616b84702"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf":
+        (10946624, "6c537059d79c060aeb9a942f23a2d21a1b56360c8c27b9ab380539fa4c476eb2"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00002-of-00006.gguf":
+        (682434912, "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00003-of-00006.gguf":
+        (54400261312, "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00004-of-00006.gguf":
+        (49990245824, "d9c78b3c1d22e434feddb91bcb32f3641fc830285618a0e534e8757521130bcc"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00005-of-00006.gguf":
+        (49882416192, "ea750364f06cd685634a31619009afb2656f6a62a6d72270e25d4990963e08ad"),
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00006-of-00006.gguf":
+        (3320101792, "8cc8aaa3a3b45fdc04d921caeb4039b73b39c6878fe9d7046b5d4276d0fbc96a"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf":
+        (10946624, "8bdc6bad55b6699f46f60708829932ff4018d7ac9bd309c388534fa31753bdb7"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00002-of-00006.gguf":
+        (682434912, "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00003-of-00006.gguf":
+        (54400261312, "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00004-of-00006.gguf":
+        (49814108512, "6f9826d42d8befc7f31321a13031c57b67efcd27a4e5a113a5ebe5a81f0e44cf"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00005-of-00006.gguf":
+        (49419317344, "5f289eee5f01779d711c06a4028f1820829e9471a5aac866777a959635431895"),
+    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00006-of-00006.gguf":
+        (14838313984, "59a79c43c99f4546912e27f4eb6e23f2c9f09e60401ce59dcfd74e21a28c2db4"),
+    "Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf":
+        (10946624, "2dabcbb53ca537a7947bc7d20414fd464eeaf4d66d43021b5b2556cc87544ad2"),
+    "Qwen3.8-Flash-Next-Q8_0-00002-of-00006.gguf":
+        (682434912, "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"),
+    "Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf":
+        (54400261312, "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"),
+    "Qwen3.8-Flash-Next-Q8_0-00004-of-00006.gguf":
+        (49446841216, "2c2ed17193fec793c9daad5840ab944795546bbf28fe60e29cc822cc0a8d8d45"),
+    "Qwen3.8-Flash-Next-Q8_0-00005-of-00006.gguf":
+        (49668930400, "0c96f6ee54c026c2af5859b9c21d829158369693c3a942d1875609a6cae13e32"),
+    "Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf":
+        (34015618784, "01782b8bf7094a37ea675538189ecbf7d6d698368a7e2a72b286ae99dd37ee7c"),
+}
+# Round 0214: the sets that are new at UNSLOTH_V31_REVISION (UD-IQ1_M, UD-Q2_0, UD-IQ2_XS, UD-Q2_K_XL, UD-IQ3_XXS, UD-Q3_K_XL and the v3.1 UD-IQ4_XS), name -> (bytes,
+# sha256): the Hub's LFS pointers (phaseA-tests/quants0211/unsloth-head-pins.json).  The last shard of each is the n-gram table.  No name is in UNSLOTH_SHARDS,
+# UNSLOTH_IQ4_XS_SHARDS or UNSLOTH_BIG_SHARDS (the v3.1 UD-IQ4_XS has four shards, the pinned one three).
+
+
+PLE_Q8_TREE = {"qwen": "ista", "coder": "ista", "dau": "ista", "daureg": "ista",
+               "unsloth": "unsloth", "huihui": "unsloth",
+               # 2026-10-30: the heretic arm takes the Q8 table too, and MEASUREMENT says why it is valid.  The
+               # n-gram table is ONE trained tensor across these trees: 1 MiB digests at five offsets spanning
+               # all 28,800,138,432 B of it (0, 4e9, 12e9, 24e9, 28.79e9) are equal byte for byte between
+               # huihui's Qwen-based UD-Q4_K_XL-V2 and BOTH of trubisky's Swift-based files.  heretic v2
+               # changes 7 tensors per its card and the table is not among them, and this box verified the
+               # ista tree's shard 2 against its own IQ3_S on 2026-10-23 - so the swift family is eligible on
+               # the same evidence, one step removed, and is left as it is for want of a direct read.
+               # The dev box runs the ista file for both arms (models/IQ3_S/Qwen3.8-Flash-Next-Q8PLETable.gguf,
+               # 54,400,261,312 B), which is the pairing this entry now offers.
+               "heretic": "ista"}   # gyro carries its own; NVFP4 is FP8
+
+
+# DavidAU's Turbo-Brilliance IQ3_S (the {REASON:} reason-mode build; the "dau" family): sizes and SHA-256 are the
+# Hub's LFS pointers, checked 2026-10-17.  His shard 1 descends from SC117's abliterated transplant, not from
+# ISTA's file directly (the owner's credit 2026-10-17, measured the same day): SC117's IQ3_S shard 1 is
+# 55,063,448,064 B / 40f369ec..., his is 55,063,664,928 B / 78706315... - both the original +0.25 GB (SC117's
+# 96-Q8_0 signature), 0.2 MB apart (his template re-bake), different bytes: a derivative build.  SC117's card
+# credits ISTA-DASLab for the quantization and orcarouter for the abliterated tensors the transplant copies.
+# Measured against ISTA's own tree the same day, his shard 2 is the
+# ORIGINAL's file byte for byte (28,800,138,432 bytes, 316b46f3... equal) - shard 2 is not model weights at all:
+# it is the family's shared n-gram PLE table, the same in every GSQ-RCO family (the coder note below has always
+# said so), so his files join the shard-2 sharing the qwen and coder families do (at its site below) - an owner
+# of the original IQ3_S who switches to this family downloads only his first shard, which carries all his weights,
+# his naming and his chat template: the file embeds it (tokenizer.chat_template, 226,745 bytes, carrying all 41
+# reason modes: checked set-equal against this checkout's REASON_MODES 2026-10-17), and setup's tokenizer export
+# (tools/strata_tokenizer.py) writes it out to <pack>/tokenizer/chat_template.jinja, which the server prefers
+# over its shipped one - so the modes' template rides the download; nothing extra is fetched for it.  Owners who
+# want a bigger table can drop in sleepyeldrazi/Qwen3.8-Flash-Next-GSQ-RCO-Q8_0-PLE-GGUF (54,400,261,312 bytes,
+# measured 2026-10-17: exactly this fork's dev box's 00002 since 2026-10-09) in the same slot.  Since 2026-10-23
+# setup offers that swap itself: --ple-q8 (off unless the person asks or an interactive setup is told yes),
+# one shared Q8_0 table per family tree - the PLE_Q8 pins below.
+# The optional Q8_0 n-gram table (the owner's law, 2026-10-23, after the huihui UD-Q4_K_XL install ran the
+# in-file IQ4_NL one at 0.076 row error against BF16 where the Q8_0 measures 0.0053 - Delgon's numbers, and
+# mduca771's PLE_flash_IQ4_NL is byte-identical to the families' own 316b46f3 shard 2, which is what makes
+# the same-tables-at-better-precision claim checkable).  The table is one trained tensor, identical in every
+# quant of a tree (mduca771: the payload equal across unsloth's UD-Q5_K_XL, UD-Q6_K_XL and Q8_0), and Q8_0
+# takes no imatrix, so each tree needs one file shared by all its quants; the trees' files differ only in
+# container metadata, which is why the tree picks the file and its pin.  Sizes and SHA-256 are the Hub's LFS
+# pointers, checked 2026-10-23; the ista tree's equals this fork's dev box's IQ3_S shard 2 byte for byte
+# (its sha256 measured on the box the same morning).
+PLE_Q8 = {   # tree -> (repository, file, bytes, sha256)
+    "ista": ("sleepyeldrazi/Qwen3.8-Flash-Next-GSQ-RCO-Q8_0-PLE-GGUF",
+             "Qwen3.8-Flash-Next-GSQ-RCO-Q8_0-00002-of-00002.gguf", 54400261312,
+             "e60d876283f30879bb6fd7e0ef26cf3e55266ec4c06eea01554b43f1bce2d6de"),
+    "unsloth": ("mduca771/Qwen3.8-Flash-Next-PLE-tables-GGUF", "PLE_flash_Q8.gguf", 54400261408,
+                "84cb63a026bec8d3568b008c2c1876cba48e4ca3062d20203f3010836ecb4179"),
+}
+
 REPO_PINS = {
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF": ISTA_FILES,
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": SWIFT_FILES,
@@ -12294,6 +12548,197 @@ def main() -> int:
             f"(later: {'BENCH.bat' if WIN else './bench.sh'})", ["y", "n"], "n", a.yes) == "y":
         subprocess.call([sys.executable, str(ROOT / "tools" / "strata_bench.py"), "--config", str(cfg_path), "--port", str(port)])
     return start(cfg_path, port)
+
+
+def hf_shard(fam: dict, quant: str) -> str:
+    """One law for a shard's download URL: the family's pinned folder template, or its
+    per-quant folder when the repository keeps that ONE quant elsewhere. Today's only
+    case is huihui-ai's unsloth-UD-Q4_K_XL-V2/ (their 2026-10-26 re-quant: same shard
+    names, same sizes, imatrix_micro3/calibration3 pass, slightly lower PPL - the
+    dev box's daily arm runs it, and its four bytes-exact local hashes re-pinned the
+    table below). A family without folder_q formats its template as always."""
+    return (fam.get("folder_q") or {}).get(quant) or fam["hf"].format(q=quant)
+
+
+def _sha_ok(f: Path, size: int, sha: str) -> bool:
+    """Soft SHA-256 check: exists, right size, right digest. Deliberately NOT verify_sha256 -
+    that one EXITS setup on a mismatch, and the embedder must never exit a Strata install."""
+    if not f.exists() or f.stat().st_size != size:
+        return False
+    h = hashlib.sha256()
+    with open(f, "rb") as fh:
+        for b in iter(lambda: fh.read(16 << 20), b""):
+            h.update(b)
+    return h.hexdigest() == sha
+
+
+def apply_config_args(args: list, extra) -> list:
+    """A family's measured engine defaults, merged into the args a FRESH config gets
+    (FAMILIES[fam]["config_args"]).  A flag the family names is stated ONCE: every occurrence setup wrote is
+    dropped and the family's pair appended, because the sizing, vision and ple-io branches of the install each add
+    their own --ple-io / --prefill / --vram-reserve-mib, and a value stated twice is decided by whichever the
+    engine reads last.  Order is the family's.
+
+    This runs LAST in the arg assembly, and the person's own choices (user_args.capture over SETUP_CHOICE_FLAGS)
+    are applied to the config after it - so a tuned --spec-min-p in an existing file still wins, and only new
+    installs inherit the family's preference.
+    """
+    if not extra:
+        return args
+    it = iter(extra)
+    pairs = [(f, v) for f, v in zip(it, it)]
+    out = list(args)
+    for flag, _value in pairs:
+        while flag in out:
+            i = out.index(flag)
+            if i + 1 < len(out) and not str(out[i + 1]).startswith("--"):
+                del out[i:i + 2]                       # the flag and its value
+            else:
+                del out[i]                             # a boolean flag stands alone
+    for flag, value in pairs:
+        out += [flag, str(value)]
+    return out
+
+
+def get_ple_q8(models_dir: Path, tree: str) -> Path:
+    """The family tree's optional Q8_0 n-gram table (PLE_Q8): one file, in its own name, shared by every
+    quant of the tree on this PC.  A table the box already owns links instead of downloading 54.4 GB twice:
+    the same file under its own name, or - the swap this fork's dev box made by hand on 2026-10-09, and the
+    reason the reuse glob carries a size filter - a done-marked quant shard of exactly the pinned size.
+    A link or a download is hashed against the pin once (verify_sha256 keeps the digest in the finish
+    mark); a size look-alike with different bytes stops setup by name, it never runs as a silent swap."""
+    repo, name, size, sha = PLE_Q8[tree]
+    want = models_dir / name
+    if not (want.exists() and done(want)):
+        reuse = next((p for p in sorted(models_dir.rglob("*.gguf"))
+                      if p != want and done(p) and p.stat().st_size == size and
+                      (p.name == name or p.name.endswith("-00002-of-00002.gguf"))), None)
+        if reuse is not None:
+            try:
+                os.link(reuse, want)
+                mark(want)
+                ok(f"n-gram table: {name} shared with {reuse.parent.name}'s (identical bytes, no download)")
+            except OSError:                            # another filesystem: read the table where it is
+                verify_sha256(reuse, size, sha)
+                ok(f"n-gram table: {reuse.name} where it stands ({reuse.parent})")
+                return reuse
+        else:
+            if want.exists():
+                want.unlink()                          # an interrupted attempt: the download starts fresh
+            if free_gb(models_dir) < size / 1e9 + 2:
+                fail(f"not enough free disk space in {models_dir} for the 54.4 GB Q8_0 n-gram table: "
+                     f"{free_gb(models_dir):.0f} GB free",
+                     "free some disk space, or install without the table (--ple-q8 off)")
+            download(hf(repo) + name, want)
+    verify_sha256(want, size, sha)
+    return want
+
+
+# ---------------------------------------------------------------------------
+# memory-core fork: the memory system ships ON by default (the user's decision, 2026-10-16:
+# "if someone doesn't want the built-in memory system they won't be using our fork to begin
+# with"), so the installer writes the memory block and fetches the embedder the hybrid arm
+# needs. Both are tolerant by design: memory trouble is a warning and a lexical store, never
+# a failed install - the engine and the model are the product, memory rides on top of them.
+
+EMBEDDER_NAME = "bge-small-en-v1.5"
+EMBEDDER_REPO = "BAAI/bge-small-en-v1.5"          # MIT; the same model the development store embeds with
+EMBEDDER_FILES = {                                 # repo path -> local name -> (bytes, sha256), pinned
+    "onnx/model.onnx": ("model.onnx", 133093490,  # from the developer's verified copy (SHA256SUMS,
+                        "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35"),   # 2026-10-14)
+    "tokenizer.json": ("tokenizer.json", 711396,
+                       "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"),
+}
+
+
+def last_memory_block() -> dict | None:
+    """The newest "memory" block among this PC's strata-*.json files, if any (2026-10-23, the owner's fix
+    for "make sure the setup builds the .json with all the correct memory settings"): the memory block is
+    setup's own key (SETUP_KEYS), so a rerun - or a second model installed on a lived-in box - rewrote it
+    from scratch and quietly dropped the person's tuning layer (the store's dir, the embedder's threads,
+    the measured knobs turned ON against the shipped stance: route_shelves and the rest of the LCC block).
+    On a box that never ran the fork's setup this returns None and the generated block is exactly what it
+    always was - the byte-identical default path holds."""
+    for p in sorted(home().glob("strata-*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            m = json.loads(p.read_text(encoding="utf-8-sig")).get("memory")
+        except (OSError, ValueError):
+            continue                                   # unreadable or half-written: the next file's turn
+        if isinstance(m, dict):
+            return m
+    return None
+
+
+def fork_memory_cfg(root: Path, ram: float | None = None, model: str | None = None,
+                    prev: dict | None = None, data: Path | None = None) -> dict:
+    """The "memory" block setup writes: the shape the development store runs, with every budget at a
+    measured value - 96 recall notes under a 48,000-char cap (m4_blockcov: the CHAR cap is what binds
+    long rows, and at 96 notes the everyday block is ~15k chars, so the wider cap costs nothing and
+    recovers the +0.047 lexical coverage the 24k cap was cutting), per-turn fresh recall 12 notes <=
+    24,000 chars, the agentic tool with unlimited rounds, at-rest encryption, the self-growing
+    taxonomy (auto-shelve), hybrid embeddings, and the Clio persona file (soul.md at the repo root,
+    fail-closed: unreadable or over-budget just means no persona). The tier-2 cartridges ride only on
+    a PC with CARTRIDGE_MIN_HEADROOM_GB of RAM free of the model's all-in need, and they need the
+    slot_save_path both writers set beside this block (the server creates the dir 0700 at boot).
+    Knobs measured and shipped OFF stay OFF: floor_cosine (-7.2% coverage), block_min_score (purity
+    flat, evidence down), exposure decay (suppresses the relevant), route_shelves (-0.031) - each is
+    one config key away if a user wants them; `prev` (last_memory_block(): this PC's newest memory
+    block) is where the person's own turning-them-on survives a rerun or a second model - its values
+    merge over this shape, and only the cartridge gate re-decides for the new model's RAM (the
+    2026-10-19 RAM law beats carry-over; an explicit "enabled": false in prev stays false). Opt out
+    of memory entirely with "memory": {"enabled": false}; every other edit tunes rather than
+    disables."""
+    base = Path(data) if data else data_dir(root)         # the one data folder (strata_control.datafolder, 2026-10-23):
+                                                          # remembered --data-dir first, else beside the install
+    out = {"dir": str(base / "memory"), "recall_limit": 96,
+           "max_block_chars": 48000, "per_turn": True, "turn_recall_limit": 12,
+           "turn_block_chars": 24000, "tool_rounds": 0, "encrypt": 1, "tool": True,
+           "auto_shelve": True, "soul": "soul.md",
+           "embedder": {"dir": str(base / "embeddings" / EMBEDDER_NAME),
+                        "threads": 4}}
+    need = (MODELS.get(model) or {}).get("ram_gb")
+    if ram is not None and need is not None and ram - need >= CARTRIDGE_MIN_HEADROOM_GB:
+        out["cartridges"] = {"enabled": True, "class_prefixes": ["USR", "DEC"], "max_chars": 12000}
+    if isinstance(prev, dict):                         # the tuning layer follows the model (2026-10-23)
+        for k, v in prev.items():
+            if k != "cartridges":
+                out[k] = v                             # store dir, budgets, embedder, measured knobs: the person's, kept
+        pc = prev.get("cartridges")
+        if isinstance(pc, dict) and isinstance(out.get("cartridges"), dict):
+            out["cartridges"] = {**out["cartridges"], **pc,        # the person's shelf prefixes and char budget win;
+                                 "enabled": bool(pc.get("enabled", True))}   # an explicit no stays a no; a gate fail drops all
+    return out
+
+
+def fetch_embedder(root: Path, data: Path | None = None) -> bool:
+    """The memory store's ONNX embedder, in the one data folder (the folder is explained once, in
+    strata_control/datafolder.py; with no data folder given, the resolver's default beside the install).
+    Idempotent: files already on disk with the pinned hashes are skipped without asking the server.
+    Network or hash trouble is a warning - the store runs lexical and the server banner says so out
+    loud - so the install never dies here."""
+    dst = (Path(data) if data else data_dir(root)) / "embeddings" / EMBEDDER_NAME
+    host = hf_endpoint()
+    ready = True
+    for rp, (name, size, sha) in EMBEDDER_FILES.items():
+        f = dst / name
+        if _sha_ok(f, size, sha):
+            continue
+        try:
+            download(f"{host}/{EMBEDDER_REPO}/resolve/main/{rp}", f, what=f"memory embedder {name}")
+            if not _sha_ok(f, size, sha):
+                f.unlink(missing_ok=True)
+                raise RuntimeError(f"sha256 mismatch (expected {sha[:16]}...)")
+        except Exception as e:                                    # noqa: BLE001 - tolerant by law
+            warn(f"memory embedder: {name} not fetched ({e}) - memory runs lexical until it arrives")
+            ready = False
+    return ready
+
+
+CARTRIDGE_MIN_HEADROOM_GB = 8.0   # tier-2 cartridges only when this much system RAM stays free of the
+                                  # model's all-in need (the owner's law, 2026-10-19: "IQ3_S with only
+                                  # 32 GB or even 64 GB - do not enable"; IQ3_S needs 62, so a 64 GB
+                                  # box has 2 GB of headroom and gets no cartridges, a 128 GB box has
+                                  # ~66 and does)
 
 
 if __name__ == "__main__":

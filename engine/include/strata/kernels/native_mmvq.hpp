@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>        // native_q8_0_packed_lookup's int8_t (0.2.20): a TU that includes this header alone - q8_gemv_bench.cpp - has no other source for it
 
 namespace strata::kernels {
 

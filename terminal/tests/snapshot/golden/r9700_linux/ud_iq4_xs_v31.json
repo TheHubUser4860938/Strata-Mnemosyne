@@ -74,7 +74,7 @@
      "embedder": {
       "name": "embeddinggemma-2",
       "dir": "/home/eugene/Strata-data/embeddings/embeddinggemma-2",
-      "threads": 6
+      "threads": 7
      },
      "cartridges": {
       "enabled": true,
@@ -86,11 +86,11 @@
       "attach_mode": "anchor",
       "facts": false,
       "files": [
-       "persona/agent.md",
-       "persona/skill.md",
-       "persona/user.md",
-       "persona/always.md",
-       "persona/owner-voice.md"
+       "terminal/persona/agent.md",
+       "terminal/persona/skill.md",
+       "terminal/persona/user.md",
+       "terminal/persona/always.md",
+       "terminal/persona/owner-voice.md"
       ],
       "minted": true
      },
@@ -118,10 +118,10 @@
     },
     "slot_save_path": "<ROOT>/data/sessions",
     "slot_retain": 6,
-    "backend": "hip",
     "env": {
      "STRATA_ROUTE_TAIL_SKIP": "0"
-    }
+    },
+    "backend": "hip"
    },
    "engine": {
     "exe": "<ROOT>/engine/strata",

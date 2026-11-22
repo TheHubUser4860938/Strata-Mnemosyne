@@ -21,7 +21,7 @@
     "vision": "cpu",
     "low_ram": false,
     "resident": false,
-    "ram_budget_gib": 40,
+    "ram_budget_gib": 47,
     "in_budget": true,
     "engine_version": "0.2.12"
    },
@@ -51,7 +51,7 @@
      "--kv-resident",
      "32768",
      "--resident-budget-gib",
-     "39",
+     "46",
      "--vision"
     ],
     "cwd": "<REPO>",
@@ -75,7 +75,7 @@
      "embedder": {
       "name": "embeddinggemma-2",
       "dir": "/home/eugene/Strata-data/embeddings/embeddinggemma-2",
-      "threads": 6
+      "threads": 7
      },
      "cartridges": {
       "enabled": true,
@@ -87,11 +87,11 @@
       "attach_mode": "anchor",
       "facts": false,
       "files": [
-       "persona/agent.md",
-       "persona/skill.md",
-       "persona/user.md",
-       "persona/always.md",
-       "persona/owner-voice.md"
+       "terminal/persona/agent.md",
+       "terminal/persona/skill.md",
+       "terminal/persona/user.md",
+       "terminal/persona/always.md",
+       "terminal/persona/owner-voice.md"
       ],
       "minted": true
      },
@@ -158,7 +158,7 @@
      "--kv-resident",
      "32768",
      "--resident-budget-gib",
-     "39",
+     "46",
      "--vision"
     ],
     "env_set": {
@@ -172,7 +172,7 @@
    },
    "setup_says": [
     "[ok] KV streaming on: the context's KV cache lives in RAM (0.9 GB), more experts fit in VRAM",
-    "[ok] RAM budget: 39 GiB (less the KV cache's RAM)",
+    "[ok] RAM budget: 46 GiB (less the KV cache's RAM)",
     "memory embedder model.onnx:   0.01 / 0.13 GB (6%)",
     "[ok] memory embedder model.onnx downloaded",
     "memory embedder tokenizer.json:   0.00 / 0.00 GB (100%)",
