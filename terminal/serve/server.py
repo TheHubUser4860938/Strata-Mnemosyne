@@ -7185,7 +7185,8 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                               "tool": "search", "arguments": c.arguments, "round": rounds}
                 r = memory_api.tool_result(svc.memory, c.arguments,
                                            (memory_ctx or {}).get("scope") or "default",
-                                           (memory_ctx or {}).get("classes"))
+                                           (memory_ctx or {}).get("classes"),
+                                           semantic=(memory_ctx or {}).get("semantic", True))
                 print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters in "
                       f"{r['ms']} ms", flush=True)
                 results.append(r["text"])
@@ -7599,6 +7600,9 @@ class Cartridges:
             entries = [e for e in os.scandir(self.svc.slot_save_path or "")
                        if e.is_file(follow_symlinks=False)]
             entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
+            # the vault is LISTED to 24, and the page says "24 of N": N was read from vault_total,
+            # which nothing ever assigned, so every page on the box read "of 0" (2026-11-22).
+            self.vault_total = len(entries)
             for e in entries[:24]:
                 nm = e.name.split("_", 1)[0]
                 files.append({"name": e.name, "mb": round(e.stat().st_size / 1048576, 1),
@@ -9584,7 +9588,11 @@ def make_handler(svc: Service):
             self._json(200, {"stats": stats,
                              "memories": svc.memory.list_memories(scope=memory_api.scope_name(scope, "") or None,
                                                                   limit=limit, include_invalid=inv not in ("", "0"),
-                                                                  klass=(prefixes or [None])[0],
+                                                                  klass=",".join(prefixes) if prefixes else None,   # the LIST, not its first: `?q=` passes every
+                                                   # prefix to search, and the walk arm took only
+                                                   # [0], so `?class=USR,POL` answered for USR
+                                                   # alone. list_memories splits on the comma and
+                                                   # applies the one shelf law (shelf_sql).
                                                                   before_id=(qs.get("before_id") or [""])[0] or None,
                                                                   links=(qs.get("links") or [""])[0] not in ("", "0"))})
 
@@ -9958,7 +9966,11 @@ def make_handler(svc: Service):
                     r = {"cart": svc.carts.retire(str(req.get("name") or ""),
                                                   str(req.get("reason") or "retired"))}
                 else:
-                    r = {"carts": svc.carts.carts(str(req.get("name") or ""))}
+                    # the ledger's fat rows carry each cart's SOURCE TEXT (the largest is 189 KB),
+                    # and a harness that polls op=carts paid 7.6 MB for 209 rows. `full` defaults to
+                    # today's shape; {"op":"carts","full":false} asks for the thin rows the card reads.
+                    r = {"carts": svc.carts.carts(str(req.get("name") or ""),
+                                                  full=req.get("full") is not False)}
             elif op == "turn":
                 r = {"id": svc.memory.journal_turn(str(req.get("scope") or "default"), str(req.get("user") or ""),
                                                    str(req.get("assistant") or ""), req.get("model"))}

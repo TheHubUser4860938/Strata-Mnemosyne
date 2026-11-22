@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from curate_loop import WORK_STATE
+from curate_loop import WORK_STATE, is_work_state
 
 SKIP = [  # real work-state rows the store carried and the cleanup retired
     "The store currently contains 2,655 active rows.",
@@ -44,6 +44,10 @@ KEEP = [  # real durable facts - the filter must not eat these
     "The memory system is ON by default in this fork; opt-out is memory.enabled=false.",
     "journal_turn now updates the newest same-user_text row per scope.",
     "The 128 GB RAM upgrade arrives around 2026-10-22.",
+    # The 2026-11-22 pair: a NUMBER that names the rule it bounds is a fact, not a tally. Both
+    # measured refused by the single-arm filter, which is the finding the split answers.
+    "The store's row ceiling is 4,000 characters.",
+    "The harvest drains 2 windows of 60 turns per tick.",
 ]
 
 
@@ -54,7 +58,16 @@ class WorkStateFilter(unittest.TestCase):
 
     def test_durable_facts_pass(self):
         for s in KEEP:
-            self.assertFalse(WORK_STATE.search(s), f"durable fact refused: {s!r}")
+            self.assertFalse(is_work_state(s), f"durable fact refused: {s!r}")
+
+    def test_the_two_arms_are_not_one_law(self):
+        # A TALLY is work-state; the same tally that names the constant it bounds, or carries its
+        # date, is a fact. A NARRATION is work-state dated or not (the 2026-10-16 "was building"
+        # row above is dated and still belongs in the journal).
+        self.assertTrue(is_work_state("The store currently contains 2,655 active rows."))
+        self.assertFalse(is_work_state("The store keeps 35,581 active rows on 86 shelves on 2026-11-09."))
+        self.assertFalse(is_work_state("The harvest drains 2 windows of 60 turns per tick."))
+        self.assertTrue(is_work_state("On 2026-10-16, the assistant was building out a system."))
 
 
 if __name__ == "__main__":

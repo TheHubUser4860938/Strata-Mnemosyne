@@ -241,15 +241,35 @@ def _norm(text):
 # instructed") and dated past events stay facts; only present-continuous state and
 # self-referential bookkeeping are refused. Every string here is a real shape from the census
 # (tools/test_curate_workstate.py keeps both sides honest).
-WORK_STATE = re.compile(
+# THE TWO ARMS ARE NOT ONE LAW (2026-11-22, the optimization pass). The counter arm reports a
+# TALLY ("the store currently contains 2,655 active rows" - true when journaled, a lie by the
+# evening). The narration arm reports a PRESENT-CONTINUOUS state. A tally that names the
+# CONSTANT it bounds is a rule, not a tally: "the store's row ceiling is 4,000 characters" and
+# "the harvest drains 2 windows of 60 turns per tick" outlive the day, and measured 3 of 12
+# durable sentences were being refused. So: the counter arm yields to a date (the store's own
+# doctrine - a dated census is a fact) or to a constant word; the narration arm stands.
+_WS_CONST = re.compile(r"\b(ceiling|limit|cap\b|caps\b|budget|per tick|per pass|per boot|threshold|default)\b", re.I)
+_WS_DATE = re.compile(r"\b20\d\d-\d\d-\d\d\b")
+_WS_COUNTER = re.compile(
     r"\b(store|memory|memories)\b[^.]{0,25}\b\d{2,4}\b"          # counters: "store 381", "memory 2,655 rows"
-    r"|\b\d{2,4}\b[^.]{0,25}\b(rows|active|vectors|pending|turns)\b"
-    r"|commit [0-9a-f]{7,8}|remote head|pushed as commit|head at commit"
+    r"|\b\d{2,4}\b[^.]{0,25}\b(rows|active|vectors|pending|turns)\b", re.I)
+_WS_NARRATE = re.compile(
+    r"commit [0-9a-f]{7,8}|remote head|pushed as commit|head at commit"
     r"|during this session|current conversation|at the moment|right now"
     r"|\b(is|are|was|were)\s+(building|coding|developing|working on|planning|scheduled|preparing)\b"
     r"|\b(plans|planning|going)\s+to\s|\bwill\s+(be\s+)?(build|implement|ship)\w*\b"
-    r"|\barm\s+[abc]\s+(test|run|result|configuration)\b|\bre-record\b|\bqueued behind\b",
-    re.I)
+    r"|\barm\s+[abc]\s+(test|run|result|configuration)\b|\bre-record\b|\bqueued behind\b", re.I)
+WORK_STATE = re.compile(_WS_COUNTER.pattern + "|" + _WS_NARRATE.pattern, re.I)   # the one-name view
+
+
+def is_work_state(fact: str) -> bool:
+    """The filter as the sweep applies it: a narration is always work-state; a tally is, UNLESS the
+    sentence names the constant it bounds ('row ceiling is 4,000 characters', '2 windows of 60
+    turns per tick') or carries a date - a dated census is a fact by the store's own doctrine."""
+    f = fact or ""
+    if _WS_NARRATE.search(f):
+        return True
+    return bool(_WS_COUNTER.search(f)) and not (_WS_CONST.search(f) or _WS_DATE.search(f))
 
 
 # words that never carry a fact's payload, whatever the corpus says - copied from serve/memory.py
@@ -1167,7 +1187,7 @@ def main():
             # the "95% too coarse" claim extracted from this audit's own mid-flight words, all
             # retired by hand the day they were filed. The turn still counts as curated and the
             # review line still shows the candidate - it just does not become durable memory.
-            work_state = cls not in ("UNSCORED", "DONT-STORE") and bool(WORK_STATE.search(c["fact"]))
+            work_state = cls not in ("UNSCORED", "DONT-STORE") and is_work_state(c["fact"])
             if work_state:
                 rec({"kind": "work_state_skip", "turn_id": c["turn_id"], "fact": c["fact"][:90]})
             if cls not in ("UNSCORED", "DONT-STORE") and not a.no_store and not work_state:

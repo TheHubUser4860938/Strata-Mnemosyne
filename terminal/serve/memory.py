@@ -424,7 +424,17 @@ def attach(store_dir: str, **kw):
         import embedded_postgres as _ep
     except ImportError:
         import pixeltable_pgserver as _ep          # type: ignore  # the Windows wheel (ADR-002)
-    srv = _ep.get_server(os.path.join(memory_dir(store_dir), "pgdata"))
+    srv = _ep.get_server(os.path.join(memory_dir(store_dir), "pgdata"),
+                         cleanup_mode=None)     # 2026-11-22: the TOOLS do not own the cluster's life.
+    # get_server's default is cleanup_mode='stop', and _cleanup runs at interpreter exit when the
+    # exiting process is the LAST pid in pgdata/.handle_pids.json - a registry shared across
+    # processes (embedded_postgres/postgres_server.py:203-241). The 2026-11-14 incident is that
+    # mechanism: the 18:21 sweep outlived the 18:41 reboot and its 18:47 exit stopped Postgres
+    # under the running server, whose handle went stale (_heals recovers a socket drop, not a dead
+    # postmaster) - the /memory page answered "Failed to fetch" until the box was rebooted.
+    # Measured cost on a fresh store, both arms (bench/p1/loop_pg_cleanup_mode.py): the next reader
+    # pays 0.18 s after a 'stop' exit against 0.06 s with None, and the incident is the expensive
+    # case of the same rule.
     return psycopg.connect(srv.get_uri(), dbname=store_dbname(store_dir), **kw)
 
 
@@ -611,7 +621,11 @@ def coverage_of(query: str, texts, limit: int = 3) -> tuple[str, float]:
 
 
 def tool_result(mem: "MemoryService", arguments, scope: str = "default",
-                classes: list[str] | None = None) -> dict:
+                classes: list[str] | None = None, semantic: bool = True) -> dict:
+    # `semantic` (2026-11-22): the request's embedder arm, threaded from request_state so a model's
+    # memory_search reads the SAME arm as the block that rode the turn. X-Strata-Memory-Embedder was
+    # honoured by the block and by both HTTP search doors and ignored here, so an arm-C A/B muted
+    # one arm of a request and not the other.
     """Run one memory_search call from the model (C, agentic recall 2026-10-12; the browse verbs
     2026-10-24 per the Browse Day pre-registration). Returns the same dict shape the MCP tool loop
     produces (ok/text/chars/truncated/ms) so run_with_mcp treats both executors alike. One tool,
@@ -653,7 +667,8 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
         out["mode"] = "walk"
         mem.note_tool("walks", not out["rows"])
         return _tool_done(t0, True, json.dumps(out, ensure_ascii=False))
-    hits = mem.search(q, scope=scope, limit=limit, classes=cls, since=since, until=until)
+    hits = mem.search(q, scope=scope, limit=limit, classes=cls, since=since, until=until,
+                      semantic=semantic)
     said: dict[int, object] = {}
     filed: dict[int, object] = {}
     pinned: dict[int, bool] = {}
@@ -693,8 +708,18 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
         why = {r[0]: r[4] for r in got}
         links = mem.links_of(ids)      # bounded direct relations, both directions (see links_of)
     facts = []
+    # THE READING ARM IS NOT A FLOOD (2026-11-22, the optimization pass): the tool arm returns a
+    # DOC row WHOLE by design (the block shows a 1,200-char head; the tool is where the model goes
+    # to read), and a row is up to 3,900 chars - so `q=federalist, limit=20` on the founding shelf
+    # cost 137,520 bytes, about 35k tokens, on a box whose every turn rides the browse arm. The
+    # head is now TWICE the block's (the tool stays the reading arm), and the row says so, so a
+    # model that needs the rest narrows its words instead of paying for twenty passages.
+    cap = 2 * int(mem.block_doc_cap or 0)
     for h in hits:
-        f = {"id": h["id"], "class": h.get("class") or "", "text": h["text"],
+        text, head = h["text"], 0
+        if cap and str(h.get("class") or "").startswith("DOC/") and len(text) > cap:
+            text, head = text[:cap].rsplit(" ", 1)[0] + " …", cap
+        f = {"id": h["id"], "class": h.get("class") or "", "text": text,
              "confidence": h.get("confidence"), "hits": h.get("hits"),
              "when": _stamp(said.get(h["id"])),
              # THE RELEVANCE LINE (2026-10-24, the research-drop's trigger fired: browse-arm
@@ -707,6 +732,9 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
              # drawer lists what is newest, not what matches - position there is order, not
              # evidence, and inventing a score for it would be decoration.
              "rel": h.get("score")}
+        if head:
+            f["head"] = head     # "this is the first N chars of a longer row" - the model narrows
+                                 # its words instead of paying for the whole passage
         # THE OPTIONAL KEYS (2026-10-29): ABSENT when they have nothing to say, so an ordinary row's
         # payload is byte-for-byte what it was before this batch. That is not stinginess for its own
         # sake - the browse result rides the model's context, and P11 measured what injected bytes
@@ -3439,39 +3467,6 @@ class MemoryService:
         return adj
 
     @_heals
-    def _graph_stats(self) -> dict:
-        """The Graph tile: what the graph holds, and whether the arm is casting votes.
-
-        `rows` is the coverage the tile shows as "graphed" — the store's fact rows the graph
-        connects, which is a smaller number than `nodes`: a node is a concept, and one
-        concept links several rows. `running` is liveness-checked (the same law as graphify's
-        `_alive`): progress.json outlives its writer, and a pass killed at 3 a.m. would
-        otherwise keep the tile spinning forever.
-        """
-        d = os.path.join(self.directory, "strata-graphify")
-
-        def _load(name):
-            try:
-                with open(os.path.join(d, name)) as f:
-                    return json.load(f)
-            except (OSError, ValueError):
-                return {}
-
-        state, prog = _load("state.json"), _load("progress.json")
-        running = bool(prog.get("running"))
-        if running and prog.get("pid"):
-            try:
-                os.kill(int(prog["pid"]), 0)
-            except OSError:
-                running = False
-        return {"arm": round(self.graph_weight, 3), "seeds": self.graph_seeds,
-                "nodes": state.get("nodes", 0), "edges": state.get("edges", 0),
-                "communities": state.get("communities", 0),
-                "facts": state.get("facts", 0), "rows": len(self._graph()),
-                "built": state.get("built"),
-                "pending": len(_load("pending.json").get("ids") or []),
-                "running": running}
-
     def _sim_neighbours(self, ids) -> dict:
         """Top-k vector neighbours of the rows ASKED FOR — the SIMILARITY LAYER of the graph
         arm (2026-11-17, the owner's embedding-pass ask; seed-local 2026-11-18). The LLM graph
@@ -4151,9 +4146,9 @@ class MemoryService:
                              ({"on": True, "loaded": False, "error": self.embedder_error}
                               if self.embedder_error else {"on": False})),
                 "db": self.db_path,
-                "graph": self._graph_stats(),
                 "graph": self.graph_stats(),   # the store's own knowledge graph (strata.graphify):
-                                               # node/community counts and whether a pass is running
+                                               # node/community counts, the arm's weight, and whether
+                                               # a live pass is running (one reader, 2026-11-22)
                 "dir": self.directory}    # the store dir - what tools/attach() needs (the tools'
                                           # native twin of the old stats.db file path)
         # Close the read transaction the trailing version()/foreign_vectors()/meta reads opened
@@ -4185,11 +4180,25 @@ class MemoryService:
 
         state, prog = _load("state.json"), _load("progress.json")
         pend = _load("pending.json").get("ids") or []
+        # ONE reader of these files (2026-11-22). stats() used to set "graph" twice - `_graph_stats()`
+        # then `graph_stats()` - so the first dict was discarded and the tile lost the three fields
+        # only it carried, including the liveness check that exists because progress.json outlives
+        # its writer: a pass killed at 3 a.m. kept the tile spinning. Those fields live here now.
+        running = bool(prog.get("running"))
+        if running and prog.get("pid"):
+            try:
+                os.kill(int(prog["pid"]), 0)      # the same law as graphify's `_alive`
+            except OSError:
+                running = False
         return {"status": "ready" if state else "empty",
+                "arm": round(self.graph_weight, 3), "seeds": self.graph_seeds,
                 "nodes": state.get("nodes", 0), "edges": state.get("edges", 0),
                 "communities": state.get("communities", 0), "facts": state.get("facts", 0),
+                # `rows`: the fact rows the graph CONNECTS - smaller than `nodes`, because a node is
+                # a concept and one concept links several rows. The tile's "graphed" number.
+                "rows": len(self._graph()),
                 "built": state.get("built"), "pending": len(pend),
-                "running": bool(prog.get("running")),
+                "running": running,
                 "chunks": (f"{prog.get('done')}/{prog.get('total')}"
                            if prog.get("running") else state.get("chunks"))}
 
@@ -4516,7 +4525,11 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
             notice = MEMORY_OFF_NOTICE
         return (prepend_head(messages, notice) if notice else messages), {
             "scope": scope, "user": last_user, "model": req.get("model"),
-            "query": last_user, "classes": classes, "hits": []}
+            "query": last_user, "classes": classes, "hits": [],
+            # the request's embedder arm, so the TOOL the model calls searches the same arm the
+            # block rode (2026-11-22): an arm-C A/B muted the passive arm only, and a "lexical vs
+            # fused" panel result mixed arms inside one request.
+            "semantic": semantic}
     # THE SIDECAR HOOK (P6.1's flag): the block is the one memory read EVERY chat turn makes, so it
     # is the read that decides whether one arm or two carry the store. The Rust port is off the
     # working line (2026-11-07: Python searches in 0.36-0.47 s against 35k rows, the sidecar took
@@ -4541,7 +4554,7 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
         if not last_user.strip():
             return messages, None
         return messages, {"scope": scope, "user": last_user, "model": req.get("model"), "query": query,
-                          "classes": classes, "hits": []}
+                          "classes": classes, "hits": [], "semantic": semantic}
     tblock, thits = None, None
     if rust is not None:
         got = rust.call("POST", "/block", dict(wire, turn=True,
@@ -4554,7 +4567,8 @@ def request_state(mem: "MemoryService | None", messages: list[dict], headers, re
         tblock, thits = mem.turn_block_for(messages, scope, [h["id"] for h in hits], classes,
                                            semantic=semantic)
     ctx = {"scope": scope, "user": last_user, "model": req.get("model"), "query": query,
-           "classes": classes, "hits": [h["id"] for h in hits] + [h["id"] for h in thits]}
+           "classes": classes, "hits": [h["id"] for h in hits] + [h["id"] for h in thits],
+           "semantic": semantic}
     # The Qwen chat template allows ONE system message, at index 0 ("System message must be at the
     # beginning"), and openai_to_messages has already folded "developer" into system and turned late
     # systems into user - so the block cannot ride as a second system turn. When the client sent its
