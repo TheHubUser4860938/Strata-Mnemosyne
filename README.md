@@ -191,17 +191,17 @@ Download the file for your computer, open it, and press install on the model it 
 
 **Windows 10 / 11**
 
-[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.15-windows-x64-setup.exe)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.18-windows-x64-setup.exe)
 
 <sub>Files: `Strata-0.2.18-windows-x64-setup.exe` · `Strata-0.2.18-linux-x86_64.AppImage` · `Strata-0.2.18-macos-arm64.dmg`</sub>
 
 **Linux**
 
-[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.15-linux-x86_64.AppImage)
+[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.18-linux-x86_64.AppImage)
 
 **Mac** (Apple Silicon, macOS 15 or newer)
 
-[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.15-macos-arm64.dmg)
+[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.18-macos-arm64.dmg)
 
 The app picks the right engine for your graphics card by itself. All files are on the [releases page](https://github.com/Niko1221/Strata/releases/latest).
 
