@@ -194,8 +194,16 @@ class RealTemplate(unittest.TestCase):
         self.assertIn("reasoning_effort:max", out)
 
     def test_a_bad_effort_is_a_template_error(self):
-        with self.assertRaises(Exception):
-            self.tpl.render([{"role": "user", "content": "x"}], reasoning_effort="medium")
+        # Upstream's test expects the template to reject an effort it does not name. Its own code clamps
+        # first: ChatTemplate.render routes every kwarg through hy4_dialect.template_kwargs ->
+        # normalize_effort (serve/hy4_dialect.py:170), which folds anything outside the three into
+        # "high". Measured on upstream's v0.2.18 tree in a clean worktree: 13 tests, this one fails,
+        # "Exception not raised". So the contract on this fork is the clamp, and the scar is named:
+        # the test asserts what the code does and files what the test's name says.
+        for effort in ("medium", "low", "banana"):
+            with self.subTest(effort=effort):
+                out = self.tpl.render([{"role": "user", "content": "x"}], reasoning_effort=effort)
+                self.assertIn(f"<{HY}reasoning_mode:opensource{HY}>reasoning_effort:high", out)
 
 
 if __name__ == "__main__":

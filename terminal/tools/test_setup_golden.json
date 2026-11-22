@@ -862,7 +862,7 @@
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
-    "threads": 8
+    "threads": 6
    }
   }
  },
@@ -940,7 +940,7 @@
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
-    "threads": 8
+    "threads": 6
    }
   }
  },
@@ -1019,7 +1019,7 @@
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     "model": "<T>/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
-    "threads": 8
+    "threads": 6
    }
   }
  },
@@ -1097,7 +1097,7 @@
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
-    "threads": 8
+    "threads": 6
    }
   }
  },
@@ -1173,7 +1173,7 @@
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     "model": "<T>/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
-    "threads": 8
+    "threads": 6
    }
   }
  },
@@ -1626,7 +1626,7 @@
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
-    "threads": 8
+    "threads": 6
    }
   }
  },
@@ -1704,7 +1704,7 @@
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
-    "threads": 8
+    "threads": 6
    }
   }
  },
@@ -1782,7 +1782,7 @@
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     "model": "<T>/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
-    "threads": 8
+    "threads": 6
    }
   }
  },
@@ -1860,7 +1860,7 @@
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
-    "threads": 8
+    "threads": 6
    }
   }
  },
@@ -1939,7 +1939,7 @@
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     "model": "<T>/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
-    "threads": 8
+    "threads": 6
    }
   }
  }
