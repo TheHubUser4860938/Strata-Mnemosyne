@@ -27,7 +27,13 @@ class UpdateWithBuild(unittest.TestCase):
         self.eng = Path(tmp.name) / "engine"
         self.eng.mkdir()
         (self.eng / setup.EXE).write_bytes(b"x")
-        version = ".".join(str(x) for x in setup.MIN_ENGINE)
+        # "a CURRENT ready-made engine", on this fork: the fork's 2026-10-31 patch keeps a ready-made
+        # engine only when it is at least as new as this checkout (setup.py: `ver >= MIN_ENGINE and
+        # ver >= src_ver`), because upstream's package does not carry the fork's engine work (the CART
+        # fence's --conversation-cache-cart-slots, the BF16 projection form). MIN_ENGINE alone was the
+        # 0.2.16 reading; at 0.2.18 the source builds 0.1.64 and a 0.1.55-era engine is "older", so the
+        # fixture names the version this checkout builds.
+        version = setup.source_version()
         (self.eng / "BUILD.json").write_text(json.dumps({"version": version, "backend": "cuda", "source": "prebuilt", "archs": ["89"]}), encoding="utf-8")
         for name, value in (("engine_dir", self.eng), ("update_engine_gpu", dict(GPU))):
             patch = mock.patch.object(setup, name, return_value=value)
