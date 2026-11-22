@@ -736,12 +736,15 @@
     "--kv",
     "int8",
     "--resident-budget-gib",
-    "8",
+    "15",
     "--vision",
     "--vram-reserve-mib",
     "700"
    ],
    "cwd": "<T>",
+   "env": {
+    "STRATA_ROUTE_TAIL_SKIP": "0"
+   },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpu_roles": {
@@ -775,6 +778,7 @@
    "slot_retain": 6,
    "slot_save_path": "<T>/data/sessions",
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
+   "ui_budget_work_gib": 8,
    "vision": {
     "exe": "<T>/engine/<VEXE>",
     "gpu": true,
@@ -1122,10 +1126,13 @@
     "--kv",
     "int8",
     "--resident-budget-gib",
-    "23",
+    "31",
     "--vision"
    ],
    "cwd": "<T>",
+   "env": {
+    "STRATA_ROUTE_TAIL_SKIP": "0"
+   },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpu_roles": {
@@ -1159,6 +1166,7 @@
    "slot_retain": 6,
    "slot_save_path": "<T>/data/sessions",
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
+   "ui_budget_work_gib": 24,
    "vision": {
     "exe": "<T>/engine/<VEXE>",
     "gpu": false,
@@ -1488,12 +1496,15 @@
     "--kv-resident",
     "32768",
     "--resident-budget-gib",
-    "38",
+    "45",
     "--vision",
     "--vram-reserve-mib",
     "700"
    ],
    "cwd": "<T>",
+   "env": {
+    "STRATA_ROUTE_TAIL_SKIP": "0"
+   },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1531,6 +1542,7 @@
    "slot_retain": 6,
    "slot_save_path": "<T>/data/sessions",
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
+   "ui_budget_work_gib": 38,
    "vision": {
     "exe": "<T>/engine/<VEXE>",
     "gpu": true,
