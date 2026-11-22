@@ -13,19 +13,21 @@ itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one s
 harness ever has to re-send history. The server remembers, and it remembers the same way no
 matter which app is knocking.
 
-This fork is based on upstream Strata 0.2.19 — app and Terminal at 0.2.19, Control at 0.1.65,
-and every engine package at 0.1.65, including the new `strata-inkling` shape engine and the updated
-Linux SYCL `strata-hy4` package. Upstream's own headline list for this round — **native Thinking
-Machines Lab Inkling 2 Mini support** (a 26.4B-parameter looped Mixture-of-Experts, 3.4B active per
-token, up to 1M context, text and image inputs, OpenAI-compatible tool calling) on Windows, Linux,
-macOS Apple Silicon, Intel Arc and NVIDIA DGX Spark; **three Strata Quantization packs from a 4 GiB
-card** (SQ-10, SQ-15, and a bit-exact lossless SQ-20 at `100.00%` top-1 agreement, `0.00000` KL);
-**15 ready-made `strata-inkling` packages** fetched on demand; built-in `W=4` on-GPU Markov beam-tree
-DSpark speculative decoding; direct `safetensors` and `.gguf` loading with dual-GPU expert
-parallelism; and **faster Qwen3.8-Flash-Next out of the box on NVIDIA Blackwell, RTX 40, RTX 30 and
-AMD RDNA3**, with no environment variables to set. The feed is sequence 131 (shared) and 127
-(`linux-aarch64`). Every number in this paragraph is upstream's, from the
-[0.2.19 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.19).
+This fork is based on upstream Strata 0.2.20 — app and Terminal at 0.2.20, Control at 0.1.66,
+and every engine family (`strata-engine`, `strata-inkling`, `strata-hy4`) at 0.1.66. Upstream's own
+headline list for this round — **one 4-tier GPU + RAM + CPU + SSD Mixture-of-Experts planner across
+Qwen3.8-Flash-Next, HY-4 Flash and Inkling 2 Mini**, with automatic `--kv-offload auto` host K/V for
+32K+ context, hot experts in the VRAM that is left (cleanly down to `0` VRAM experts on 4 GiB and
+6 GiB cards), cold experts in pageable RAM with SIMD CPU workers, SSD Engram streaming, and
+multi-GPU `--layer-split auto` on 2..4 cards; **lossless direct `GGUF_RAW` Inkling 2 Mini execution**
+of the Unsloth packs with the fixed DSpark drafter (**`9.5x`, `6.5 -> 61.9 tok/s` on 12 GB GPUs**);
+Unsloth-quant and NVFP4 speedups on CUDA sm_60..sm_121 (**`1.04x–1.67x` MoE decode, up to `2.58x`
+down projection**), Apple Metal (to `6,769 tok/s` prefill on M5 Max), AMD HIP RDNA2-4 and Intel Arc
+SYCL (**`1.37x–2.73x`**); **`5.59x–5.95x` faster `quantize_q8_K`** and `+16.5%..+54.8%` faster
+cold-expert CPU dots; and **HY-4 Flash `4.27x`** in hybrid RAM+VRAM (`30 -> 128.25 tok/s` on an
+RTX 5090 with 128 GB) plus the Alder/Raptor Lake `0xC000001D` crash fix. The feed is sequence 132
+(shared) and 128 (`linux-aarch64`). Every number in this paragraph is upstream's, from the
+[0.2.20 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.20).
 This fork adds the memory system and the steering described below.
 
 <p align="center">
@@ -64,19 +66,19 @@ cd Strata
 
 | Provider | Choices |
 | --- | --- |
-| **ISTA-DASLab · recommended** | Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S. [Coder: IQ1\_M](docs/MODELS.md#coder) for coding. |
-| **Unsloth** | UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0 |
+| **ISTA-DASLab · recommended** | [Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF). [Coder: IQ1\_M](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF) ([guide](docs/MODELS.md#coder)) for coding. |
+| **Unsloth** | [UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) |
 | **Gyro · agentionai** | [Gyro-S, Gyro-M](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF). Lower memory use but slower. |
-| **Other options** | [Swift 1.5](docs/MODELS.md#swift-15), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
+| **Other options** | [Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF) ([guide](docs/MODELS.md#swift-15)), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
 
-[Compare sizes, memory needs and compatibility](docs/MODELS.md).
+[Compare sizes, memory needs and compatibility](docs/MODELS.md#qwen38-flash-next).
 
 </details>
 
 <details>
 <summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
-**Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. These are the currently documented packs for this model.
+**Unsloth:** [UD-Q4\_K\_XL, UD-Q6\_K\_XL, Q8\_0](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF). These are the currently documented packs for this model.
 
 [Model guide and compatibility](docs/QWEN36.md).
 
@@ -115,9 +117,32 @@ strata launch --family deepseek41 --model ist-das-2.00bpw --plan
 
 <img width="1265" height="542" alt="image" src="https://github.com/user-attachments/assets/238eb87c-45f2-4be4-8cb8-91d922efbda8" />
 
+<summary><b>Tencent Hy4-Flash</b></summary>
+
+| Provider | Choices |
+| --- | --- |
+| **Strata native (`.strata`)** | [SQ-64, SQ-96, SQ-128](https://huggingface.co/strata-engine/Hy4-Flash-Strata) (with Engram shard on SSD, DFly2 drafter, and vision; base model: [tencent/Hy4-flash](https://huggingface.co/tencent/Hy4-flash)). |
+
+[Compare sizes, memory needs and compatibility](docs/MODELS.md#tencent-hy4-flash).
+
+</details>
+
+<details>
+<summary><b>Inkling-2-Mini</b></summary>
+
+| Provider | Choices |
+| --- | --- |
+| **Strata native (`.strata`)** | [SQ-10, SQ-15, SQ-20](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) (with built-in DSpark drafter and vision; base model: [thinkingmachines/Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini)). |
+| **Unsloth GGUF** | [UD-IQ1\_S through UD-Q8\_K\_XL](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) (with companion DSpark drafter and vision). |
+| **SC117 abliterated (`.strata`)** | [SQ-10, SQ-15, SQ-20 abliterated](https://huggingface.co/SC117/Inkling-2-Mini-abliterated-Strata) - the same three quantizations with the thinking channel ablated (KL 0.0136, +0.7% perplexity). |
+
+[Compare sizes, memory needs and compatibility](docs/MODELS.md#inkling-2-mini).
+
+</details>
+
 <a id="the-other-sizes"></a>
 
-Version 0.2.19 (app and Terminal 0.2.19, Control 0.1.65, engine packages 0.1.65)
+Version 0.2.20 (app and Terminal 0.2.20, Control 0.1.66, engine packages 0.1.66)
 
 Two things arrive switched **on**, and everything else stays byte-identical to upstream Strata:
 
@@ -192,17 +217,17 @@ Download the file for your computer, open it, and press install on the model it 
 
 **Windows 10 / 11**
 
-[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.19-windows-x64-setup.exe)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.20-windows-x64-setup.exe)
 
-<sub>Files: `Strata-0.2.19-windows-x64-setup.exe` · `Strata-0.2.19-linux-x86_64.AppImage` · `Strata-0.2.19-macos-arm64.dmg`</sub>
+<sub>Files: `Strata-0.2.20-windows-x64-setup.exe` · `Strata-0.2.20-linux-x86_64.AppImage` · `Strata-0.2.20-macos-arm64.dmg`</sub>
 
 **Linux**
 
-[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.19-linux-x86_64.AppImage)
+[![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.20-linux-x86_64.AppImage)
 
 **Mac** (Apple Silicon, macOS 15 or newer)
 
-[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.19-macos-arm64.dmg)
+[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.20-macos-arm64.dmg)
 
 The app picks the right engine for your graphics card by itself. All files are on the [releases page](https://github.com/Niko1221/Strata/releases/latest).
 

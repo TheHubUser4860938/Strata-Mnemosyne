@@ -34,7 +34,7 @@ def engine() -> StrataEngine:
     e.batch, e.multi, e.silence_s, e.can_stop = 0, 0, 0, True
     e.lines = queue.Queue()
     e.proc = FakeProc()
-    e.sampling_keys = lambda sampling, split=False, hy4=False, inkling=False: ""   # the server asks for the split engine's, the Hy4 parser's and the Inkling parser's narrower key sets
+    e.sampling_keys = lambda sampling, **kw: ""   # the server asks for each engine's narrower key set (split=, hy4=, inkling=, and whatever lands next)
     e.exit_code = lambda: 1
     return e
 

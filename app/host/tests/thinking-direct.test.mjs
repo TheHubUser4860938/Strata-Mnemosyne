@@ -10,7 +10,8 @@ const store = readFileSync(new URL('../src/lib/store.ts', import.meta.url), 'utf
 
 test('Off is sent as none and Max as high for Qwen (Max as max for Hy4-Flash); the budget only with thinking on', () => {
   assert.match(host, /\(\{off:'none',max:'high'\}\[String\(thinking\)\.toLowerCase\(\)\]/);
-  assert.match(host, /\(\{off:'none',minimal:'high',low:'high',medium:'high',high:'high',max:'max'\}\[String\(thinking\)\.toLowerCase\(\)\]\?\?'high'\)/, '0.2.19 gave the Hy4-Flash map a minimal word and a ??high clamp: the pin names the map as the code writes it');
+  assert.match(host, /\(\{off:'none',(?:minimal:'high',)?low:'high',medium:'high',high:'high',max:'max'\}\[String\(thinking\)\.toLowerCase\(\)\]/);
+  assert.match(host, /max:'max'\}\[String\(thinking\)\.toLowerCase\(\)\]\?\?'high'/, 'an effort the map does not name folds to high: the clamp is the contract, mirrored on the serve side (tools/test_hy4_tokenizer.py)');
   assert.match(host, /thinkingBudget>0&&String\(thinking\)\.toLowerCase\(\)!=='off'\?\{reasoning_budget_tokens:thinkingBudget\}/);
 });
 

@@ -419,8 +419,7 @@ class TerminalAndApp(Base):
         # qwen36); 0.2.19 adds Inkling-2-Mini after it. Both families live in setup's own tables, not in
         # FAMILIES - and qwen36 is the fork's OWN_PATH entry, so the general form covers it.
         ref = fresh_setup("setup_reference")
-        self.assertEqual([r["family"] for r in rows],
-                         [*ref.FAMILIES, *ref.OWN_PATH_FAMILIES, *ref.HY4_FAMILIES, *ref.INKLING_FAMILIES])
+        self.assertEqual([r["family"] for r in rows], [*ref.FAMILIES, *ref.OWN_PATH_FAMILIES, *ref.HY4_FAMILIES, *ref.INKLING_FAMILIES])
         self.assertTrue(all("available" not in r for r in rows))
 
     def test_a_cached_list_adds_its_sizes_after_the_built_in_ones_and_hides_what_cannot_run(self):

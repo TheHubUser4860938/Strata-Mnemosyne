@@ -4,7 +4,7 @@
     START-HERE.bat  (Windows)   /   ./setup.sh  (Linux)      - they install Python if needed and run this file
 
 The first time it asks four questions - which model (the original Qwen3.8-Flash-Next or the Swift 1.5 fine-tune),
-which size, how much context, and whether the model should also read images - then installs everything and starts the model on http://127.0.0.1:8005 (OpenAI- and Anthropic-compatible
+which size, how much context, and whether the model should also read images - then installs everything and starts the model on http://127.0.0.1:8080 (OpenAI- and Anthropic-compatible
 API; a small page there shows that it runs). Every later start skips straight to running the model: nothing that
 is already downloaded, installed or prepared is done again.
 
@@ -23,7 +23,7 @@ What the first run does (each step is skipped when it is already done):
 Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --rope-scaling none|linear|yarn
 (--rope-scale F; past the trained 262144 the setup adds yarn and the factor is the final context over 262144,
 at least 1 - an explicit --rope-scaling none is refused for such a context), --vision yes|no|gpu|cpu, --port
-8005, --yes (recommended
+8080, --yes (recommended
 answers, no questions), --setup (install another model / change settings instead of starting), --no-start,
 --host 0.0.0.0 --api-key KEY (reach it over IPv4; use --host :: for IPv6), --experimental-speed-projection on|off
 (EXPERIMENTAL, off by default),
@@ -78,7 +78,6 @@ from strata_control import engine_component
 from strata_control import sysinfo
 from strata_control.discovery import in_trash
 from strata_control import user_args
-from strata_control.datafolder import data_dir      # the one data folder: remembered --data-dir first, else beside the install (2026-10-23)
 
 ROOT = Path(__file__).resolve().parent
 
@@ -121,14 +120,6 @@ HF_REVISIONS = {
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",                  # 2026-10-12
     "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": "1ada08422e404aca51ab9df665f089f34c419c6b",           # 2026-10-13
-    "DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF":
-        "509dfb275d360bdd49e2308238a8393d53d87610",                                                  # 2026-10-17
-    "DavidAU/Qwen3.8-Flash-Next-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF":
-        "ad1ee77df30e5ff9c25af86ac3475ca91dcd12d1",                                                  # 2026-10-17
-    "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF": "411f1f7349c9711e6f75aa8d20e1612eb3a4d55d",  # 2026-10-19
-    "sleepyeldrazi/Qwen3.8-Flash-Next-GSQ-RCO-Q8_0-PLE-GGUF": "11bbd8e8dad2c24c449418d6ef18043ff041f548",   # 2026-10-23
-    "mduca771/Qwen3.8-Flash-Next-PLE-tables-GGUF": "0fbc3613dfc05f818592a030036995c3a725b6dd",              # 2026-10-23
-    "trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer": "85b9099926081907d7ef33f567e410ec056d16b8",  # 2026-10-30
 }
 
 
@@ -144,16 +135,6 @@ def hf_endpoint() -> str:
 def hf(repo: str) -> str:
     """The download folder of a Hugging Face repository at its pinned revision."""
     return f"{hf_endpoint()}/{repo}/resolve/{HF_REVISIONS[repo]}/"
-
-
-def hf_shard(fam: dict, quant: str) -> str:
-    """One law for a shard's download URL: the family's pinned folder template, or its
-    per-quant folder when the repository keeps that ONE quant elsewhere. Today's only
-    case is huihui-ai's unsloth-UD-Q4_K_XL-V2/ (their 2026-10-26 re-quant: same shard
-    names, same sizes, imatrix_micro3/calibration3 pass, slightly lower PPL - the
-    dev box's daily arm runs it, and its four bytes-exact local hashes re-pinned the
-    table below). A family without folder_q formats its template as always."""
-    return (fam.get("folder_q") or {}).get(quant) or fam["hf"].format(q=quant)
 
 
 def hf_unpinned(url: str) -> str:
@@ -320,12 +301,7 @@ ENGINE12_DIR = "engine-cuda12"
 MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.60: engine changes since v0.2.13.1 (git log 628f74955..HEAD); v0.1.59: engine changes since v0.2.12 (git log 146df3c46..HEAD); v0.1.58: engine rounds 0215-0217 (tuned drafters, the file-tier re-check, prefill and Q5_0 fixes; git log c3b3f5035..HEAD); v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
 KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
-PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "pillow", "psutil",
-               "psycopg", "embedded-postgres"]   # the memory store's driver and server (ADR-002; the
-#                                               # pinned file carries the [binary] extra and the per-OS
-#                                               # marker - this fallback list is bare names by contract)
-#                                               # (v0.2.0 moved cmake/ninja to BUILD_PACKAGES; the fork's
-#                                               # two lines ride the trimmed upstream list)
+PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "pillow", "psutil"]
 REQUIREMENTS = ROOT / "requirements.txt"   # the same packages and their dependencies, pinned (#214)
 BUILD_PACKAGES = ["cmake", "ninja"]
 BUILD_REQUIREMENTS = ROOT / "requirements-build.txt"
@@ -479,75 +455,6 @@ CODER_FILES = {
         (907543008, "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0"),
 }
 
-# DavidAU's Turbo-Brilliance IQ3_S (the {REASON:} reason-mode build; the "dau" family): sizes and SHA-256 are the
-# Hub's LFS pointers, checked 2026-10-17.  His shard 1 descends from SC117's abliterated transplant, not from
-# ISTA's file directly (the owner's credit 2026-10-17, measured the same day): SC117's IQ3_S shard 1 is
-# 55,063,448,064 B / 40f369ec..., his is 55,063,664,928 B / 78706315... - both the original +0.25 GB (SC117's
-# 96-Q8_0 signature), 0.2 MB apart (his template re-bake), different bytes: a derivative build.  SC117's card
-# credits ISTA-DASLab for the quantization and orcarouter for the abliterated tensors the transplant copies.
-# Measured against ISTA's own tree the same day, his shard 2 is the
-# ORIGINAL's file byte for byte (28,800,138,432 bytes, 316b46f3... equal) - shard 2 is not model weights at all:
-# it is the family's shared n-gram PLE table, the same in every GSQ-RCO family (the coder note below has always
-# said so), so his files join the shard-2 sharing the qwen and coder families do (at its site below) - an owner
-# of the original IQ3_S who switches to this family downloads only his first shard, which carries all his weights,
-# his naming and his chat template: the file embeds it (tokenizer.chat_template, 226,745 bytes, carrying all 41
-# reason modes: checked set-equal against this checkout's REASON_MODES 2026-10-17), and setup's tokenizer export
-# (tools/strata_tokenizer.py) writes it out to <pack>/tokenizer/chat_template.jinja, which the server prefers
-# over its shipped one - so the modes' template rides the download; nothing extra is fetched for it.  Owners who
-# want a bigger table can drop in sleepyeldrazi/Qwen3.8-Flash-Next-GSQ-RCO-Q8_0-PLE-GGUF (54,400,261,312 bytes,
-# measured 2026-10-17: exactly this fork's dev box's 00002 since 2026-10-09) in the same slot.  Since 2026-10-23
-# setup offers that swap itself: --ple-q8 (off unless the person asks or an interactive setup is told yes),
-# one shared Q8_0 table per family tree - the PLE_Q8 pins below.
-# The optional Q8_0 n-gram table (the owner's law, 2026-10-23, after the huihui UD-Q4_K_XL install ran the
-# in-file IQ4_NL one at 0.076 row error against BF16 where the Q8_0 measures 0.0053 - Delgon's numbers, and
-# mduca771's PLE_flash_IQ4_NL is byte-identical to the families' own 316b46f3 shard 2, which is what makes
-# the same-tables-at-better-precision claim checkable).  The table is one trained tensor, identical in every
-# quant of a tree (mduca771: the payload equal across unsloth's UD-Q5_K_XL, UD-Q6_K_XL and Q8_0), and Q8_0
-# takes no imatrix, so each tree needs one file shared by all its quants; the trees' files differ only in
-# container metadata, which is why the tree picks the file and its pin.  Sizes and SHA-256 are the Hub's LFS
-# pointers, checked 2026-10-23; the ista tree's equals this fork's dev box's IQ3_S shard 2 byte for byte
-# (its sha256 measured on the box the same morning).
-PLE_Q8 = {   # tree -> (repository, file, bytes, sha256)
-    "ista": ("sleepyeldrazi/Qwen3.8-Flash-Next-GSQ-RCO-Q8_0-PLE-GGUF",
-             "Qwen3.8-Flash-Next-GSQ-RCO-Q8_0-00002-of-00002.gguf", 54400261312,
-             "e60d876283f30879bb6fd7e0ef26cf3e55266ec4c06eea01554b43f1bce2d6de"),
-    "unsloth": ("mduca771/Qwen3.8-Flash-Next-PLE-tables-GGUF", "PLE_flash_Q8.gguf", 54400261408,
-                "84cb63a026bec8d3568b008c2c1876cba48e4ca3062d20203f3010836ecb4179"),
-}
-PLE_Q8_TREE = {"qwen": "ista", "coder": "ista", "dau": "ista", "daureg": "ista",
-               "unsloth": "unsloth", "huihui": "unsloth",
-               # 2026-10-30: the heretic arm takes the Q8 table too, and MEASUREMENT says why it is valid.  The
-               # n-gram table is ONE trained tensor across these trees: 1 MiB digests at five offsets spanning
-               # all 28,800,138,432 B of it (0, 4e9, 12e9, 24e9, 28.79e9) are equal byte for byte between
-               # huihui's Qwen-based UD-Q4_K_XL-V2 and BOTH of trubisky's Swift-based files.  heretic v2
-               # changes 7 tensors per its card and the table is not among them, and this box verified the
-               # ista tree's shard 2 against its own IQ3_S on 2026-10-23 - so the swift family is eligible on
-               # the same evidence, one step removed, and is left as it is for want of a direct read.
-               # The dev box runs the ista file for both arms (models/IQ3_S/Qwen3.8-Flash-Next-Q8PLETable.gguf,
-               # 54,400,261,312 B), which is the pairing this entry now offers.
-               "heretic": "ista"}   # gyro carries its own; NVFP4 is FP8
-DAU_IQ3_S_SHARDS = {
-    "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf":
-        (55063664928, "78706315c2fe912777c006b4ae18be1024c9f4353bd25d33b8a306c9c55f9e34"),
-    "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf":
-        (28800138432, "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"),
-}
-# DavidAU's REGULAR (non-abliterated) Turbo-Brilliance re-quant of the same original IQ3_S (the repo the owner
-# pointed at 2026-10-17 evening): same file series, same reason-mode system per his card (27 reasoning + 27
-# instruct + 9 xhigh modes, the pairing guide, and example generations in the pkd/house/business/neo voices).
-# His shard 2 is the family's shared n-gram PLE table again - 28,800,138,432 bytes, sha 316b46f3... byte-
-# identical to the abliterated family's and the original's - so an owner switching between the two DAU families
-# downloads only the first shard (54,817,741,024 bytes, the regular weights; the abliterated shard 1 is
-# 55,063,664,928 - different bytes, same size class). Sizes and SHA-256 are the Hub's LFS pointers, checked
-# 2026-10-17.  The reason-mode flavor is content-based (the server reads the template the tokenizer export
-# writes from his file: reason_mods + {REASON} present = dau dialect, absent = the feature stays off with a
-# banner that says so) - the regular card documents the modes, and the server decides by bytes, not by trust.
-DAUREG_IQ3_S_SHARDS = {
-    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf":
-        (54817741024, "8a14ab07ca7b54619e6b250cd1d83f97f79ab7eef3caf8ee9e6543bc9ac6a193"),
-    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf":
-        (28800138432, "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"),
-}
 # Round 0214: Unsloth re-published the repository on 2026-11-04 (commit d9620119, "Dynamic v3.1").  The files of UD-Q4_K_XL, UD-IQ4_XS (three shards),
 # UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 stay at the commit in HF_REVISIONS (38bb39ee, pinned since 0.1.31); the sets that are new there (UNSLOTH_V31_SHARDS) name this
 # commit in their MODELS entry ("revision"), so a repository has more than one revision and the pin of a file is found by the commit its URL names (file_pin).
@@ -565,10 +472,8 @@ MODELS = {
     "IQ3_XXS": {"about": "3-bit i-quant, better quality, slower (more CPU work per token)", "download_gb": 75.8,
                 "ram_gb": 60, "arena_gb": 42.9},
     # matches the full BF16 model on the published benchmarks; Swift 1.5 got an IQ3_S tier of its own (#1651)
-    # (the "dau" family is this same size - DavidAU's re-quant of the original IQ3_S - so it shares the key)
     "IQ3_S": {"about": "3.5-bit i-quant, the best quality (matches the full model), the slowest; needs a 64 GB PC "
-                       "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3,
-              "families": ("qwen", "swift", "dau", "daureg")},
+                       "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3},
     # the Coder release: 256 of the 512 experts kept (the ones code, tools and vision use), IQ2_S-IQ4_XS like IQ3_S
     "IQ1_M": {"about": "the Coder's only size: half the experts, stored like IQ3_S (3.5 bits)", "download_gb": 58.4,
               "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
@@ -578,7 +483,7 @@ MODELS = {
     # Images: the vision path has no restriction for this pack (the same base model and image encoder), so setup asks
     "UD-IQ4_XS": {"about": "~4-bit i-quant (Unsloth Dynamic), between IQ3_S and UD-Q4_K_XL in quality; on a PC with "
                            "less than ~80 GB of RAM part of its experts are read from the SSD",
-                  "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth", "huihui"), "budget": True,
+                  "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth",), "budget": True,
                   "shards": 3, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00003.gguf", "engine": (0, 1, 38),
                   "vision": True},
     # Unsloth's 4-bit file (docs/UNSLOTH_Q4.md); experimental until MODEL-UPDATE Phase 2.  Its 77 GB of experts stay in
@@ -586,56 +491,25 @@ MODELS = {
     # (--resident-budget-gib, chosen below) and reads the rest from the GGUF on the SSD.  It runs on AMD too (R9700:
     # the quality yardstick and the decode/prompt numbers in docs/QUANTS.md), so it is no longer NVIDIA-only (#429).
     "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic): K-quant experts, between UD-IQ4_XS and UD-Q5_K_XL in quality",
-                   "download_gb": 111.3, "ram_gb": 48, "arena_gb": 77.0, "families": ("unsloth", "huihui"), "budget": True,
+                   "download_gb": 111.3, "ram_gb": 48, "arena_gb": 77.0, "families": ("unsloth",), "budget": True,
                    # #967 / MODEL-UPDATE: images run end to end with this file (CUDA: RTX A4000, GPU encoder; HIP:
                    # R9700, CPU encoder; the test picture's text and shapes as the IQ3_XXS pack answers them)
                    "vision": True},
-    # The heretic family's two sizes (HERETIC_SHARDS above; the download and arena figures are MEASURED from the
-    # GGUF headers, not read off the card).  Both are the same n-gram table and the same attention mass, so the
-    # 14.2 GB between them is experts and nothing else: IQ4_NL holds 74.61 GB of them, IQ4_XS-plus 60.54.
-    # "ram_gb" is the all-in-RAM need as the other budget sizes state it, and 48 is the same floor the family's
-    # UD-Q4_K_XL asks for - 2.4 GB less model, the same regime.  Neither has been packed or run here yet.
-    "IQ4_NL": {"about": "4-bit i-quant (trubisky's energy-stepped recipe): IQ3_S/IQ4_XS experts through the "
-                        "middle, Q5_K with Q8_0 downs over the last twelve layers; the better of the two heretic "
-                        "sizes and 2.4 GB less model than huihui's UD-Q4_K_XL",
-               "download_gb": 108.9, "ram_gb": 48, "arena_gb": 74.6, "families": ("heretic",), "budget": True,
-               "shards": 8, "file": "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-{q}-0000{i}-of-00008.gguf",
-               "vision": True},
-    "IQ4_XS-plus": {"about": "about 4-bit (Unsloth's UD-IQ4_XS recipe plus KL-guided step-ups on the six hottest "
-                             "expert groups): 94.7 GB and 60.5 GB of experts - the heretic size that fits a 64 GB "
-                             "PC's RAM budget; its LM head is Q6_K where every other size here uses Q8_0",
-                    "download_gb": 94.7, "ram_gb": 48, "arena_gb": 60.5, "families": ("heretic",), "budget": True,
-                    "shards": 6, "file": "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-{q}-0000{i}-of-00006.gguf",
-                    "vision": True},
-    # The leanest of the three (measured 2026-10-30 from the headers, the same method that reproduces huihui's
-    # published 77.0 GB as 77.02): 84.59 GB of file, 50.31 GB of it experts.  Its head and middle run IQ2_XXS
-    # gate/up with Q2_0 downs - the exact layout the fused i-quant prompt path lists first - at 0.668 GB/layer,
-    # with Q5_K spikes at layers 15/20/23/35 (1.389), and the last twelve layers are Q5_K gate/up with Q5_1 downs
-    # (Q8_0 at 47).  Worth naming: the card's "mid-network spikes at 15/20/23/30" describes THIS file's shape
-    # better than IQ4_NL's, whose spikes measured at 23 and 30 (15 and 20 are ordinary there) - so the card's
-    # prose was written against the 85 GB recipe, and a reader of IQ4_NL should not expect that exact ladder.
-    "IQ3_S-85G": {"about": "about 3.5-bit (the heretic's leanest set): IQ2_XXS gate/up with Q2_0 downs through the "
-                            "head and middle, Q5_K spikes at 15/20/23/35, Q5_K gate/up with Q5_1/Q8_0 downs over the "
-                            "last twelve layers; 24 GB less model than IQ4_NL and every expert inside a 64 GB PC",
-                  "download_gb": 84.6, "ram_gb": 48, "arena_gb": 50.3, "families": ("heretic",), "budget": True,
-                  "shards": 8,
-                  "file": "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-{q}.gguf-0000{i}-of-00008.gguf",
-                  "vision": True},
     # MODEL-UPDATE: Unsloth's larger files (docs/QUANTS.md).  The same GGUF-in-place mode: every expert in RAM where it
     # fits with UNSLOTH_RESIDENT_BESIDE_GB more (unsloth_budget), else a RAM budget of them and the rest read from the
     # SSD while it answers - so "ram_gb" is the all-in-RAM need, and below it setup asks first (default no).  Their
     # shards 2 (the head) and 3 (the 54 GB Q8_0 PLE table) are the same bytes in all three files.  UD-Q5_K_XL and
     # UD-Q6_K_XL need the Q6_K expert kernels every engine has from MODEL-UPDATE Phase 1 on (Q5: layer 2's gate/up).
     "UD-Q5_K_XL": {"about": "5-bit (Unsloth Dynamic): Q5_K experts with Q8_0 downs, close to Q8_0 in quality",
-                   "download_gb": 158.3, "ram_gb": 108, "arena_gb": 98.4, "families": ("unsloth", "huihui"), "budget": True,
+                   "download_gb": 158.3, "ram_gb": 108, "arena_gb": 98.4, "families": ("unsloth",), "budget": True,
                    "shards": 6, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00006.gguf", "engine": (0, 1, 44),
                    "vision": True},
     "UD-Q6_K_XL": {"about": "6-bit (Unsloth Dynamic): Q6_K experts with Q8_0 downs",
-                   "download_gb": 169.2, "ram_gb": 118, "arena_gb": 109.2, "families": ("unsloth", "huihui"), "budget": True,
+                   "download_gb": 169.2, "ram_gb": 118, "arena_gb": 109.2, "families": ("unsloth",), "budget": True,
                    "shards": 6, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00006.gguf", "engine": (0, 1, 44),
                    "vision": True},
     "Q8_0": {"about": "8-bit, the reference quality (every expert Q8_0); for a 192 GB PC",
-             "download_gb": 188.2, "ram_gb": 136, "arena_gb": 128.3, "families": ("unsloth", "huihui"), "budget": True,
+             "download_gb": 188.2, "ram_gb": 136, "arena_gb": 128.3, "families": ("unsloth",), "budget": True,
              "shards": 6, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00006.gguf", "engine": (0, 1, 38),
              "vision": True},
     # Round 0214: Unsloth's v3.1 sets (revision UNSLOTH_V31_REVISION, pins UNSLOTH_V31_SHARDS): i-quant / Q2_0 experts, the last shard is the n-gram table
@@ -764,73 +638,6 @@ UNSLOTH_BIG_SHARDS = {
     "Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf":
         (34015618784, "538a93bca918064983409a41187ad4c68640f9aced6f29564da8f551bf86d7a5"),
 }
-# huihui-ai's re-quants of their abliterated v2 of the original model (the "huihui" family): the same Unsloth
-# Dynamic sizes, shard counts and file names as the unsloth family, from a different base - theirs has the
-# refusal shaping removed and is quantized against their own imatrix.  Sizes and SHA-256 are the Hub's LFS
-# pointers at the pinned revision, checked against the repository tree 2026-10-19; the sums match the MODELS
-# download figures (93.7 / 111.3 / 158.3 / 169.2 / 188.2 GB).  Same file names, different bytes where the
-# experts differ - UD-Q5_K_XL shard 4 is 49,990,245,824 B / 9ee6bbe4... at unsloth and the same size /
-# d9c78b3c... here - which is exactly why every repository is pinned per file, not by name.  The head shard
-# and the 54 GB n-gram table (the Q5/Q6/Q8 shards 2 and 3) are the family's shared files again, byte-
-# identical across the two repositories.  Their swift-* folders (the Swift 1.5 base under its own names) are not
-# offered.  UD-Q4_K_XL is OFFERED FROM A DIFFERENT FOLDER now: their unsloth-UD-Q4_K_XL-V2/ re-quant of
-# 2026-10-26 (imatrix_micro3 + calibration3, same shard names and sizes, slightly lower PPL - the owner's daily
-# arm runs it).  The three expert sums were re-pinned 2026-10-27 from the Hub's LFS pointers and cross-checked
-# byte-exact against this box's local files (sha256sum, bench/p1/v2_sha256.txt); the shared head shard is
-# unchanged, which is the two-folders-same-base story told honestly.  The older unsloth-UD-Q4_K_XL/ folder is
-# the one not offered now.  The URL law is hf_shard(): one template, the folder_q map for its one exception.
-HUIHUI_SHARDS = {
-    "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf":
-        (10946624, "5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4"),
-    "Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf":
-        (49835229856, "ede87d3bd3e354d43f0e710b2df6791d3479e396847e53adbe2b48be7ba6d663"),
-    "Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf":
-        (43836407744, "f8aa8bd7ba134b3b7fe4fc95b9131fc8f6678ace374a0fa6e632225031665995"),
-    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf":
-        (10946624, "4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082"),
-    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf":
-        (49859583136, "ab283aba22daee321944dad65b09180810140fc75502c0791200cf01b85f9c75"),
-    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf":
-        (49376141504, "2a8d2e69ba47fef6b42c953c07a24b5d4c59c1c2cdc89b2bc17e13e000a62fa0"),
-    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf":
-        (12087983520, "0d626450754c554235f93653b8f7c874c7c2d35380b9efab5b0852d616b84702"),
-    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf":
-        (10946624, "6c537059d79c060aeb9a942f23a2d21a1b56360c8c27b9ab380539fa4c476eb2"),
-    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00002-of-00006.gguf":
-        (682434912, "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"),
-    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00003-of-00006.gguf":
-        (54400261312, "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"),
-    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00004-of-00006.gguf":
-        (49990245824, "d9c78b3c1d22e434feddb91bcb32f3641fc830285618a0e534e8757521130bcc"),
-    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00005-of-00006.gguf":
-        (49882416192, "ea750364f06cd685634a31619009afb2656f6a62a6d72270e25d4990963e08ad"),
-    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00006-of-00006.gguf":
-        (3320101792, "8cc8aaa3a3b45fdc04d921caeb4039b73b39c6878fe9d7046b5d4276d0fbc96a"),
-    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf":
-        (10946624, "8bdc6bad55b6699f46f60708829932ff4018d7ac9bd309c388534fa31753bdb7"),
-    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00002-of-00006.gguf":
-        (682434912, "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"),
-    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00003-of-00006.gguf":
-        (54400261312, "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"),
-    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00004-of-00006.gguf":
-        (49814108512, "6f9826d42d8befc7f31321a13031c57b67efcd27a4e5a113a5ebe5a81f0e44cf"),
-    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00005-of-00006.gguf":
-        (49419317344, "5f289eee5f01779d711c06a4028f1820829e9471a5aac866777a959635431895"),
-    "Qwen3.8-Flash-Next-UD-Q6_K_XL-00006-of-00006.gguf":
-        (14838313984, "59a79c43c99f4546912e27f4eb6e23f2c9f09e60401ce59dcfd74e21a28c2db4"),
-    "Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf":
-        (10946624, "2dabcbb53ca537a7947bc7d20414fd464eeaf4d66d43021b5b2556cc87544ad2"),
-    "Qwen3.8-Flash-Next-Q8_0-00002-of-00006.gguf":
-        (682434912, "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"),
-    "Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf":
-        (54400261312, "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"),
-    "Qwen3.8-Flash-Next-Q8_0-00004-of-00006.gguf":
-        (49446841216, "2c2ed17193fec793c9daad5840ab944795546bbf28fe60e29cc822cc0a8d8d45"),
-    "Qwen3.8-Flash-Next-Q8_0-00005-of-00006.gguf":
-        (49668930400, "0c96f6ee54c026c2af5859b9c21d829158369693c3a942d1875609a6cae13e32"),
-    "Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf":
-        (34015618784, "01782b8bf7094a37ea675538189ecbf7d6d698368a7e2a72b286ae99dd37ee7c"),
-}
 # Round 0214: the sets that are new at UNSLOTH_V31_REVISION (UD-IQ1_M, UD-Q2_0, UD-IQ2_XS, UD-Q2_K_XL, UD-IQ3_XXS, UD-Q3_K_XL and the v3.1 UD-IQ4_XS), name -> (bytes,
 # sha256): the Hub's LFS pointers (phaseA-tests/quants0211/unsloth-head-pins.json).  The last shard of each is the n-gram table.  No name is in UNSLOTH_SHARDS,
 # UNSLOTH_IQ4_XS_SHARDS or UNSLOTH_BIG_SHARDS (the v3.1 UD-IQ4_XS has four shards, the pinned one three).
@@ -912,71 +719,6 @@ UNSLOTH_MIN_RAM_GB = 48         # the RAM-budget mode below which setup says an 
 # 204800 (200K) sits between 128K and 256K: it is inside the trained 262144, so it needs no rope scaling and
 # costs ~2.8 GB of 8-bit KV with IQ3_S (vs ~3.6 GB at 256K) - a middle step for PCs that cannot hold 256K.
 CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
-# trubisky's quants of jeffpeng3's heretic v2 of ukisai's Swift 1.5 (the "heretic" family): two sizes in one
-# repository, the IQ4_NL set at the root and the IQ4_XS-plus set under IQ4_XS/.  Sizes and SHA-256 are the Hub's
-# LFS pointers at the pinned revision, read 2026-10-30.  Note the two shard-2 files: they are the SAME
-# 28,800,138,432 B n-gram table (IQ4_NL in both) with DIFFERENT sums, and the table bytes are identical -
-# 1 MiB digests at five offsets spanning the whole tensor match - so what differs is the container metadata
-# around it (the imatrix name the file records, and nothing in the weights).  Which is exactly why every file
-# here is pinned by sum, not by name or size: a sum can move with the values untouched, and a name can stay
-# with the values moved.
-# MEASURED from the GGUF headers the same day (per-tensor sizes read off the tensor-info offsets; the method
-# reproduces this file's own 77.0 GB experts figure for huihui's UD-Q4_K_XL as 77.02): the IQ4_NL set is
-# 108.89 GB with 74.61 GB of experts, the IQ4_XS-plus set is 94.70 GB with 60.54 GB.  Both carry the same
-# 28.80 GB table, the same ~2.9 GB of attention (all Q8_0) and ~1.2 GB of dense side, so the entire quality
-# difference between the two sizes sits in the experts, as their bpw says it should.
-HERETIC_SHARDS = {
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00001-of-00008.gguf":
-        (3208309664, "9344341eab2c2d9d59c8a4a9533c8cfc515547675d7a139d17957968a3019c5b"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00002-of-00008.gguf":
-        (28800138432, "56a185873792b560485ee971ba5c4f9c5558def5e3e70dbf0f8925e9849eb513"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00003-of-00008.gguf":
-        (13700060352, "e6c22d9c0a22e39fb25decc81d8862667d8184907c623b182d9e2771ebfb9e03"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00004-of-00008.gguf":
-        (13766580576, "a8e29ba699751bf05250824b7075aee2383048b39290ab55fb50c677925a1a37"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00005-of-00008.gguf":
-        (13643236928, "afa6f9afdeccef869b8f9ed1b3800246a626a9ff4e34859926800ed17e0cbdec"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00006-of-00008.gguf":
-        (13670914048, "da51b3a9d3f485a54e69f16338f7f1dc21f0032b470116c75c508f1422446848"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00007-of-00008.gguf":
-        (13751645536, "a232c44cfc9fe5555ab5dde1c629120eada854f598a8c26247aac552b68697c2"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_NL-00008-of-00008.gguf":
-        (8352778560, "2148d4cf9c7d03c953ec3c95fc28f23cbad13547be4ebfd4ecf4d590d1498cd3"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00001-of-00006.gguf":
-        (539422592, "b963118b880fe3b7413e53b474c1d8d3faefc1ae0d2d6bae7a7c3e9f68217b46"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00002-of-00006.gguf":
-        (28800138432, "0e9027aa7de4817c91b5954039b563484466392e29a6b051b096f9c47a71a1c6"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00003-of-00006.gguf":
-        (16681220224, "95c25e4ada4fa9ce4380683e55fb9f55aa8e411dcca13bec789f3cc106ffd403"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00004-of-00006.gguf":
-        (16984320096, "5458253ef234558243c522c8d5289b923fe28601ec6aca26239de14f03ed1951"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00005-of-00006.gguf":
-        (16662985152, "ae9f3f684493f0107f0aa01dd603844266ee8b9a53bad53475761f2acc31202a"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ4_XS-plus-00006-of-00006.gguf":
-        (15036859296, "bcebb4fecfaaf887c2a763c252ecca17749efe175e6c9c1c45d555c0e68906c0"),
-    # The third size (2026-10-30): IQ3_S-85G, 84.59 GB, 8 shards, in its own folder.  Its file names carry a
-    # stray ".gguf" before the split suffix - "…-IQ3_S-85G.gguf-00001-of-00008.gguf" - which is why the size
-    # entry below spells its own file template.  Its shard 2 is the SAME LFS object as IQ4_NL's
-    # (56a18587…), so the three sizes share one n-gram table file, not merely one tensor - the Q8 sidecar
-    # pairing is the same act on all three.
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00001-of-00008.gguf":
-        (693380992, "8b898216c1b83453ba119dfa5d54523a39d893f17efdc66d46f359fde1d1621c"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00002-of-00008.gguf":
-        (28800138432, "56a185873792b560485ee971ba5c4f9c5558def5e3e70dbf0f8925e9849eb513"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00003-of-00008.gguf":
-        (10800339776, "f48ed21f8ab3ce791f0c4540d18b51916730d1aad24d051dea8214e9ebdb0d63"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00004-of-00008.gguf":
-        (10879505216, "4b480bd8bf838d7cd3eabf45ab7301030da8b26a5ff0f41978ee320cebc80374"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00005-of-00008.gguf":
-        (10949843008, "38ad22083b39712dab15f6e4b6f1e15d70abdf6f82b1ef3ce3ca943703de637e"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00006-of-00008.gguf":
-        (10987969088, "427fddfe7677677d2ed664804c227d6b84404ec5081077828914f6f31db006b2"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00007-of-00008.gguf":
-        (10884261536, "a4e7df6bef6cc65023f7c491a08c1d90b7dd46837a959c47f078f5c4da544559"),
-    "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-IQ3_S-85G.gguf-00008-of-00008.gguf":
-        (595779968, "8506cacd6afdfc1b9efb83c35edf735d2cda0664a8f7da4fe6e86cf6353e43ba"),
-}
-
 # The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
 FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "by": "Qwen; GSQ-RCO quants by ISTA-DASLab",
@@ -1001,41 +743,6 @@ FAMILIES = {
               "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF"),
               "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-coder",
               "profile": "expert-profile-coder.bin"},
-    # DavidAU's abliterated Turbo-Brilliance build (DAU_IQ3_S_SHARDS above), on SC117's abliterated GSQ-RCO
-    # build (HF SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF: ISTA-DASLab's quant with orcarouter's
-    # abliterated tensors transplanted in) - the owner's credit, 2026-10-17, and the shard-1 sizes agree:
-    # his 55,063,664,928 B and SC117's 55,063,448,064 B are both the original +0.25 GB, that transplant's
-    # 96-Q8_0 signature; the bytes differ, so his file is a derivative of SC117's, not SC117's file itself.
-    # The {REASON:} reason-mode model.  His 41 modes answer through the chat template embedded in his file - the tokenizer export
-    # writes it into the pack and the server prefers that over its shipped one - and the server keeps the modes
-    # switchable from its own side too (GET|POST /reason, docs/MEMORY_CORE.md); a stock template REFUSES a mode
-    # name in the render context (measured), which is why that feature follows this template and nothing else.
-    "dau": {"title": "Turbo-Brilliance (abliterated)", "by": "DavidAU's reason-mode build on SC117's abliterated GSQ-RCO quant",
-            "about": "the {REASON:} model: answers to 41 reason modes, switchable by the user in a chat or from the "
-                     "server side; abliterated; same size and speed as IQ3_S",
-            "hf": hf("DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF"),
-            "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-0000{i}-of-00002.gguf", "tag": "dau-",
-            "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
-            "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-tb",
-            "sha256": DAU_IQ3_S_SHARDS,
-            "license": "Apache-2.0 (DavidAU's release) on Qwen3.8-Flash-Next, Qwen Community License 1.0: "
-                       "https://huggingface.co/DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF"},
-    # the regular (non-abliterated) Turbo-Brilliance (DAUREG_IQ3_S_SHARDS above): the same reason-mode model
-    # without the refusal-shaping removal - the owner pointed at this repository 2026-10-17 evening.  The
-    # reason modes ride the chat template embedded in his file (his card documents the 27+27+9 mode system and
-    # the pairing guide; the server's flavor check is content-based, so if the template ever lacked the grammar
-    # the feature would stay off with a banner saying so - the same measured refusal law as every stock file).
-    "daureg": {"title": "Turbo-Brilliance (regular)",
-               "by": "DavidAU's reason-mode re-quant of the original IQ3_S, without the abliteration",
-               "about": "the {REASON:} model in its regular dress: the same reason modes, the same size and "
-                        "speed as IQ3_S; the abliterated family is the one with the refusal shaping removed",
-               "hf": hf("DavidAU/Qwen3.8-Flash-Next-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF"),
-               "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-0000{i}-of-00002.gguf", "tag": "daureg-",
-               "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
-               "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-tb-regular",
-               "sha256": DAUREG_IQ3_S_SHARDS,
-               "license": "Apache-2.0 (DavidAU's release) on Qwen3.8-Flash-Next, Qwen Community License 1.0: "
-                          "https://huggingface.co/DavidAU/Qwen3.8-Flash-Next-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF"},
     # Unsloth's UD-IQ4_XS (three shards, #621), UD-Q4_K_XL (four), UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 (six) of the original
     # model (docs/QUANTS.md): regular choices since f-quants; the shard count and "vision" are per model (MODELS)
     "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "by": "Unsloth's 1- to 8-bit quantizations",
@@ -1048,84 +755,6 @@ FAMILIES = {
                 "vision": True, "pack_args": ["--compat-bf16"],
                 "sha256": {**UNSLOTH_V31_SHARDS, **UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS, **UNSLOTH_BIG_SHARDS},
                 "sha256_alt": {n: (pin,) for n, pin in UNSLOTH_Q4_V31_SHARDS.items()}},
-    # huihui-ai's re-quants of their abliterated v2 of the original model (HUIHUI_SHARDS above): the unsloth
-    # family's sizes and file names, their own bytes and base - the refusal shaping removed, so it answers
-    # plainly where the original declines.  A stock chat template: the {REASON:} reason modes do not ride it
-    # (the server's flavor check is content-based, measured 2026-10-17 - it says so with a banner), which is
-    # the honest trade for the higher-fidelity voice; the memory system and the picture reader work as usual.
-    # Their own mmproj is byte-identical to ISTA's (the pinned shared file), so the vision reader comes from
-    # ISTA's repository like the dau, unsloth and gyro families' does.
-    "huihui": {"title": "Qwen3.8-Flash-Next (Huihui)",
-               "by": "huihui-ai's re-quants of their abliterated v2 model",
-               "about": "UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 (94 to 188 GB downloads): the "
-                        "Unsloth Dynamic sizes of the abliterated model - it answers plainly where the original "
-                        "declines; the reason modes do not ride it (stock template)",
-               "hf": hf("huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF") + "unsloth-{q}/",
-               "folder_q": {"UD-Q4_K_XL": hf("huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF")
-                            + "unsloth-UD-Q4_K_XL-V2/"},   # the 2026-10-26 re-quant (see the table note)
-               "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00004.gguf", "shards": 4, "tag": "huihui-",
-               "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
-               "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-abliterated",
-               "vision": True, "pack_args": ["--compat-bf16"],
-               "sha256": HUIHUI_SHARDS,
-               "license": "Qwen Community License 1.0 (Qwen3.8-Flash-Next's; huihui-ai's quantization of their "
-                          "abliterated release): https://huggingface.co/huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF"},
-    # Swift 1.5 with jeffpeng3's heretic v2 ablation, requantized by trubisky against a fused imatrix (HERETIC_SHARDS
-    # above carries what was measured).  The chain: ukisai's Swift 1.5 post-train (its own card: GPQA 89.80 to 89.60
-    # at xhigh for 55.8% fewer mean thinking tokens, LiveCodeBench +1.99, Terminal-Bench +2.02, IFBench -3.07), then
-    # heretic v2 (his card: 7 tensors changed - eight rank-1 edits on the attention writers of layers 30-37; GPQA
-    # 83.84 against upstream 84.75 at low effort, mean KL 0.0269, 0 refusals in 136 held-out prompts where his v1
-    # lost 9.1 points of GPQA and blew up the thinking length).  Those are HIS numbers on HIS harness, not this
-    # box's; what this box measured is in HERETIC_SHARDS' note: 108.89 GB, 74.61 GB of experts.
-    # PACKED AND RUNNING on this box since 2026-10-30 (pack packs/heretic-iq4_nl, arm run-heretic-iq4_nl.sh).
-    # The expert mix (IQ3_S/IQ4_XS gate-up with IQ4_NL downs through the middle, Q5_K gate-up with Q8_0 downs over
-    # the last twelve layers) did land inside the formats the fused i-quant prompt path and the K-quant MMQ library
-    # cover, and the 24 F16 indexer projections went through --compat-bf16 as expected.  The tensor the release
-    # notes warn about cost real work: blk.0.attn_gate is BF16 (uncompressed, 2 bytes a value where the Unsloth
-    # file uses Q8_0 at ~1.01) and the engine had no kernel for a dense projection the pack keeps unquantized -
-    # filed upstream as Niko1221/Strata#4741 with the patch inline.
-    # MEASURED HERE, same box, same instrument (bench/p1/prefill_ab.py, 267k-token cold reads; the noise floor is
-    # 2.5%): prefill 204.3 us/token against huihui's 226.4 - the heretic is ~10% faster per prompt token, once
-    # its config says --prefill auto:32768, and a bare `--prefill auto` clamps to 8192 and costs 1.81x.  Decode is
-    # level: 85.6 against 85.2 tok/s at 150-260k with IDENTICAL 78.2% MTP acceptance, and +5.2% at 260k+
-    # (87.2 against 82.9, acceptance 80.3 against 77.8).  So the tail-heavy bit map costs nothing at runtime here.
-    # ONE gap, not two: the repository ships no mmproj, so the vision reader comes from the swift family's
-    # pinned Swift mmproj (heretic v2's card says the vision tower is unchanged, and the local file is the same
-    # bytes the swift family verified).  The n-gram table gap is CLOSED and was mine: the table is one trained
-    # tensor across these trees (see PLE_Q8_TREE - identical bytes measured), so the Q8_0 sidecar applies to this
-    # family and the arm runs it.  Its GGUF metadata's chat template does carry the reasoning_effort branches that
-    # huihui's stock template lacks, so the {REASON:} modes ride it; the server's content-based flavor check
-    # decides that at boot and says so in its banner.
-    "heretic": {"title": "Swift 1.5 Heretic v2",
-                "by": "trubisky's quants of jeffpeng3's heretic v2 of UkisAI's Swift 1.5",
-                "about": "IQ4_NL or IQ4_XS-plus: the reasoning-efficient Swift 1.5 base with the refusals ablated "
-                         "(it answers plainly and thinks far shorter than the original), its bits allocated by "
-                         "measured activation energy toward coding, tool use and long system prompts",
-                "hf": hf("trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer"),
-                "folder_q": {"IQ4_XS-plus": hf("trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer")
-                             + "IQ4_XS/",
-                             "IQ3_S-85G": hf("trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer")
-                             + "IQ3_S-85G/"},
-                # A fresh install's engine defaults, measured on this class of box (CUDA desktop, big RAM) - the
-                # shape both of the dev box's arms serve with.  A person's own choices (SETUP_CHOICE_FLAGS, captured
-                # from the config being rewritten) are applied after these, so they win over the family's preference.
-                # The RAM- and CPU-sized knobs stay with setup's own sizing: --conversation-cache-mib 15000,
-                # --pool-workers 7 and --vram-reserve-mib 900 are this box's numbers, not a law for a 64 GB PC.
-                "config_args": ["--prefill", "auto:32768",       # auto's 8,192 chunk measured 1.81x slower (2026-10-30)
-                                "--spec-min-p", "0.70",           # a SETUP_CHOICE_FLAG, so the person's own value wins
-                                "--ple-io", "direct",             # the engine's default: the 54 GB table stays out of RAM
-                                "--pcie-frac", "0.35",            # measured non-monotone, minimum here (0.25 -> 7.4%, 0.45 -> 7.5%)
-                                "--adapt-async", "1", "--adapt-every", "1", "--adapt-swaps", "160",
-                                "--adapt-decay", "0.97"],         # the async tier, self-measuring
-                "file": "Swift-1.5-Qwen3.8-Flash-Next-Heretic-V2-{q}-0000{i}-of-00008.gguf",
-                "shards": 8, "tag": "heretic-",
-                "mmproj_hf": hf("ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
-                "mmproj": "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
-                "name": "swift-1.5-flash-next-heretic",
-                "vision": True, "pack_args": ["--compat-bf16"], "sha256": HERETIC_SHARDS,
-                "license": "Swift Open License 1.0 (UkisAI's contribution, free under US$1M gross annual revenue) "
-                           "and Qwen Community License 1.0: "
-                           "https://huggingface.co/trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer"},
     # MODEL-UPDATE Phase 4: the original model with NVFP4 experts, as ready-made packs (NVFP4_REPOS): the files come
     # as the engine reads them (no GGUF to pack), each size has its own repository ("repo" in MODELS)
     # agentionai's Gyro quantizations (see GYRO_FILES): after the regular families, never the default
@@ -1199,13 +828,13 @@ INKLING_FAMILIES = {
         "title": inkling_family.TITLE, "by": inkling_family.BY, "tag": inkling_family.TAG, "name": inkling_family.FAMILY, "arch": inkling_family.ARCH, "inkling": True, "vision": inkling_family.DEFAULT_VISION,
         "about": "a fast 26.4B-A3.4B (5.4B looped-active) multimodal reasoning & agentic MoE with embedded DSpark drafter and 1..64 concurrent slots",
         "license": "Thinking Machines Inkling-2-Mini: https://huggingface.co/thinkingmachines/Inkling-2-Mini",
-        "models": {b: {"about": inkling_family.BUILD_ABOUT[b], "ram_gb": int(-(-inkling_fit.BUILDS[b]["footprint_gb"] // 1))} for b in inkling_fit.ORDER[::-1]},
+        "models": {b: {"about": inkling_family.BUILD_ABOUT[b], "ram_gb": int(-(-inkling_fit.BUILDS[b]["footprint_gb"] // 1)), "format": inkling_fit.BUILDS[b].get("format", "strata")} for b in inkling_fit.ORDER},
     }
 }
 
 # Inkling-2-Mini custom/community local-file & Hugging Face import sources (official HF safetensors + Unsloth GGUFs).
 # Native `.strata` v1.1 (SQ-20, SQ-15, SQ-10 + Vision) remains the flagship recommended default; `strata-inkling` also
-# loads official `thinkingmachines/Inkling-2-Mini` safetensors (zero requantization) and community `.gguf` files directly.
+# downloads and loads Unsloth GGUFs (`unsloth/Inkling-2-Mini-GGUF`) and official safetensors directly.
 INKLING_COMMUNITY_SOURCES = {
     "safetensors": {
         "title": "Inkling-2-Mini (Official HF safetensors)",
@@ -1226,22 +855,16 @@ INKLING_COMMUNITY_SOURCES = {
         "exe": "component:strata-inkling",
         "recommended_default": False,
         "models": {
-            "UD-Q4_K_XL": {"file": "Inkling-2-Mini-UD-Q4_K_XL.gguf", "ram_gb": 24,
-                           "about": "NVFP4 (L0..19) + Q8_0 (L20..23) Unsloth Dynamic GGUF"},
-            "UD-IQ4_XS": {"file": "Inkling-2-Mini-UD-IQ4_XS.gguf", "ram_gb": 20,
-                          "about": "IQ4_XS Unsloth Dynamic GGUF"},
-            "UD-IQ3_XXS": {"file": "Inkling-2-Mini-UD-IQ3_XXS.gguf", "ram_gb": 16,
-                           "about": "Compact IQ3_XXS Unsloth Dynamic GGUF"},
-            "UD-Q8_K_XL": {"file": "Inkling-2-Mini-UD-Q8_K_XL.gguf", "ram_gb": 32,
-                           "about": "High-precision Q8_K_XL Unsloth Dynamic GGUF"},
+            b: {
+                "file": inkling_fit.BUILDS[b]["file"],
+                "ram_gb": int(-(-inkling_fit.BUILDS[b]["footprint_gb"] // 1)),
+                "about": inkling_family.BUILD_ABOUT[b],
+            }
+            for b in inkling_fit.GGUF_ORDER
         },
-        "sha256": {
-            "Inkling-2-Mini-UD-Q4_K_XL.gguf": (
-                17629759456, "e62d463c135ffe283df8d94b279a96ca145ac128b52ce854478613045bf4de15"
-            ),
-        },
-        "dspark": "dspark-Inkling-2-Mini-Q8_0.gguf",
-        "mmproj": "mmproj-BF16.gguf",
+        "sha256": dict(inkling_family.UNSLOTH_GGUF_FILES),
+        "dspark": inkling_family.DSPARK_GGUF_FILE,
+        "mmproj": inkling_family.MMPROJ_BF16_FILE,
     },
 }
 
@@ -1309,21 +932,6 @@ def build_inkling_import_args(
 # Every model file Strata downloads has a fixed size and SHA-256: (repository, file name) -> (bytes, sha256).  download()
 # checks the file against it as soon as it is whole (a wrong file is deleted and setup stops), and stops before the
 # download when the server's size is not the pinned one.  The files are fetched from the commits in HF_REVISIONS.
-# DavidAU's Turbo-Brilliance re-quants (the reason-mode families, 2026-10-17): the regular repo's IQ3_S shards
-# are the ISTA bytes (same SHA-256, verified against HF's tree API 2026-10-19); the abliterated one's shard 1 is
-# SC117's tensor-transplant layer (55,063,664,928 bytes, its own SHA-256) and its shard 2 is the ISTA shard 2 again.
-DAU_FILES = {
-    "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf":
-        (55063664928, "78706315c2fe912777c006b4ae18be1024c9f4353bd25d33b8a306c9c55f9e34"),
-    "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf":
-        (28800138432, "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"),
-}
-DAUREG_FILES = {
-    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf":
-        (54817741024, "8a14ab07ca7b54619e6b250cd1d83f97f79ab7eef3caf8ee9e6543bc9ac6a193"),
-    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf":
-        (28800138432, "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"),
-}
 REPO_PINS = {
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF": ISTA_FILES,
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": SWIFT_FILES,
@@ -1331,11 +939,6 @@ REPO_PINS = {
     UNSLOTH_REPO: {**UNSLOTH_V31_SHARDS, **UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS, **UNSLOTH_BIG_SHARDS},
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": QWEN36_FILES,
     "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": GYRO_FILES,
-    "DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF":
-        DAU_FILES,
-    "DavidAU/Qwen3.8-Flash-Next-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF": DAUREG_FILES,
-    "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF": HUIHUI_SHARDS,
-    "trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer": HERETIC_SHARDS,
 }
 # the files of a repository at a commit other than HF_REVISIONS' (UNSLOTH_V31_REVISION): (repository, commit) -> name -> (bytes, sha256); file_pin looks here first
 REV_PINS = {(UNSLOTH_REPO, UNSLOTH_V31_REVISION): {**UNSLOTH_V31_SHARDS, **UNSLOTH_Q4_V31_SHARDS}}
@@ -1658,9 +1261,11 @@ _OWN_DIRS: list = []                                   # --gguf-dir: folders of 
 def own_files_in(folder) -> None:
     """Strata writes nothing beside the person's own model files (lane NET item 5): their finish marks are kept in marks/ (_kept_mark)."""
     try:
-        _OWN_DIRS.append(Path(folder).expanduser().resolve())
+        p = Path(folder).expanduser().resolve()
+        _OWN_DIRS.append(p.parent if p.is_file() else p)
     except OSError:
-        _OWN_DIRS.append(Path(folder).expanduser())
+        p = Path(folder).expanduser()
+        _OWN_DIRS.append(p.parent if p.is_file() else p)
 
 
 def _is_own_file(path: Path) -> bool:
@@ -2774,10 +2379,9 @@ def model_quant(model: str) -> str:
 
 
 def model_hf(fam: dict, model: str) -> str:
-    """The Hugging Face folder the model's shards are fetched from: the family's (or its per-quant folder,
-    hf_shard's folder_q map, which is keyed by catalog name), at the commit the model names ("revision")
-    when it is not the repository's pinned one (HF_REVISIONS)."""
-    base = (fam.get("folder_q") or {}).get(model) or fam["hf"].format(q=model_quant(model))
+    """The Hugging Face folder the model's shards are fetched from: the family's, at the commit the model names ("revision") when it is not
+    the repository's pinned one (HF_REVISIONS)."""
+    base = fam["hf"].format(q=model_quant(model))
     rev = MODELS.get(model, {}).get("revision")
     return re.sub(r"(/resolve/)[0-9a-f]{40}(?=/)", r"\g<1>" + rev, base, count=1) if rev else base
 
@@ -4191,159 +3795,6 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
             hint = "run setup again: the kept file is checked once more, and if it still differs it is downloaded again and the kept one is removed"
         fail(f"{s.name} does not match the pinned SHA-256 (it is {digest}, Strata expects {sha}); the file was kept as {s.name}.bad", hint)
     mark(s, f"sha256 {sha}")
-
-
-def get_ple_q8(models_dir: Path, tree: str) -> Path:
-    """The family tree's optional Q8_0 n-gram table (PLE_Q8): one file, in its own name, shared by every
-    quant of the tree on this PC.  A table the box already owns links instead of downloading 54.4 GB twice:
-    the same file under its own name, or - the swap this fork's dev box made by hand on 2026-10-09, and the
-    reason the reuse glob carries a size filter - a done-marked quant shard of exactly the pinned size.
-    A link or a download is hashed against the pin once (verify_sha256 keeps the digest in the finish
-    mark); a size look-alike with different bytes stops setup by name, it never runs as a silent swap."""
-    repo, name, size, sha = PLE_Q8[tree]
-    want = models_dir / name
-    if not (want.exists() and done(want)):
-        reuse = next((p for p in sorted(models_dir.rglob("*.gguf"))
-                      if p != want and done(p) and p.stat().st_size == size and
-                      (p.name == name or p.name.endswith("-00002-of-00002.gguf"))), None)
-        if reuse is not None:
-            try:
-                os.link(reuse, want)
-                mark(want)
-                ok(f"n-gram table: {name} shared with {reuse.parent.name}'s (identical bytes, no download)")
-            except OSError:                            # another filesystem: read the table where it is
-                verify_sha256(reuse, size, sha)
-                ok(f"n-gram table: {reuse.name} where it stands ({reuse.parent})")
-                return reuse
-        else:
-            if want.exists():
-                want.unlink()                          # an interrupted attempt: the download starts fresh
-            if free_gb(models_dir) < size / 1e9 + 2:
-                fail(f"not enough free disk space in {models_dir} for the 54.4 GB Q8_0 n-gram table: "
-                     f"{free_gb(models_dir):.0f} GB free",
-                     "free some disk space, or install without the table (--ple-q8 off)")
-            download(hf(repo) + name, want)
-    verify_sha256(want, size, sha)
-    return want
-
-
-# ---------------------------------------------------------------------------
-# memory-core fork: the memory system ships ON by default (the user's decision, 2026-10-16:
-# "if someone doesn't want the built-in memory system they won't be using our fork to begin
-# with"), so the installer writes the memory block and fetches the embedder the hybrid arm
-# needs. Both are tolerant by design: memory trouble is a warning and a lexical store, never
-# a failed install - the engine and the model are the product, memory rides on top of them.
-
-EMBEDDER_NAME = "bge-small-en-v1.5"
-EMBEDDER_REPO = "BAAI/bge-small-en-v1.5"          # MIT; the same model the development store embeds with
-EMBEDDER_FILES = {                                 # repo path -> local name -> (bytes, sha256), pinned
-    "onnx/model.onnx": ("model.onnx", 133093490,  # from the developer's verified copy (SHA256SUMS,
-                        "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35"),   # 2026-10-14)
-    "tokenizer.json": ("tokenizer.json", 711396,
-                       "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"),
-}
-
-
-def _sha_ok(f: Path, size: int, sha: str) -> bool:
-    """Soft SHA-256 check: exists, right size, right digest. Deliberately NOT verify_sha256 -
-    that one EXITS setup on a mismatch, and the embedder must never exit a Strata install."""
-    if not f.exists() or f.stat().st_size != size:
-        return False
-    h = hashlib.sha256()
-    with open(f, "rb") as fh:
-        for b in iter(lambda: fh.read(16 << 20), b""):
-            h.update(b)
-    return h.hexdigest() == sha
-
-
-def fetch_embedder(root: Path, data: Path | None = None) -> bool:
-    """The memory store's ONNX embedder, in the one data folder (the folder is explained once, in
-    strata_control/datafolder.py; with no data folder given, the resolver's default beside the install).
-    Idempotent: files already on disk with the pinned hashes are skipped without asking the server.
-    Network or hash trouble is a warning - the store runs lexical and the server banner says so out
-    loud - so the install never dies here."""
-    dst = (Path(data) if data else data_dir(root)) / "embeddings" / EMBEDDER_NAME
-    host = hf_endpoint()
-    ready = True
-    for rp, (name, size, sha) in EMBEDDER_FILES.items():
-        f = dst / name
-        if _sha_ok(f, size, sha):
-            continue
-        try:
-            download(f"{host}/{EMBEDDER_REPO}/resolve/main/{rp}", f, what=f"memory embedder {name}")
-            if not _sha_ok(f, size, sha):
-                f.unlink(missing_ok=True)
-                raise RuntimeError(f"sha256 mismatch (expected {sha[:16]}...)")
-        except Exception as e:                                    # noqa: BLE001 - tolerant by law
-            warn(f"memory embedder: {name} not fetched ({e}) - memory runs lexical until it arrives")
-            ready = False
-    return ready
-
-
-CARTRIDGE_MIN_HEADROOM_GB = 8.0   # tier-2 cartridges only when this much system RAM stays free of the
-                                  # model's all-in need (the owner's law, 2026-10-19: "IQ3_S with only
-                                  # 32 GB or even 64 GB - do not enable"; IQ3_S needs 62, so a 64 GB
-                                  # box has 2 GB of headroom and gets no cartridges, a 128 GB box has
-                                  # ~66 and does)
-
-
-def last_memory_block() -> dict | None:
-    """The newest "memory" block among this PC's strata-*.json files, if any (2026-10-23, the owner's fix
-    for "make sure the setup builds the .json with all the correct memory settings"): the memory block is
-    setup's own key (SETUP_KEYS), so a rerun - or a second model installed on a lived-in box - rewrote it
-    from scratch and quietly dropped the person's tuning layer (the store's dir, the embedder's threads,
-    the measured knobs turned ON against the shipped stance: route_shelves and the rest of the LCC block).
-    On a box that never ran the fork's setup this returns None and the generated block is exactly what it
-    always was - the byte-identical default path holds."""
-    for p in sorted(home().glob("strata-*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        try:
-            m = json.loads(p.read_text(encoding="utf-8-sig")).get("memory")
-        except (OSError, ValueError):
-            continue                                   # unreadable or half-written: the next file's turn
-        if isinstance(m, dict):
-            return m
-    return None
-
-
-def fork_memory_cfg(root: Path, ram: float | None = None, model: str | None = None,
-                    prev: dict | None = None, data: Path | None = None) -> dict:
-    """The "memory" block setup writes: the shape the development store runs, with every budget at a
-    measured value - 96 recall notes under a 48,000-char cap (m4_blockcov: the CHAR cap is what binds
-    long rows, and at 96 notes the everyday block is ~15k chars, so the wider cap costs nothing and
-    recovers the +0.047 lexical coverage the 24k cap was cutting), per-turn fresh recall 12 notes <=
-    24,000 chars, the agentic tool with unlimited rounds, at-rest encryption, the self-growing
-    taxonomy (auto-shelve), hybrid embeddings, and the Clio persona file (soul.md at the repo root,
-    fail-closed: unreadable or over-budget just means no persona). The tier-2 cartridges ride only on
-    a PC with CARTRIDGE_MIN_HEADROOM_GB of RAM free of the model's all-in need, and they need the
-    slot_save_path both writers set beside this block (the server creates the dir 0700 at boot).
-    Knobs measured and shipped OFF stay OFF: floor_cosine (-7.2% coverage), block_min_score (purity
-    flat, evidence down), exposure decay (suppresses the relevant), route_shelves (-0.031) - each is
-    one config key away if a user wants them; `prev` (last_memory_block(): this PC's newest memory
-    block) is where the person's own turning-them-on survives a rerun or a second model - its values
-    merge over this shape, and only the cartridge gate re-decides for the new model's RAM (the
-    2026-10-19 RAM law beats carry-over; an explicit "enabled": false in prev stays false). Opt out
-    of memory entirely with "memory": {"enabled": false}; every other edit tunes rather than
-    disables."""
-    base = Path(data) if data else data_dir(root)         # the one data folder (strata_control.datafolder, 2026-10-23):
-                                                          # remembered --data-dir first, else beside the install
-    out = {"dir": str(base / "memory"), "recall_limit": 96,
-           "max_block_chars": 48000, "per_turn": True, "turn_recall_limit": 12,
-           "turn_block_chars": 24000, "tool_rounds": 0, "encrypt": 1, "tool": True,
-           "auto_shelve": True, "soul": "soul.md",
-           "embedder": {"dir": str(base / "embeddings" / EMBEDDER_NAME),
-                        "threads": 4}}
-    need = (MODELS.get(model) or {}).get("ram_gb")
-    if ram is not None and need is not None and ram - need >= CARTRIDGE_MIN_HEADROOM_GB:
-        out["cartridges"] = {"enabled": True, "class_prefixes": ["USR", "DEC"], "max_chars": 12000}
-    if isinstance(prev, dict):                         # the tuning layer follows the model (2026-10-23)
-        for k, v in prev.items():
-            if k != "cartridges":
-                out[k] = v                             # store dir, budgets, embedder, measured knobs: the person's, kept
-        pc = prev.get("cartridges")
-        if isinstance(pc, dict) and isinstance(out.get("cartridges"), dict):
-            out["cartridges"] = {**out["cartridges"], **pc,        # the person's shelf prefixes and char budget win;
-                                 "enabled": bool(pc.get("enabled", True))}   # an explicit no stays a no; a gate fail drops all
-    return out
 
 
 def ready_files(model: str) -> list:
@@ -6941,7 +6392,6 @@ def update_installed_engine(url_base, toolkit=None, rebuild=False) -> None:
                      "starting the installed one")
         return
     ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
-    src_ver = tuple(int(x) for x in source_version().split(".")[:4] if x.isdigit())
     local = meta.get("source") == "local" or rebuild
     vision = meta.get("vision") or "none"
     if rebuild:
@@ -6950,11 +6400,7 @@ def update_installed_engine(url_base, toolkit=None, rebuild=False) -> None:
         if meta.get("src") == source_hash(ENGINE_SOURCES) and not stale_binary(eng / EXE) and \
                 (vision == "none" or meta.get("vision_src") == source_hash(VISION_SOURCES)):
             return
-    elif ver >= MIN_ENGINE and ver >= src_ver:
-        # Fork patch (2026-10-31): the released engine is upstream's and does not carry this fork's
-        # engine work (the CART fence's --conversation-cache-cart-slots, the BF16 projection form).
-        # A ready-made engine older than this checkout is replaced by a build of the checkout, not
-        # by the release's package; the code below takes the local-build branch for it.
+    elif ver >= MIN_ENGINE:
         return
     try:                                               # a running engine cannot be replaced (Windows keeps it locked)
         for x in (EXE, VEXE):
@@ -6965,14 +6411,10 @@ def update_installed_engine(url_base, toolkit=None, rebuild=False) -> None:
         warn(f"engine {meta.get('version') or ''} is in use: close the model window and run this again to update it")
         return
     gpu = update_engine_gpu(toolkit)
-    if local or ver < src_ver:
+    if local:
         try:                                           # a failed compile must not stop the model from starting
             if gpu is None:
                 raise RuntimeError("no NVIDIA GPU found")
-            if not local:
-                # a ready-made engine's BUILD.json says "cuda13.0"/"cpu", not build_engine's "gpu":
-                # map it before the compile, or a GPU encoder would be replaced by the CPU one
-                vision = prebuilt_vision(meta, gpu, "gpu") if vision not in ("none", "cpu") else vision
             gpu = {**gpu, "archs": sorted({int(gpu["arch"]), *arch_numbers(meta.get("archs"))})}
             if int(toolkit) == 12:                     # the cards it was compiled for (the main GPU may be newer)
                 gpu["archs"] = sorted(arch_numbers(meta.get("archs"))) or gpu["archs"]
@@ -7527,20 +6969,27 @@ def kv_streaming_need_gb(model, ctx, kv) -> float:
     for the engine (Linux mimic): streaming gave 756 -> 1,267 expert slots and a 32K prompt in 12-17 s instead of
     21-34 s, with the RAM the engine used unchanged (RAM budget 31 -> 29 GiB); on the owner's RTX 5070 (R5070's
     run) 924 -> 1,585 slots, a 32K prompt 130 -> 79 s, the RAM copy 30.8 -> 28.9 GiB, no paging.  Rule (1) alone
-    asked 64.8 GB of a PC that reads 63.1 and left the KV in VRAM."""
+    asked 64.8 GB of a PC that reads 63.1 and left the KV in VRAM.
+    #6354: Unsloth budget-mode quants subtract KV RAM from --resident-budget-gib, so streaming works cleanly from
+    16 GB RAM up (keeping 12 GB OS headroom + KV RAM)."""
     kv_gb = kv_streaming_ram_gb(ctx, kv)
     m = MODELS[model]
+    if m.get("budget"):
+        return max(16.0, LOW_RAM_HEADROOM_GB + kv_gb + 4.0)
     return min(m["ram_gb"] + kv_gb + 1, m["arena_gb"] + LOW_RAM_HEADROOM_GB + kv_gb)
 
 
-def kv_streaming_wanted(model, ctx, kv, ram, choice="auto") -> bool:
-    """Will setup stream this model's KV cache on this PC: from 64K up, when the RAM holds the cache beside the
-    model's experts (`kv_streaming_need_gb`); `--kv-streaming on|off` overrides the RAM test (the owner's rule), and
-    WSL never streams.  Step 7 writes `--kv-resident` on exactly this answer, and the launcher's preset diff asks it
-    too: a config's `--kv-resident` and a preset's "auto" are the same setting when this says yes."""
+def kv_streaming_wanted(model, ctx, kv, ram, choice="auto", vram_gb: float = 0.0) -> bool:
+    """Will setup stream this model's KV cache on this PC: from 64K up (and from 32K up on <= 16 GB discrete GPUs
+    for Unsloth budget-mode quants per #6354), when the RAM holds the cache beside the model's experts
+    (`kv_streaming_need_gb`); `--kv-streaming on|off` overrides the RAM test (the owner's rule), and WSL never streams.
+    Step 7 writes `--kv-resident` on exactly this answer, and the launcher's preset diff asks it too: a config's
+    `--kv-resident` and a preset's "auto" are the same setting when this says yes."""
     if is_wsl() or choice == "off":
         return False
-    return ctx >= 65536 and (ram >= kv_streaming_need_gb(model, ctx, kv) or choice == "on")
+    m = MODELS.get(model, {})
+    min_ctx = 32768 if (m.get("budget") and 0 < float(vram_gb or 0.0) <= 16.5) else 65536
+    return ctx >= min_ctx and (ram >= kv_streaming_need_gb(model, ctx, kv) or choice == "on")
 
 
 def low_ram_one_gpu_why(model, ram, choice, sel=None) -> list[str]:
@@ -7967,34 +7416,6 @@ def data_folder_in_place() -> tuple:
     return dest, []
 
 
-def apply_config_args(args: list, extra) -> list:
-    """A family's measured engine defaults, merged into the args a FRESH config gets
-    (FAMILIES[fam]["config_args"]).  A flag the family names is stated ONCE: every occurrence setup wrote is
-    dropped and the family's pair appended, because the sizing, vision and ple-io branches of the install each add
-    their own --ple-io / --prefill / --vram-reserve-mib, and a value stated twice is decided by whichever the
-    engine reads last.  Order is the family's.
-
-    This runs LAST in the arg assembly, and the person's own choices (user_args.capture over SETUP_CHOICE_FLAGS)
-    are applied to the config after it - so a tuned --spec-min-p in an existing file still wins, and only new
-    installs inherit the family's preference.
-    """
-    if not extra:
-        return args
-    it = iter(extra)
-    pairs = [(f, v) for f, v in zip(it, it)]
-    out = list(args)
-    for flag, _value in pairs:
-        while flag in out:
-            i = out.index(flag)
-            if i + 1 < len(out) and not str(out[i + 1]).startswith("--"):
-                del out[i:i + 2]                       # the flag and its value
-            else:
-                del out[i]                             # a boolean flag stands alone
-    for flag, value in pairs:
-        out += [flag, str(value)]
-    return out
-
-
 def write_config(path: Path, cfg: dict):
     """A run config, written whole or not at all (#459): to a temporary file first, then moved over the old one, so
     a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind."""
@@ -8009,12 +7430,7 @@ def write_config(path: Path, cfg: dict):
 # "args_written" (strata_control/user_args.py) is setup's own; "user_args" is not in SETUP_KEYS on purpose: carry_over keeps it,
 # then applies the person's options over the generated ones
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
-                        "gpu", "gpus_asked", "gpus_by", "layer_split", "host", "api_key", "draft_vocab", "vision", "args_written",
-                        "ui_budget_work_gib", "shape_title",
-                        "memory", "slot_save_path", "slot_retain"})    # memory-core fork: setup writes the memory
-                                                                       # block too (on by default, 2026-10-16) - it is a
-                                                                       # setup-owned key in this fork, and so are the slot
-                                                                       # keys the cartridges need (2026-10-19)
+                        "gpu", "gpus_asked", "gpus_by", "layer_split", "host", "api_key", "draft_vocab", "vision", "args_written", "ui_budget_work_gib", "shape_title"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_ROCBLAS_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
                        "STRATA_ROUTE_TAIL_SKIP"}) | frozenset(GFX1103_SWITCHES) | frozenset(GFX1150_SWITCHES)   # the "env" entries setup writes (the gfx1103 switches are setup's too: a re-run refreshes them, they do not linger)
 # 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
@@ -8174,7 +7590,10 @@ SHAPE_ENGINE: dict = {}       # the model-shape engine the chosen model runs on:
 
 
 def engine_exe(eng: Path) -> str:
-    """The `exe` of a run config: the engine component in the app, else the engine binary's path. A model of its own shape names that shape's engine."""
+    """The `exe` of a run config: the engine component in the app, else the engine binary's path. A model of its own shape names that shape's engine
+    (unless locally compiled via `--build`, in which case its local binary path is written)."""
+    if SHAPE_ENGINE.get("local_exe"):
+        return str(SHAPE_ENGINE["local_exe"])
     if SHAPE_ENGINE.get("shape"):
         from strata_control import shape_engine
         return shape_engine.reference(SHAPE_ENGINE["shape"])
@@ -8975,8 +8394,7 @@ def update_install(have: list, a) -> int:
         say("  it finds an earlier install's model files next to it and reuses them.")
         return 0
     pip_install(runtime_packages(),
-                "numpy, jinja2, regex, pyyaml, tqdm, requests, pillow, psutil, textual (the screens), "
-                "psycopg, embedded-postgres")
+                "numpy, jinja2, regex, pyyaml, tqdm, requests, pillow, psutil, textual (the screens)")
     update_installed_engine(a.prebuilt, rebuild=bool(a.build))      # --update --build compiles it (#5214); it used to skip the engine step
     mtp_done: set = set()
     for cfg_path in have:
@@ -9013,7 +8431,7 @@ def settings_summary(cfg: dict, port=None) -> str:
         if val is not None and ("/" in val or "\\" in val or val.lower().endswith((".gguf", ".bin"))):
             continue                                   # a path: --native, --mtp, --profile ...
         out.append(flag if val is None else f"{flag} {val}")
-    srv = [f"{cfg.get('host', '127.0.0.1')}:{port or cfg.get('port', 8005)}"]
+    srv = [f"{cfg.get('host', '127.0.0.1')}:{port or cfg.get('port', 8080)}"]
     if cfg.get("api_key"):
         srv.append("api key set")
     if cfg.get("open_browser") is False:               # #609
@@ -9069,7 +8487,7 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
         from strata_control import drafting
         refresh_dflash2_vocab(drafting.data_dir_of(cfg["args"]), cfg.get("draft_vocab", "cjk"))
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
-           "--port", str(port or cfg.get("port", 8005))]
+           "--port", str(port or cfg.get("port", 8080))]
     if cfg.get("backend") == "hip":                    # AMD, numbered as HIP numbers them (setup's KFD order)
         if WIN and not component:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461: also fixes a 0.1.34 install
@@ -9179,7 +8597,7 @@ OLD_DRAFT_VOCABS = {"369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced959
 
 
 DRAFT_VOCABS = {"cjk": "draft_vocab.bin", "en": "draft_vocab_en.bin", "cyrillic": "draft_vocab_cyrillic.bin",
-                "fr": "draft_vocab_fr.bin", "latin": "draft_vocab_latin.bin"}
+                "fr": "draft_vocab_fr.bin", "latin": "draft_vocab_latin.bin", "arabic": "draft_vocab_arabic.bin"}
 
 
 def saved_draft_vocab(cfg_path: Path) -> str | None:
@@ -9217,7 +8635,7 @@ def vision_tokens(asked: int | None, vision: str, earlier: Path | None) -> int:
     return asked
 
 
-DRAFT_VOCAB_MIB = {"cjk": 348, "cyrillic": 193, "fr": 151, "en": 133, "latin": 203}   # the draft head's VRAM per subset (IQ3_S: the largest)
+DRAFT_VOCAB_MIB = {"cjk": 348, "cyrillic": 193, "fr": 151, "en": 133, "latin": 203, "arabic": 161}   # the draft head's VRAM per subset (IQ3_S: the largest)
 SMALL_DRAFT_VRAM_GB = 14   # #474: below this the default subset's head can be what does not fit
 
 
@@ -9289,9 +8707,11 @@ def unsloth_vram_slack_mib(vram_gb: float, ctx: int, kv: str, reserve_mib: int, 
 
 def unsloth_small_card_plan(vram_gb: float, ctx: int, kv: str, reserve_mib: int | None, ctx_fixed=False, kv_fixed=False,
                             runtime_mib: int = 0):
-    """(ctx, kv, mtp, slack_mib) of the least harmful start that the estimate says fits, or None when none does.
+    """(ctx, kv, mtp, slack_mib) of the least harmful start that fits on small discrete cards (4-9 GB).
     Order of harm: the KV in 4 bits, then a smaller context (down to 4608), then no draft layer on the GPU (decode
-    up to 2x slower, but 0.8 GB for the cache); a value the user chose (--context, --kv) is not changed."""
+    up to 2x slower, but 0.8 GB for the cache); a value the user chose (--context, --kv) is not changed.
+    For 4 GB and 6 GB GPUs (vram_gb >= 3.5), falls back cleanly to 0-slot / dense-streaming mode (slack_mib = 0.0,
+    mtp = False, int8/q4_0 KV) so the engine streams routed experts from RAM+SSD instead of refusing or OOMing."""
     reserve = UD_FIT_ENGINE_RESERVE_MIB if reserve_mib is None else reserve_mib
     ctxs = [ctx] if ctx_fixed else [ctx] + [c for c in UD_FIT_CTX_STEPS if c < ctx]
     kvs = [kv] if kv_fixed or kv == "q4_0" else [kv, "q4_0"]
@@ -9301,20 +8721,27 @@ def unsloth_small_card_plan(vram_gb: float, ctx: int, kv: str, reserve_mib: int 
                 slack = unsloth_vram_slack_mib(vram_gb, c, k, reserve, mtp, runtime_mib)
                 if slack >= UD_FIT_MIN_SLACK_MIB:
                     return c, k, mtp, slack
+    if float(vram_gb or 0.0) >= 3.5:
+        c0 = ctx if ctx_fixed else min(ctx, 8192 if vram_gb >= 5.5 else 4608)
+        k0 = kv if kv_fixed else ("int8" if vram_gb >= 5.5 else "q4_0")
+        return c0, k0, False, 0.0
     return None
 
 
 def unsloth_small_card_lines(model: str, vram_gb: float, plan, start_ok: bool) -> list[str]:
-    """The words for a ~8 GB card: that UD-* is very slow here and what to pick instead (always), and when the start
-    would have stopped, that and what setup changed instead.  Recommend, never force."""
+    """The words for a <= 8 GB card: explains 0-slot / dense-streaming on 4-6 GB cards or small cache on 8 GB cards
+    and what smaller quants run faster. Recommend, never force."""
+    if float(vram_gb or 0.0) < 7.0:
+        return [f"{model} on a {vram_gb:.0f} GB card uses 0-slot / dense-streaming mode: dense weights and KV stay in "
+                "VRAM while routed experts stream from RAM + SSD (no OOM, never refused). UD-IQ3_XXS or UD-IQ1_M "
+                "need far less RAM/SSD bandwidth on this tier."]
     lines = [f"{model} on a {vram_gb:.0f} GB card is very slow: the dense side and the draft layer fill the card, the expert "
              "cache gets a few slots, and nearly every expert comes from RAM or the SSD (3-5 tok/s measured on an 8 GB "
              "Arc A750). IQ3_XXS or IQ3_S of the Qwen3.8-Flash-Next family fit such a card far better; run setup again "
              "and pick one of them."]
     if not start_ok and plan is None:
         lines.append("By setup's estimate even a 4608 context with a 4-bit KV cache and no draft layer leaves no room "
-                     "for the expert cache on this card: the start will probably stop with \"no VRAM is left for the "
-                     "expert cache\".")
+                     "for the expert cache on this card: the start will use 0-slot dense-streaming mode.")
     return lines
 
 
@@ -9586,6 +9013,7 @@ def refresh_draft_vocab(rt: Path, choice: str = "cjk") -> None:
             return
         ok("draft layer: the token subset " + {"cjk": "with Chinese, Japanese and Korean",
                                                "cyrillic": "with the Cyrillic script",
+                                               "arabic": "with the Arabic script",
                                                "fr": "for French",
                                                "latin": "with the Latin-script languages"}.get(choice,
                                                                                           "for English and code (less VRAM)"))
@@ -9780,6 +9208,34 @@ def sycl_setup(argv) -> int:
     return subprocess.call([sys.executable, str(script), *rest])
 
 
+def _select_sycl_cards(a, cards: list[dict]) -> list[dict]:
+    """Select one or more Intel Arc cards from `cards` honoring --gpu-roles / --gpus / --gpu (Helper..Main order)."""
+    by_idx = {int(c["index"]): c for c in cards}
+    roles_raw = getattr(a, "gpu_roles", None)
+    if isinstance(roles_raw, str) and roles_raw.strip():
+        from strata_control import gpu_roles as GR
+        roles = GR.roles_from_text(roles_raw, cards)
+        order = GR.order(roles, cards)
+        if order:
+            a._roles = roles
+            a._roles_cards = cards
+            return [by_idx[i] for i in order if i in by_idx]
+    gpus_raw = getattr(a, "gpus", None)
+    if isinstance(gpus_raw, str) and gpus_raw.strip():
+        if gpus_raw.strip().lower() == "all":
+            return list(cards)
+        sel = [int(x.strip()) for x in gpus_raw.split(",") if x.strip().isdigit()]
+        picked = [by_idx[i] for i in sel if i in by_idx]
+        if picked:
+            return picked
+    gpu_raw = getattr(a, "gpu", None)
+    if isinstance(gpu_raw, int) and not isinstance(gpu_raw, bool) and gpu_raw in by_idx:
+        return [by_idx[gpu_raw]]
+    if isinstance(gpu_raw, str) and gpu_raw.strip().isdigit() and int(gpu_raw.strip()) in by_idx:
+        return [by_idx[int(gpu_raw.strip())]]
+    return list(cards[:1])
+
+
 def intel_control_setup(a) -> int:
     """`--backend sycl` in the app's CONTROL mode (tools/strata_mcp.py passes it for an Intel Arc PC): what the Terminal does for an Arc
     (strata_cli/launch/runner.py adopt_prepared_files): the pack from the model's GGUF files (`--prepare-pack`'s step), then the run config
@@ -9793,6 +9249,17 @@ def intel_control_setup(a) -> int:
     if not intel_app.supported_here():
         fail("the Intel Arc engine runs on Linux only", "there is no Windows or Mac Intel engine yet")
     family = a.family or "qwen"
+    if family in HY4_FAMILIES or family in INKLING_FAMILIES:
+        cards = intel_app.arc_cards()
+        if not cards:
+            fail("no Intel Arc card Strata can use was found in this computer")
+        sel_cards = _select_sycl_cards(a, cards)
+        main_gpu = {**sel_cards[-1], "count": len(cards)}
+        multi = sel_cards if len(sel_cards) > 1 else []
+        a.backend = "sycl"
+        if family in HY4_FAMILIES:
+            return install_hy4_flash(a, family, main_gpu, False, [], None, multi, a.port or 8080, ram_gb(), None)
+        return install_inkling2(a, family, main_gpu, False, [], None, multi, a.port or 8080, ram_gb(), None)
     if family not in FAMILIES or not intel_app.can_set_up(family, FAMILIES[family]):
         fail(f"cannot set up {family} for an Intel Arc card", "choose a Qwen3.8-Flash-Next, Swift, Coder, Gyro or Unsloth size")
     fam, model = FAMILIES[family], a.model
@@ -9811,7 +9278,8 @@ def intel_control_setup(a) -> int:
         fail(intel_app.NO_DOWNLOAD)
     ok(f"model files: {model_dir} ({len(shards)} file{'s' if len(shards) != 1 else ''})")
     cards = intel_app.arc_cards()
-    vram = max((float(c.get("vram_gb") or 0) for c in cards), default=0.0)
+    sel_cards = _select_sycl_cards(a, cards) if cards else []
+    vram = max((float(c.get("vram_gb") or 0) for c in (sel_cards or cards)), default=0.0)
     ok("graphics card: " + (", ".join(f"{c['name']} ({c['vram_gb']:g} GB)" for c in cards) or "an Intel Arc"))
     if a.check:
         return 0
@@ -9835,6 +9303,24 @@ def intel_control_setup(a) -> int:
                                backend="sycl", vram_gb=vram, notes=notes, pack_name=tag.lower())
     if cfg is None:
         fail("Strata cannot start this model on the Intel Arc card yet: " + "; ".join(problems))
+    if isinstance(getattr(a, "_roles", None), dict) and cards:
+        from strata_control import gpu_roles as GR
+        cfg.update(GR.mirror(a._roles, getattr(a, "_roles_cards", None) or cards))
+        cfg["gpus_asked"] = True
+        if isinstance(cfg.get("gpu"), list) and len(cfg["gpu"]) > 1:
+            cfg["layer_split"] = "auto"
+    elif isinstance(getattr(a, "gpus", None), str) and len(sel_cards) > 1:
+        cfg["gpu"] = [int(c["index"]) for c in sel_cards]
+        cfg["gpus_asked"] = True
+        cfg["layer_split"] = "auto"
+    elif isinstance(getattr(a, "gpu", None), int) and not isinstance(getattr(a, "gpu", None), bool) and sel_cards:
+        cfg["gpu"] = int(sel_cards[0]["index"])
+        cfg["gpus_asked"] = True
+    if isinstance(cfg.get("gpu"), list) and len(cfg["gpu"]) == 2:
+        from strata_control import intel_spec
+        spec_note = intel_spec.apply_for_launch(cfg)
+        if spec_note:
+            notes.append(spec_note)
     if a.port:
         cfg["port"] = a.port
     if a.host:
@@ -9908,12 +9394,79 @@ def shape_engine_fetch(a):
     return found
 
 
-def shape_engine_step(a, gpu, vision):
+def build_shape_engine(shape: str, gpu: dict, hip: bool, cuda_tk=None, yes: bool = False) -> Path | None:
+    """Compile a shape engine (`hy4` -> `strata-hy4`, `inkling2` -> `strata-inkling`) locally from `engine/` when `--build` is passed (#6588).
+    Returns the installed engine directory containing the built executable + `BUILD.json`, or None if unsupported."""
+    from strata_control import shape_engine
+    if shape not in (shape_engine.HY4_SHAPE, shape_engine.INKLING_SHAPE):
+        return None
+    src = engine_src()
+    if not (src / "CMakeLists.txt").is_file():
+        fail(f"cannot compile {shape} locally: engine source not found at {src}")
+    exe_name = shape_engine.exe_name(shape)
+    out_dir = home() / f"engine-{shape}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    build_dir = src / f"build-{shape}"
+    cmake = shutil.which("cmake")
+    if not cmake:
+        fail("cmake is required to compile with --build", "install cmake and ninja, or run without --build to download a prebuilt engine")
+    ninja = shutil.which("ninja")
+    cfg_cmd = [cmake, "-S", str(src), "-B", str(build_dir), "-DCMAKE_BUILD_TYPE=Release"]
+    if ninja:
+        cfg_cmd += ["-G", "Ninja"]
+    if shape == shape_engine.HY4_SHAPE:
+        cfg_cmd += ["-DSTRATA_BUILD_HY4=ON", "-DSTRATA_BUILD_INKLING=OFF", "-DSTRATA_BUILD_TESTS=OFF"]
+        if hip:
+            cfg_cmd += ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF"]
+        else:
+            cfg_cmd += ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_ENABLE_HIP=OFF"]
+        target = "strata-hy4"
+    else:
+        cfg_cmd += ["-DSTRATA_BUILD_INKLING=ON", "-DSTRATA_BUILD_HY4=OFF", "-DSTRATA_BUILD_TESTS=OFF"]
+        if hip:
+            cfg_cmd += ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF"]
+        elif sys.platform == "darwin":
+            cfg_cmd += ["-DSTRATA_ENABLE_METAL=ON", "-DSTRATA_ENABLE_CUDA=OFF"]
+        else:
+            cfg_cmd += ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_ENABLE_HIP=OFF"]
+        target = "strata-inkling"
+    say(f"  compiling {target} locally (--build) in {build_dir} ...")
+    run(cfg_cmd)
+    run([cmake, "--build", str(build_dir), "--target", target, "--config", "Release"])
+    built = None
+    for cand in (build_dir / exe_name, build_dir / "Release" / exe_name,
+                 build_dir / "src" / "inkling2" / exe_name, build_dir / "src" / "inkling2" / "Release" / exe_name):
+        if cand.is_file():
+            built = cand
+            break
+    if built is None:
+        fail(f"local build of {target} finished but {exe_name} was not found in {build_dir}")
+    dst = out_dir / exe_name
+    shutil.copy2(built, dst)
+    if not WIN:
+        dst.chmod(dst.stat().st_mode | 0o755)
+    meta = {"version": "local", "backend": "hip" if hip else ("metal" if sys.platform == "darwin" else "cuda"),
+            "source": "local", "shape": shape, "entrypoint": exe_name}
+    (out_dir / "BUILD.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    ok(f"built {target} locally: {dst}")
+    return out_dir
+
+
+def shape_engine_step(a, gpu, vision, *, hip: bool = False, cuda_tk=None):
     """Step 4 for a model that runs on the engine of its own shape (a Qwen4 model whose geometry is not Flash-Next's: strata_control/shape_engine.py). That engine is a
-    separate component next to the Strata engine (shape_engine_fetch); the run config names it ("component:strata-q4-lite") and every start looks it up.
-    Returns what engine_step returns."""
+    separate component next to the Strata engine (shape_engine_fetch); with `--build` outside CONTROL mode, compiles `strata-hy4` / `strata-inkling` locally (#6588)."""
     shape = SHAPE_ENGINE["shape"]
     llama = llama_cpp_if_here()
+    if getattr(a, "build", False) and not CONTROL:
+        from strata_control import shape_engine
+        if shape in (shape_engine.HY4_SHAPE, shape_engine.INKLING_SHAPE):
+            eng = build_shape_engine(shape, gpu, hip, cuda_tk, getattr(a, "yes", False))
+            if eng is not None:
+                exe_path = eng / shape_engine.exe_name(shape)
+                SHAPE_ENGINE["local_exe"] = str(exe_path)
+                meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
+                lib_dirs = cuda_lib_dirs(cuda_tk) if (not hip and not sys.platform == "darwin") else []
+                return llama, eng, meta, lib_dirs, gpu, "none"
     found = shape_engine_fetch(a)
     if found is None:
         return llama, home() / "engine", {"version": "99.0.0", "source": "local", "component": "missing"}, [], gpu, "none"
@@ -9930,7 +9483,7 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
     """Step 4: llama.cpp's sources and the engine (ready-made, or compiled here).  Returns (llama, engine folder, its
     BUILD.json, its library folders, the GPU (AMD on Windows: as the engine sees it), the image-encoder choice)."""
     if SHAPE_ENGINE.get("shape"):
-        return shape_engine_step(a, gpu, vision)
+        return shape_engine_step(a, gpu, vision, hip=hip, cuda_tk=cuda_tk)
     if CONTROL:
         return control_engine_step(gpu, vision)
     llama = llama_override()
@@ -10251,8 +9804,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
 
     step(3, "Python packages")
     pip_install(runtime_packages(),
-                "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil, "
-                "textual (the screens), psycopg, embedded-postgres")
+                "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil, textual (the screens)")
 
     step(4, "the Strata engine")
     llama, eng, meta, lib_dirs, gpu, vision = engine_step(a, gpu, hip, amd, cuda_tk, vision)
@@ -10314,11 +9866,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         ok(f"VRAM kept free for other programs: about {a.vram_reserve_mib} MiB (the experts' share is set lower)")
     cfg = {"exe": engine_exe(eng), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "arch": fam["arch"],
-           "log": str(home() / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}   # v0.2.0: logs live in the user's home folder
-    cfg["memory"] = fork_memory_cfg(ROOT, ram, model, prev=last_memory_block(), data=data)   # memory-core fork: memory on by default, and the
-    cfg["slot_save_path"] = str((data or data_dir(ROOT)) / "sessions")   # slot save/restore + the cartridges' file dir: the one data folder (2026-10-23)
-    cfg["slot_retain"] = 6                             # prune to the 6 newest saves: the dev box's disk law
-    fetch_embedder(ROOT, data)                         # hybrid arm's model is part of the install
+           "log": str(home() / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}
     if cuda_tk == 12:
         cfg["cuda"] = 12
     if hip:
@@ -10404,14 +9952,44 @@ def hy4_pc(gpu, ram) -> tuple:
     return float(g.get("vram_gb") or 0.0), float(ram), False
 
 
-def hy4_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=hy4_family.DEFAULT_VISION) -> list:
+def hy4_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=hy4_family.DEFAULT_VISION, extra_vram_gib=0.0) -> list:
     """One line per build for the size menu, best first, with the fit words (at this context, with the image reader's memory when images are on) and the recommended mark."""
-    rec = hy4_fit.recommend(vram_gib, ram_gib, unified, ctx, vision)["build"]
+    rec = hy4_fit.recommend(vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib)["build"]
     words = {"ram_vram_zero_ssd": "fits in memory", "near_resident_ssd": "fits, a few experts are read from the SSD", "cross_tier_ssd": "streams experts from the SSD: much slower"}
     out = []
-    for r in hy4_fit.rows(vram_gib, ram_gib, unified, ctx, vision):
+    for r in hy4_fit.rows(vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib):
         out.append((r["build"], f"{r['build']:7s} {hy4_family.BUILD_ABOUT[r['build']]}; download {r['download_gb']:.0f} GB   <- {words[r['mode']]}"
                     + ("   (recommended)" if r["build"] == rec else "")))
+    return out
+
+
+def _multi_gpu_cards(multi, gpu, hip, amd) -> list[dict]:
+    """Resolve `multi` (either a list of int indices from main(), or a list of GPU dicts) into discrete GPU dicts for CUDA, AMD HIP, or Intel SYCL."""
+    if not multi or not isinstance(multi, (list, tuple)):
+        return []
+    out: list[dict] = []
+    amd_by = {int(g["index"]): g for g in (amd or []) if isinstance(g, dict) and "index" in g}
+    nv_by: dict[int, dict] | None = None
+    for item in multi:
+        if isinstance(item, dict):
+            card = dict(item)
+        elif isinstance(item, int) and not isinstance(item, bool):
+            if hip and item in amd_by:
+                card = dict(amd_by[item])
+            elif gpu and int(gpu.get("index", -1)) == item:
+                card = dict(gpu)
+            else:
+                if nv_by is None:
+                    try:
+                        nv_by = {int(g["index"]): g for g in gpus()}
+                    except Exception:                  # noqa: BLE001
+                        nv_by = {}
+                card = dict(nv_by.get(item) or {"index": item, "name": f"GPU {item}", "vram_gb": float((gpu or {}).get("vram_gb") or 0.0)})
+        else:
+            continue
+        if card.get("uma") or card.get("unified") or card.get("unified_gb") or card.get("integrated"):
+            continue
+        out.append(card)
     return out
 
 
@@ -10479,18 +10057,44 @@ def hy4_fetch(a, name: str, folder: Path, own: bool) -> Path:
     fail(f"no source lists {name}")
 
 
-def hy4_tokenizer_dir(model: Path, out: Path, engine: Path | None) -> Path | None:
-    """The tokenizer directory serve reads, from the model file: Python reads Section 0 itself when it has a zstd module, else the engine exports it (`strata-hy4
-    --export-tokenizer`).  None when neither can (no engine yet and no zstd): the person is told to run this again once the engine is installed."""
+def hy4_tokenizer_dir(model: Path, out: Path, engine: Path | None, a=None, folder: Path | None = None, own: bool = False, data: Path | None = None) -> Path | None:
+    """The tokenizer directory serve reads, from the model file or companion files:
+    1) already populated (`vocab.json` + `chat_template.jinja`);
+    2) Section 0 read directly in Python (3.14 `compression.zstd` or `zstandard`);
+    3) companion `tokenizer.json` + `chat_template.jinja` beside the model file or in `<data>/models/hy4-flash`;
+    4) exported by the engine (`strata-hy4 --export-tokenizer`);
+    5) public download fallback (`hy4_family.tokenizer_sources()`, including `tencent/Hy4-flash`) when `not own`."""
     sys.path.insert(0, str(ROOT / "tools"))
     import hy4_tokenizer
+    out = Path(out)
+    model = Path(model)
     if (out / "vocab.json").is_file() and (out / "chat_template.jinja").is_file():
         return out
     try:
         hy4_tokenizer.convert_manifest(hy4_tokenizer.read_manifest(model), out)
         return out
-    except RuntimeError:                               # no zstd in this Python
+    except (RuntimeError, ValueError, OSError, KeyError):    # no zstd in Python or non-strata file
         pass
+    # Companion tokenizer.json + chat_template.jinja beside the model or in the data folder
+    search_dirs: list[Path] = [model.parent]
+    if folder is not None and Path(folder) not in search_dirs:
+        search_dirs.append(Path(folder))
+    if data is not None:
+        dmod = Path(data) / "models" / hy4_family.FAMILY
+        if dmod not in search_dirs:
+            search_dirs.append(dmod)
+    if out not in search_dirs:
+        search_dirs.append(out)
+    for base in search_dirs:
+        for tok_name in (hy4_family.TOKENIZER_FILE, "tokenizer.hf.json"):
+            tok_json = base / tok_name
+            tmpl_file = base / hy4_family.CHAT_TEMPLATE_FILE
+            if tok_json.is_file() and tmpl_file.is_file():
+                try:
+                    hy4_tokenizer.convert_files(tok_json, tmpl_file, out)
+                    return out
+                except (ValueError, OSError, KeyError):
+                    pass
     if engine is not None and Path(engine).is_file():
         raw = out.with_name(out.name + "-export")
         raw.mkdir(parents=True, exist_ok=True)
@@ -10498,9 +10102,40 @@ def hy4_tokenizer_dir(model: Path, out: Path, engine: Path | None) -> Path | Non
         var = "PATH" if WIN else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
         eng_dir = str(Path(engine).resolve().parent)
         env[var] = os.pathsep.join([eng_dir, env[var]]) if env.get(var) else eng_dir
-        run([str(engine), "--export-tokenizer", str(model), str(raw)], env=env)
-        hy4_tokenizer.convert_files(raw / "tokenizer.hf.json", raw / "chat_template.jinja", out)
-        return out
+        try:
+            run([str(engine), "--export-tokenizer", str(model), str(raw)], env=env)
+            if (raw / "tokenizer.hf.json").is_file() and (raw / "chat_template.jinja").is_file():
+                hy4_tokenizer.convert_files(raw / "tokenizer.hf.json", raw / "chat_template.jinja", out)
+                return out
+        except (SystemExit, OSError, ValueError):
+            pass
+    # Public HF / configured source fallback so `packs/hy4-flash-*/tokenizer/vocab.json` is ALWAYS populated even without zstd or unpacked engine
+    if not own and a is not None:
+        fetch_dir = Path(folder) if folder is not None else model.parent
+        fetch_dir.mkdir(parents=True, exist_ok=True)
+        tok_json = fetch_dir / hy4_family.TOKENIZER_FILE
+        tmpl_file = fetch_dir / hy4_family.CHAT_TEMPLATE_FILE
+        for src in hy4_family.tokenizer_sources():
+            if not tok_json.is_file():
+                for u in hy4_family.urls_for(hy4_family.TOKENIZER_FILE, src):
+                    try:
+                        download(u, tok_json, hy4_family.TOKENIZER_FILE)
+                        break
+                    except (SystemExit, OSError):
+                        pass
+            if not tmpl_file.is_file():
+                for u in hy4_family.urls_for(hy4_family.CHAT_TEMPLATE_FILE, src):
+                    try:
+                        download(u, tmpl_file, hy4_family.CHAT_TEMPLATE_FILE)
+                        break
+                    except (SystemExit, OSError):
+                        pass
+            if tok_json.is_file() and tmpl_file.is_file():
+                try:
+                    hy4_tokenizer.convert_files(tok_json, tmpl_file, out)
+                    return out
+                except (ValueError, OSError, KeyError):
+                    pass
     return None
 
 
@@ -10514,16 +10149,23 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
     say(f"  {fam['title']} - {fam['by']}: {fam['about']}")
     ok(f"model: {fam['title']}")
     say(f"  Its license: {fam['license']}")
-    if multi:
-        warn(f"{fam['title']} runs on one GPU so far: using GPU {gpu.get('index', 0)} ({gpu_name(gpu)}) only")
     names = list(fam["models"])
     if a.model and a.model not in names:
         fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names))
     vram_gib, ram_gib, unified = hy4_pc(gpu, ram)
+    multi_cards = _multi_gpu_cards(multi, gpu, hip, amd)[:4] if not unified else []
+    extra_vram_gib = 0.0
+    if len(multi_cards) >= 2:
+        main_idx = int(gpu.get("index", multi_cards[-1]["index"]))
+        helpers = [c for c in multi_cards if int(c["index"]) != main_idx]
+        if len(helpers) == len(multi_cards):
+            helpers = multi_cards[:-1]
+        extra_vram_gib = sum(float(c.get("vram_gb") or 0.0) for c in helpers)
+        ok("GPUs: " + " + ".join(gpu_name(c) for c in multi_cards) + f" (expert-parallel across {len(multi_cards)} GPUs)")
     vision = a.vision not in ("no", "none")            # images are on by default (owner, 2026-11-19): the Vision shard is in the download set; --vision no leaves it out
     want_ctx = a.context or hy4_family.DEFAULT_CONTEXT
-    lines = hy4_menu_lines(vram_gib, ram_gib, unified, want_ctx, vision)
-    rec = hy4_fit.recommend(vram_gib, ram_gib, unified, want_ctx, vision)
+    lines = hy4_menu_lines(vram_gib, ram_gib, unified, want_ctx, vision, extra_vram_gib=extra_vram_gib)
+    rec = hy4_fit.recommend(vram_gib, ram_gib, unified, want_ctx, vision, extra_vram_gib=extra_vram_gib)
     say()
     order = [b for b, _ in lines]
     for i, (b, text) in enumerate(lines, 1):
@@ -10541,11 +10183,11 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
         for i, c in enumerate(ctxs, 1):
             say(f"  {i}) {c // 1024}K tokens" + ("   (recommended)" if c == hy4_family.DEFAULT_CONTEXT else ""))
         ctx = ctxs[int(ask("Context?", [str(i) for i in range(1, len(ctxs) + 1)], str(ctxs.index(hy4_family.DEFAULT_CONTEXT) + 1), a.yes)) - 1]
-    placed =hy4_fit.place(model, vram_gib, ram_gib, unified, ctx, vision)
+    placed = hy4_fit.place(model, vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib)
     mode = hy4_fit.mode(placed["ssd_gb"])
     if mode == "cross_tier_ssd":
         warn(f"{model} does not fit this PC's memory: about {placed['ssd_gb']:.0f} GB of its experts are read from the SSD while it answers, so it is much slower "
-             f"({hy4_fit.recommend(vram_gib, ram_gib, unified, ctx, vision)['build']} fits better)")
+             f"({hy4_fit.recommend(vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib)['build']} fits better)")
     ok(f"context: {ctx} tokens")
     ok("images: " + ("on (the Vision file is downloaded; the engine reads pictures once it supports them)" if vision else "off"))
     if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
@@ -10586,7 +10228,7 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
 
     step(6, "preparing the model for Strata")
     data, _ = data_folder_for(a)
-    tokdir = hy4_tokenizer_dir(paths[files[0]], data / "packs" / tag.lower() / "tokenizer", engine_program)
+    tokdir = hy4_tokenizer_dir(paths[files[0]], data / "packs" / tag.lower() / "tokenizer", engine_program, a=a, folder=folder, own=own, data=data)
     if tokdir is None:
         warn("the tokenizer is read from the model file by the engine, which is not installed yet: run this again once it is (nothing is downloaded twice)")
         tokdir = data / "packs" / tag.lower() / "tokenizer"
@@ -10594,18 +10236,34 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
         ok(f"tokenizer: {tokdir}")
 
     step(7, "writing the start script")
-    args = ["--native", str(paths[files[0]]), "--engram", str(engram), "--max-context", str(ctx)]
+    args = ["--native", str(paths[files[0]]), "--engram", str(engram), "--max-context", str(ctx), "--session-reuse", "1"]   # the engine reuses a conversation's longest common prefix
     if vision:                                         # the Vision shard: the engine reads pictures with it once it supports them (serve leaves the option out until the engine says images=1)
         args += ["--vision", str(paths[hy4_family.VISION_FILE])]
+    use_layer_split = len(multi_cards) >= 2 and hy4_fit.should_layer_split(multi_cards, windows=WIN)
+    if use_layer_split:
+        args += ["--layer-split", "auto"]
     if not unified:                                    # a card: the rank-cut plan (hy4_fit) as the engine's caps; one pool: the engine puts everything in it
         args += ["--vram-experts-gb", f"{placed['vram_gb']:.2f}", "--ram-experts-gb", f"{placed['ram_gb']:.2f}"]
     cfg = {"exe": engine_exe(eng), "args": args, "cwd": str(ROOT), "tokenizer": str(tokdir), "model_name": f"{fam['name']}-{model.lower()}", "arch": fam["arch"],
            "log": str(home() / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port, "drafting": hy4_family.DEFAULT_DRAFTER}
+    if use_layer_split:
+        cfg["layer_split"] = "auto"
     if hip:
         cfg["backend"] = "hip"
     elif sys.platform == "darwin":
         cfg["backend"] = "metal"
-    if gpu.get("count", 1) > 1 or a.gpu is not None:
+    elif getattr(a, "backend", None) == "sycl":
+        cfg["backend"] = "sycl"
+    if isinstance(getattr(a, "_roles", None), dict):
+        from strata_control import gpu_roles as GR
+        rcards = getattr(a, "_roles_cards", None) or (multi_cards if len(multi_cards) >= 2 else [gpu])
+        cfg.update(GR.mirror(GR.parse_saved(a._roles) or a._roles, rcards))
+        cfg["gpus_asked"] = True
+    elif len(multi_cards) >= 2:
+        cfg["gpu"] = [int(c["index"]) for c in multi_cards]
+        cfg["gpu_order"] = "as_given"
+        cfg["gpus_asked"] = True
+    elif gpu.get("count", 1) > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]
         cfg["gpus_asked"] = True
     if a.host:
@@ -10630,15 +10288,80 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
 
 def inkling_folder(a) -> Path:
     if getattr(a, "gguf_dir", None):
-        return Path(a.gguf_dir)
+        p = Path(a.gguf_dir)
+        return p.parent if p.is_file() else p
     return Path(getattr(a, "models_dir", None) or (home() / "models")) / inkling_family.FAMILY
+
+
+def inkling_local_source(a, model: str | None = None) -> tuple[Path, Path, bool] | None:
+    """Resolve a user-supplied --gguf-dir (file or folder) for Inkling-2-Mini to (model_file, folder, is_gguf)."""
+    raw_val = getattr(a, "gguf_dir", None)
+    if not raw_val:
+        return None
+    raw = Path(raw_val)
+    shard_re = re.compile(r"^(.+)-(\d{5})-of-(\d{5})\.gguf$", re.I)
+    aux_re = re.compile(r"^(?:mmproj|dspark|imatrix|mtp[-_]).*\.gguf$", re.I)
+    if raw.is_file():
+        low = raw.name.lower()
+        if low.endswith(".gguf"):
+            m = shard_re.match(raw.name)
+            first = raw.with_name(f"{m.group(1)}-00001-of-{m.group(3)}.gguf") if m else raw
+            return (first if first.is_file() else raw), raw.parent, True
+        if low.endswith(".strata"):
+            return raw, raw.parent, False
+        return None
+    if not raw.is_dir():
+        return None
+    if model and model in inkling_fit.BUILDS:
+        pinned = raw / inkling_family.build_file(model)
+        if pinned.is_file():
+            return pinned, raw, False
+    ggufs = sorted(p for p in raw.glob("*.gguf") if p.is_file() and not aux_re.match(p.name))
+    if ggufs:
+        first_shard = next((p for p in ggufs if (m := shard_re.match(p.name)) and m.group(2) == "00001"), None)
+        return (first_shard or ggufs[0]), raw, True
+    stratas = sorted(p for p in raw.glob("*.strata")
+                     if p.is_file() and "vision" not in p.name.lower() and "engram" not in p.name.lower())
+    if len(stratas) == 1:
+        return stratas[0], raw, False
+    return None
+
+
+def inkling_find_local_vision(folder: Path, data: Path, is_gguf: bool) -> Path | None:
+    """Find a local Inkling-2-Mini Vision shard (.strata) or companion mmproj*.gguf beside a local model."""
+    for cand in (folder / inkling_family.VISION_FILE, data / "models" / inkling_family.FAMILY / inkling_family.VISION_FILE):
+        if cand.is_file():
+            return cand
+    if is_gguf:
+        mmprojs = sorted(p for p in folder.glob("mmproj*.gguf") if p.is_file())
+        if mmprojs:
+            for pref in ("bf16", "f16", "q8_0"):
+                hit = next((p for p in mmprojs if pref in p.name.lower()), None)
+                if hit:
+                    return hit
+            return mmprojs[0]
+    return None
+
+
+def inkling_find_local_dspark(folder: Path) -> Path | None:
+    """Find an optional local DSpark drafter file (dspark*.gguf or mtp.safetensors) beside an Inkling GGUF."""
+    for base in (folder, folder / "dspark"):
+        if not base.is_dir():
+            continue
+        ggufs = sorted(p for p in base.glob("dspark*.gguf") if p.is_file())
+        if ggufs:
+            return ggufs[0]
+        mtp = base / "mtp.safetensors"
+        if mtp.is_file():
+            return mtp
+    return None
 
 
 def inkling_offered(a=None) -> bool:
     try:
         if inkling_family.sources():
             return True
-        return bool(a is not None and inkling_family.local_files(inkling_folder(a)))
+        return bool(a is not None and (inkling_local_source(a) or inkling_family.local_files(inkling_folder(a))))
     except Exception:                                  # noqa: BLE001
         return False
 
@@ -10669,7 +10392,7 @@ def inkling_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=inkling_fami
     }
     out = []
     for r in inkling_fit.rows(vram_gib, ram_gib, unified, ctx, vision):
-        out.append((r["build"], f"{r['build']:18s} {inkling_family.BUILD_ABOUT[r['build']]}   <- {words[r['mode']]}"
+        out.append((r["build"], f"{r['build']:7s} {inkling_family.BUILD_ABOUT[r['build']]}; download {r['download_gb']:.1f} GB   <- {words[r['mode']]}"
                     + ("   (recommended)" if r["build"] == rec else "")))
     return out
 
@@ -10706,7 +10429,7 @@ def inkling_fetch(a, name: str, folder: Path, own: bool) -> Path:
         return dst
     if own:
         fail(f"{dst} is missing", f"put {name} in {folder}, or drop --gguf-dir to download it")
-    srcs = inkling_family.sources()
+    srcs = inkling_family.sources_for(name)
     if not srcs:
         fail(f"no download source for {name} is configured", f"put the file in {folder} (or set STRATA_INKLING_SOURCE) and run this again")
     last = None
@@ -10728,37 +10451,20 @@ def inkling_fetch(a, name: str, folder: Path, own: bool) -> Path:
     fail(f"no source lists {name}")
 
 
-def inkling_tokenizer_dir(a, model: Path, folder: Path, out: Path, engine: Path | None, own: bool) -> Path | None:
-    """Build serve's o200k tokenizer directory from Section 0 manifest, --export-tokenizer, or tokenizer.json alongside the weights."""
+def inkling_tokenizer_dir(a, model: Path, folder: Path, out: Path, engine: Path | None, own: bool, *, data: Path | None = None) -> Path | None:
+    """Build serve's o200k tokenizer directory from Section 0 manifest, --export-tokenizer, companion files, or public HF fallback."""
     sys.path.insert(0, str(ROOT / "tools"))
     import inkling_tokenizer
     if (out / "vocab.json").is_file() and (out / "chat_template.jinja").is_file():
         return out
-    tok_json = folder / inkling_family.TOKENIZER_FILE
-    tmpl_file = folder / inkling_family.CHAT_TEMPLATE_FILE
-    gguf = str(model).lower().endswith(".gguf")     # a GGUF carries its own o200k vocab and chat template; it has no Section 0
-
-    def export_via_engine() -> Path | None:
-        """Ask `strata-inkling --export-tokenizer` to read the tokenizer out of the model file itself."""
-        if engine is None or not Path(engine).is_file():
-            return None
-        raw = out.with_name(out.name + "-export")
-        raw.mkdir(parents=True, exist_ok=True)
-        env = dict(os.environ)
-        var = "PATH" if WIN else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
-        eng_dir = str(Path(engine).resolve().parent)
-        env[var] = os.pathsep.join([eng_dir, env[var]]) if env.get(var) else eng_dir
-        run([str(engine), "--export-tokenizer", str(model), str(raw)], env=env)
-        src_tok = (raw / "tokenizer.hf.json") if (raw / "tokenizer.hf.json").is_file() else tok_json
-        src_tpl = (raw / "chat_template.jinja") if (raw / "chat_template.jinja").is_file() else tmpl_file
-        if src_tok.is_file() and src_tpl.is_file():
-            inkling_tokenizer.convert_files(src_tok, src_tpl, out)
-            return out
-        return None
-
-    # 1. Try reading Section 0 manifest directly (uses embedded chat_template + tokenizer_json or companion tokenizer.json).
-    # A `.gguf` has no Section 0 - read_manifest says so with a ValueError, which is a branch, not a failure.
-    if not gguf:
+    is_gguf = model.suffix.lower() == ".gguf"
+    data_ink = (data / "models" / inkling_family.FAMILY) if data is not None else folder
+    tok_json = next((d / inkling_family.TOKENIZER_FILE for d in (folder, data_ink) if (d / inkling_family.TOKENIZER_FILE).is_file()),
+                    folder / inkling_family.TOKENIZER_FILE)
+    tmpl_file = next((d / inkling_family.CHAT_TEMPLATE_FILE for d in (folder, data_ink) if (d / inkling_family.CHAT_TEMPLATE_FILE).is_file()),
+                     folder / inkling_family.CHAT_TEMPLATE_FILE)
+    # 1. For .strata files, try reading Section 0 manifest directly (uses embedded chat_template + tokenizer_json or companion tokenizer.json)
+    if not is_gguf:
         try:
             manifest = inkling_tokenizer.read_manifest(model)
             if manifest.get("tokenizer_json") is None and not tok_json.is_file() and not own:
@@ -10767,33 +10473,50 @@ def inkling_tokenizer_dir(a, model: Path, folder: Path, out: Path, engine: Path 
             return out
         except (RuntimeError, ValueError):
             pass
-    else:
-        # 1b. A `.gguf` (Unsloth's UD-* packs): the engine loads this exact file, so its own tokenizer is the
-        # authoritative one and costs no download. The companion HF files below are the fallback for a box
-        # whose Inkling component is not installed yet.
-        built = export_via_engine()
-        if built is not None:
-            return built
     # 2. Try companion HF files (tokenizer.json + chat_template.jinja) directly (no zstd needed)
-    if not tok_json.is_file() and not own:
-        try:
-            tok_json = inkling_fetch(a, inkling_family.TOKENIZER_FILE, folder, own)
-        except SystemExit:
-            pass
-    if not tmpl_file.is_file() and not own:
-        try:
-            tmpl_file = inkling_fetch(a, inkling_family.CHAT_TEMPLATE_FILE, folder, own)
-        except SystemExit:
-            pass
     if tok_json.is_file() and tmpl_file.is_file():
         inkling_tokenizer.convert_files(tok_json, tmpl_file, out)
         return out
-    # 3. Fallback to strata-inkling --export-tokenizer
-    return export_via_engine()
+    # 3. Try strata-inkling --export-tokenizer (works for both .strata v1.1 and Inkling-2-Mini .gguf files)
+    if engine is not None and Path(engine).is_file():
+        raw = out.with_name(out.name + "-export")
+        raw.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ)
+        var = "PATH" if WIN else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
+        eng_dir = str(Path(engine).resolve().parent)
+        env[var] = os.pathsep.join([eng_dir, env[var]]) if env.get(var) else eng_dir
+        try:
+            run([str(engine), "--export-tokenizer", str(model), str(raw)], env=env)
+        except (SystemExit, OSError):
+            pass
+        src_tok = (raw / "tokenizer.hf.json") if (raw / "tokenizer.hf.json").is_file() else tok_json
+        src_tpl = (raw / "chat_template.jinja") if (raw / "chat_template.jinja").is_file() else tmpl_file
+        if src_tok.is_file() and src_tpl.is_file():
+            inkling_tokenizer.convert_files(src_tok, src_tpl, out)
+            return out
+        tok_json, tmpl_file = src_tok, src_tpl
+    # 4. Public HF tokenizer fallback (writes into Strata's own data folder, never into user's read-only GGUF folder)
+    if os.environ.get("STRATA_NO_ACQUIRE") != "1":
+        fetch_dir = data_ink if own else folder
+        fetch_dir.mkdir(parents=True, exist_ok=True)
+        if not tok_json.is_file():
+            try:
+                tok_json = inkling_fetch(a, inkling_family.TOKENIZER_FILE, fetch_dir, own=False)
+            except (SystemExit, OSError):
+                pass
+        if not tmpl_file.is_file():
+            try:
+                tmpl_file = inkling_fetch(a, inkling_family.CHAT_TEMPLATE_FILE, fetch_dir, own=False)
+            except (SystemExit, OSError):
+                pass
+        if tok_json.is_file() and tmpl_file.is_file():
+            inkling_tokenizer.convert_files(tok_json, tmpl_file, out)
+            return out
+    return None
 
 
 def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted):
-    """Steps 2-7 for Thinking Machines Inkling-2-Mini (.strata v1.1, strata-inkling shape engine)."""
+    """Steps 2-7 for Thinking Machines Inkling-2-Mini (.strata v1.1 or local .gguf, strata-inkling shape engine)."""
     fam = INKLING_FAMILIES[family]
     say()
     say(f"  {fam['title']} - {fam['by']}: {fam['about']}")
@@ -10803,9 +10526,15 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if a.model and a.model not in names:
         fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names))
     vram_gib, ram_gib, unified, igpu, arch = inkling_pc(gpu, ram)
-    dual_gpus = [g for g in (multi or []) if g.get("vendor", "nvidia") == "nvidia"] if (not hip and not amd and not unified) else []
-    if len(dual_gpus) >= 2:
-        vram_gib = sum(float(g.get("vram_gb") or 0.0) for g in dual_gpus[:2])
+    multi_cards = _multi_gpu_cards(multi, gpu, hip, amd) if not unified else []
+    is_cuda_ink = not hip and getattr(a, "backend", None) != "sycl" and sys.platform != "darwin"
+    ink_gpus = multi_cards[:(4 if is_cuda_ink else 2)] if len(multi_cards) >= 2 else []
+    mgpu_flags = inkling_fit.multi_gpu_flags(ink_gpus, windows=WIN) if (is_cuda_ink and len(ink_gpus) >= 2) else (["--gpus", "2"] if len(ink_gpus) >= 2 else [])
+    use_ink_ls = "--layer-split" in mgpu_flags
+    if len(ink_gpus) >= 2:
+        vram_gib = sum(float(g.get("vram_gb") or 0.0) for g in ink_gpus)
+        mode_desc = "pipeline layer-split" if use_ink_ls else "dual-GPU expert parallelism"
+        ok("GPUs: " + " + ".join(gpu_name(c) for c in ink_gpus) + f" ({mode_desc})")
     vision = a.vision not in ("no", "none")
     want_ctx = a.context or inkling_family.DEFAULT_CONTEXT
     lines = inkling_menu_lines(vram_gib, ram_gib, unified, want_ctx, vision, igpu=igpu, arch=arch)
@@ -10830,19 +10559,41 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if mode == "cross_tier_ssd":
         warn(f"{model} exceeds this PC's memory: about {placed['ssd_gb']:.1f} GB stream from SSD ({rec['build']} fits better)")
     ok(f"context: {ctx} tokens")
-    ok("images: " + ("on (Inkling-2-Mini-Vision.strata, 0.64 GB lossless BF16)" if vision else "off"))
     folder = inkling_folder(a)
     own = bool(getattr(a, "gguf_dir", None))
-    files = inkling_family.files_of(model, vision)
-    left = 0.0
-    for n in files:
-        p = folder / n
-        if not inkling_have(a, p):
-            part = p.with_name(p.name + ".part")
-            left += ((inkling_family.size_of(n) or 0) - (part.stat().st_size if part.is_file() else 0)) / 1e9
-    if left and free_gb(folder) < left:
-        fail(f"not enough free disk space in {folder}: need ~{left:.1f} GB, {free_gb(folder):.1f} GB free",
-             ("use --data-dir on a bigger drive (strata launch --data-dir)" if CONTROL else "use --models-dir on a bigger drive"))
+    local_src = inkling_local_source(a, model) if own else None
+    is_gguf = bool(local_src and local_src[2]) or (not local_src and inkling_family.is_gguf_build(model))
+    if local_src:
+        folder = local_src[1]
+    data, _ = data_folder_for(a)
+    vision_path: Path | None = None
+    dspark_path: Path | None = None
+    if local_src:
+        if vision:
+            vision_path = inkling_find_local_vision(folder, data, is_gguf)
+            if vision_path is not None:
+                ok(f"images: on ({vision_path.name})")
+            else:
+                vision = False
+                warn("no local Inkling-2-Mini Vision shard or mmproj found beside the model; starting text-only")
+        else:
+            ok("images: off")
+        if is_gguf:
+            dspark_path = inkling_find_local_dspark(folder)
+            if dspark_path is not None:
+                ok(f"drafter: DSpark ({dspark_path.name})")
+    else:
+        ok("images: " + ("on (Inkling-2-Mini-Vision.strata, 0.64 GB lossless BF16)" if vision else "off"))
+        files = inkling_family.files_of(model, vision, dspark=True)
+        left = 0.0
+        for n in files:
+            p = folder / n
+            if not inkling_have(a, p):
+                part = p.with_name(p.name + ".part")
+                left += ((inkling_family.size_of(n) or 0) - (part.stat().st_size if part.is_file() else 0)) / 1e9
+        if left and free_gb(folder) < left:
+            fail(f"not enough free disk space in {folder}: need ~{left:.1f} GB, {free_gb(folder):.1f} GB free",
+                 ("use --data-dir on a bigger drive (strata launch --data-dir)" if CONTROL else "use --models-dir on a bigger drive"))
 
     step(3, "Python packages")
     pip_install(runtime_packages(), "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil, textual (the screens)")
@@ -10856,13 +10607,23 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         engine_program = Path(eng) / inkling_family.EXE
         ok(f"engine: {engine_program}")
 
-    step(5, f"downloading {fam['title']} {model}")
-    paths = {n: inkling_fetch(a, n, folder, own) for n in files}
-    ok(f"model file: {paths[files[0]]}")
+    if local_src:
+        step(5, f"using local {fam['title']} files")
+        model_file = local_src[0]
+        ok(f"model file: {model_file}")
+    else:
+        step(5, f"downloading {fam['title']} {model}")
+        files = inkling_family.files_of(model, vision, dspark=True)
+        paths = {n: inkling_fetch(a, n, folder, own) for n in files}
+        model_file = paths[files[0]]
+        vision_path = paths.get(inkling_family.VISION_FILE) if vision else None
+        dspark_path = paths.get(inkling_family.DSPARK_GGUF_FILE) if is_gguf else None
+        if dspark_path is not None:
+            ok(f"drafter: DSpark ({dspark_path.name})")
+        ok(f"model file: {model_file}")
 
     step(6, "preparing the model for Strata")
-    data, _ = data_folder_for(a)
-    tokdir = inkling_tokenizer_dir(a, paths[files[0]], folder, data / "packs" / tag.lower() / "tokenizer", engine_program, own)
+    tokdir = inkling_tokenizer_dir(a, model_file, folder, data / "packs" / tag.lower() / "tokenizer", engine_program, own, data=data)
     if tokdir is None:
         warn("the tokenizer could not be extracted yet; run setup again once the engine or tokenizer.json is available")
         tokdir = data / "packs" / tag.lower() / "tokenizer"
@@ -10870,16 +10631,19 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         ok(f"tokenizer: {tokdir}")
 
     step(7, "writing the start script")
-    args = ["--native", str(paths[files[0]]), "--max-context", str(ctx)]
-    if vision:
-        args += ["--vision", str(paths[inkling_family.vision_file(model)])]
-    drafter = inkling_family.dspark_file(model)
-    if drafter:                                   # a `.strata` pack carries its DSpark drafter inside; a GGUF brings its own file
-        args += ["--dspark", str(paths[drafter])]
-    if len(dual_gpus) >= 2:
-        args += ["--gpus", "2"]
-    if not unified and len(dual_gpus) < 2:
+    drafting_mode = "off" if (is_gguf and dspark_path is None) else inkling_family.DEFAULT_DRAFTER
+    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), dspark=(drafting_mode != "off"))
+    args = ["--native", str(model_file), "--max-context", str(ctx)]
+    if vision and vision_path is not None:
+        args += ["--vision", str(vision_path)]
+    if dspark_path is not None:
+        args += ["--dspark", str(dspark_path)]
+    if mgpu_flags:
+        args += mgpu_flags
+    if not unified and len(ink_gpus) < 2:
         args += ["--vram-experts-gb", f"{placed['vram_gb']:.2f}", "--ram-experts-gb", f"{placed['ram_gb']:.2f}"]
+        if placed.get("ssd_gb", 0.0) > 0.05:
+            args += ["--ssd-experts"]
     cfg = {
         "exe": engine_exe(eng),
         "args": args,
@@ -10890,17 +10654,25 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         "log": str(home() / f"strata-{tag.lower()}.log"),
         "lib_dirs": lib_dirs,
         "port": port,
-        "drafting": inkling_family.DEFAULT_DRAFTER,
+        "drafting": drafting_mode,
         "parallel": inkling_family.DEFAULT_PARALLEL,
     }
+    if use_ink_ls:
+        cfg["layer_split"] = "auto"
     if hip:
         cfg["backend"] = "hip"
     elif sys.platform == "darwin":
         cfg["backend"] = "metal"
     elif a.backend == "sycl":
         cfg["backend"] = "sycl"
-    if len(dual_gpus) >= 2:
-        cfg["gpu"] = [g["index"] for g in dual_gpus[:2]]
+    if isinstance(getattr(a, "_roles", None), dict):
+        from strata_control import gpu_roles as GR
+        rcards = getattr(a, "_roles_cards", None) or (ink_gpus if len(ink_gpus) >= 2 else [gpu])
+        cfg.update(GR.mirror(GR.parse_saved(a._roles) or a._roles, rcards))
+        cfg["gpus_asked"] = True
+    elif len(ink_gpus) >= 2:
+        cfg["gpu"] = [int(g["index"]) for g in ink_gpus]
+        cfg["gpu_order"] = "as_given"
         cfg["gpus_asked"] = True
     elif gpu.get("count", 1) > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]
@@ -10961,7 +10733,7 @@ def preview_family(a) -> int:
         warn(f"little free disk space in {folder}: {free_gb(folder):.1f} GB free for about {left:.1f} GB. Setup goes on and should fit")
     step(5, f"downloading {fam['title']} {model}")
     for f in files:
-        url = (fam["mmproj_hf"] if f.name == fam["mmproj"] else hf_shard(fam, model)) + f.name
+        url = (fam["mmproj_hf"] if f.name == fam["mmproj"] else fam["hf"]) + f.name
         download(url, f, "vision encoder" if f.name == fam["mmproj"] else None)
         verify_sha256(f, *fam["sha256"][f.name])
     ok(f"{fam['title']} {model}: {folder}")
@@ -11244,7 +11016,7 @@ def mac_control_setup(a) -> int:
     step(6, "preparing the model for Strata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     env = dict(os.environ, **gguf_py_env())
-    shards = [files[0], files[0]] if family == "gyro" else files      # Gyro: one file, the model and its n-gram table
+    shards = [files[0], files[0]] if family in ("gyro", "swift") else files      # Gyro (one file) and Swift (n-gram table in shard 1)
     pack_todo = not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists()
     prep_lock = mac_prepare_lock(native) if repacked and (pack_todo or not (native.exists() and done(native))) else None
     try:
@@ -11432,20 +11204,6 @@ def main() -> int:
                     help="the most image tokens a picture becomes (default 1024 with the encoder on the GPU, 300 on "
                          "the CPU): more reads small text and charts better, and takes longer to encode; remembered "
                          "for this model")
-    ap.add_argument("--ple-q8", choices=["on", "off"],
-                    help="add the optional Q8_0 n-gram (PLE) table where the files carry IQ4_NL: row error 0.0053 "
-                         "against BF16 where the bundled table sits at 0.076 (measured). On the two-file GSQ-RCO "
-                         "families it downloads as the model's second file in that file's place and name (the "
-                         "IQ4_NL one is not downloaded); on the four-file Unsloth families it rides beside the "
-                         "files, all of which stay, and is read by --ple-gguf. 54.4 GB, one download per family "
-                         "tree shared by every quant of it on this PC. Off without a word by default; an "
-                         "interactive setup asks (swift, gyro and NVFP4 bring their own tables and are never asked)")
-    ap.add_argument("--ple-io", choices=["ram", "ssd"],
-                    help="how the engine reads the n-gram table: ram locks it in RAM (a fresh 4K prompt about 18%% "
-                         "sooner on a fast card, measured; the table's own size in RAM the experts cannot use), "
-                         "ssd reads only the rows each batch needs from the drive (the engine's default). An "
-                         "interactive setup asks where RAM fits; either answer is kept as the person's option "
-                         "(user_args), so a later setup run does not change it on its own")
     # image generation (Qwen-Image): in preview, not offered in setup or --help; the options still work (docs/IMAGES.md)
     ap.add_argument("--images", choices=["qwen-image", "no"],
                     help=argparse.SUPPRESS)
@@ -11464,7 +11222,7 @@ def main() -> int:
     ap.add_argument("--experimental-speed-projection", metavar="on|off|GGUF",
                     help="EXPERIMENTAL, off by default: the control vector in data/experimental-speed-projection "
                          "(or another GGUF) as a projection on layers 4-44; see docs/DETAILS.md")
-    ap.add_argument("--port", type=int, help="the server's port (default: the one the install was set up with, 8005 for a new one)")
+    ap.add_argument("--port", type=int, help="the server's port (default: the one the install was set up with, 8080 for a new one)")
     ap.add_argument("--gpu", help="one GPU, numbered as nvidia-smi numbers them (AMD: as setup lists them) (default: asked when several can be "
                                   "used; with --setup it is saved, when starting it is for that start only)")
     ap.add_argument("--gpus", help="several GPUs sharing one model, as nvidia-smi numbers them (AMD: as setup lists "
@@ -11702,7 +11460,7 @@ def main() -> int:
     # on the first one alone unless given with --setup), --gpu N runs this start on one card; neither: the saved
     # choice, and asked once when the PC has cards that could share the model
     run_gpu = start_gpus(a.gpus) or a.gpu
-    port = a.port or 8005                              # a new install's port (issue #32: --port for an existing one)
+    port = a.port or 8080                              # a new install's port (issue #32: --port for an existing one)
     if a.calibrate and (a.setup or a.check or not have):    # #2036: said, not dropped
         why = ("--setup" if a.setup else "--check" if a.check else "no model is installed yet")
         warn(f"--calibrate does nothing with {why}: it tunes a model that is already installed. Run setup first, "
@@ -11791,8 +11549,6 @@ def main() -> int:
             say(f"  (the AMD card: {'START-HERE.bat' if WIN else './setup.sh'} --backend hip)")
     cuda_tk = 13                                       # NVIDIA: the toolkit of this model's engine (cuda_choice)
     if hip:                                            # AMD: compiled here; Windows: ready-made
-        if WIN and a.gpus:
-            fail("several AMD cards sharing one model (--gpus) is Linux-only for now", "use one card: --gpu N")
         say("  Your AMD GPUs:" if amd else "  No AMD GPU found (" + ("Windows lists no AMD display adapter)." if WIN
                                                                    else "the amdgpu driver's KFD topology is empty)."))
         for g in amd:
@@ -11815,9 +11571,9 @@ def main() -> int:
                         "your user in the render and video groups)")
         if not usable:
             fail("no AMD GPU Strata can use", f"the AMD backend runs on {AMD_CARDS}")
-        if a.gpus:                                     # a layer split across these cards, the first one the main
+        if a.gpus:                                     # a layer split / expert-parallel across these cards (roles: Main is last)
             chosen = amd_parse_gpus(a.gpus, amd)
-            gpu = chosen[0]
+            gpu = chosen[-1] if getattr(a, "_roles", None) else chosen[0]
         elif a.gpu is not None:
             gpu = next((g for g in usable if g["index"] == a.gpu), None)
             if gpu is None:
@@ -11833,7 +11589,7 @@ def main() -> int:
                     + ", ".join(f"--gpu {g['index']} ({g['name']})" for g in others))
         # the engine is compiled for every chosen card's architecture
         gpu = {**gpu, "count": len(amd), "archs": sorted({g["arch"] for g in chosen})}
-        chosen = [gpu] + chosen[1:]
+        chosen = [gpu if g["index"] == gpu["index"] else g for g in chosen]
         sel = [g["index"] for g in chosen]
         multi = sel if len(sel) > 1 else []
         a.gpu = gpu["index"] if len(amd) > 1 else a.gpu
@@ -11976,10 +11732,7 @@ def main() -> int:
         rec_fam = STRIX_HALO_FAMILY if strix_halo_recommends(gpu, ram) and STRIX_HALO_FAMILY in fams else             tier[0] if tier and tier[0] in fams else fams[0]
         for i, f in enumerate(fams, 1):
             d = FAMILIES[f]
-            # the owner, 2026-10-17 late: the family menu shows the model's name, full stop - no
-            # by/about prose blocks (the menu was a wall of text); the flags that carry warnings
-            # (experimental, hardware notes, the recommendation) stay because they change the choice
-            say(f"  {i}) {cyan}{d['title']}{reset}" + ("   [experimental]" if d.get("experimental") else "")
+            say(f"  {i}) {cyan}{d['title']:20s}{reset} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
                 + family_menu_note(f, hip, gpu, avx2, avx512)
                 + (f"   (recommended for Strix Halo: {STRIX_HALO_MODEL})" if f == rec_fam and rec_fam != fams[0] else ""))
         rest = [*(f for f in OWN_PATH_FAMILIES if not OWN_PATH_FAMILIES[f].get("feed")),
@@ -11988,11 +11741,10 @@ def main() -> int:
                 *(f for f in INKLING_FAMILIES if inkling_offered(a))]
         for j, f in enumerate(rest, len(fams) + 1):    # families with an engine path of their own
             d = {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}[f]
-            say(f"  {j}) {cyan}{d['title']}{reset}" + ("   [new]" if f not in feed_late else "   [feed]")
-                + (f"   ({FEED_UNAVAILABLE[f]['reason']})" if f in FEED_UNAVAILABLE else ""))
+            say(f"  {j}) {cyan}{d['title']:20s}{reset} {d['by']} - {d['about']}   [new]" + (f"   ({FEED_UNAVAILABLE[f]['reason']})" if f in FEED_UNAVAILABLE else ""))
         for u in FEED_UNAVAILABLE.values():            # a feed model this engine does not run: said, never offered (unless the owner's rule allows it, above)
             if not u.get("allowed"):
-                say(f"  -) {u['title']}   {u['reason']}")
+                say(f"  -) {u['title']:20s} {u['by']} - {u['reason']}")
         allf = fams + rest
         if tier_note(ram, low_ram_vram(gpu)) and rec_fam == "swift":
             say("  " + tier_note(ram, low_ram_vram(gpu)))
@@ -12168,8 +11920,14 @@ def main() -> int:
                   else "as requested")
         ok(f"rope scaling: {scaling}, factor {rope_scale:g} ({origin})")
     ok(f"context: {ctx} tokens")
-    # the KV cache (the model's memory of the conversation): 8-bit, or 4-bit after a Hadamard rotation (PR #21)
-    kv = "fp16" if ctx <= 8192 else (a.kv or "int8")
+    # the KV cache (the model's memory of the conversation): 8-bit, or 4-bit after a Hadamard rotation (PR #21).
+    # Track 6A + #6354: default to int8 KV on <= 12.5 GB GPUs (all models), on <= 16.5 GB GPUs (all Unsloth quants at
+    # any context: avoids 21-23% 16K/32K prompt slowdown and preserves 400+ VRAM expert slots), and on <= 24.5 GB GPUs
+    # at >= 64K context.
+    _vram_kv = float((gpu or {}).get("vram_gb") or 0.0)
+    _is_unsloth_kv = bool(MODELS.get(model, {}).get("budget"))
+    _low_vram_kv = (0 < _vram_kv <= 12.5) or (_is_unsloth_kv and ((0 < _vram_kv <= 16.5) or (0 < _vram_kv <= 24.5 and ctx >= 65536)))
+    kv = (a.kv or "int8") if (ctx > 8192 or _low_vram_kv) else (a.kv or "fp16")
     if ctx > 8192 and not a.kv and not a.yes:
         say()
         say("  KV cache precision (the model's memory of the conversation):")
@@ -12329,8 +12087,7 @@ def main() -> int:
     # ---- 3. python packages
     step(3, "Python packages")
     pip_install(runtime_packages(),
-                "numpy, jinja2, regex, pyyaml, tqdm, requests, pillow, psutil, textual (the screens), "
-                "psycopg, embedded-postgres")
+                "numpy, jinja2, regex, pyyaml, tqdm, requests, pillow, psutil, textual (the screens)")
 
     # ---- 4. the engine
     step(4, "the Strata engine")
@@ -12356,29 +12113,6 @@ def main() -> int:
 
     # ---- 5. the model files
     step(5, f"downloading {fam['title']} {model}")
-    ple_sidecar, want_q8, ple_swap = None, "off", False
-    if family in PLE_Q8_TREE and not ready:            # the in-file n-gram table is IQ4_NL here: the Q8_0 offer fits (owner, 2026-10-23)
-        if a.ple_q8:
-            want_q8 = a.ple_q8
-        elif not a.yes and not CONTROL:
-            want_q8 = "on" if ask("The model files keep their n-gram table at IQ4_NL (row error 0.076 against BF16); "
-                                  "the family's Q8_0 table measures 14x truer (0.0053). Add it?" +
-                                  (" it downloads as the model's second file in that file's place and name (54.4 GB "
-                                   "where the IQ4_NL one is 28.8, one download shared by every quant of the family "
-                                   "on this PC), and nothing else is fetched"
-                                   if PLE_Q8_TREE[family] == "ista" else
-                                   " 54.4 GB, one download beside the files (all of them stay), read by --ple-gguf, "
-                                   "shared by every quant of this family on this PC"), ["y", "n"], "n", a.yes) == "y" else "off"
-        if want_q8 == "on":
-            # the two-file GSQ-RCO families hold the table in a file of its own (the second shard is the n-gram
-            # table, never weights): the Q8_0 then swaps into its slot under the slot's own name and the IQ4_NL
-            # file is not downloaded at all - the swap this fork's dev box has run by hand since 2026-10-09, and
-            # what the owner asked for (2026-10-23: "skip downloading shard two and instead download the Q8 PLE
-            # table ... and just rename that to whatever the second shard was supposed to be named").  The four-
-            # file Unsloth families mix the table into the expert shards - no slot to swap, so the sidecar there.
-            ple_swap = PLE_Q8_TREE[family] == "ista" and len(shards) == 2 and not a.gguf_dir
-            if PLE_Q8_TREE[family] == "ista" and not ple_swap:
-                say("  your own files (--gguf-dir) keep their place: the Q8_0 table rides beside them as a sidecar")
     if ready:                                          # pinned files of the pack's repository, each SHA-256-checked
         say(f"  The model files go in {models_dir / MODELS[model]['repo'].replace('/', '--')}")
         if model_source() == "modelscope":
@@ -12399,25 +12133,11 @@ def main() -> int:
                 say(f"  Downloading from {hf_endpoint()} (HF_ENDPOINT)")
         for s in shards:
             if s.exists() and done(s):
-                if ple_swap and s.name.endswith("-00002-of-00002.gguf") and s.stat().st_size != PLE_Q8["ista"][2]:
-                    say(f"  {s.name} is the bundled IQ4_NL table: the Q8_0 swap replaces this copy (models sharing "
-                        "the file by a hard link keep theirs)")
-                    s.unlink()
-                else:
-                    ok(f"{s.name} already downloaded")
-                    continue
-            # the original's shard 2 is the shared n-gram table, the same file for all its sizes, the Coder and
-            # DavidAU's Turbo-Brilliance (his measured 2026-10-17: SHA-256 equal to the original's - it is the
-            # PLE n-gram table, never model weights, so sharing it is right and not a lucky accident).  Boxes
-            # that swapped a bigger table into the slot themselves (sleepyeldrazi's Q8_0 one - this fork's dev
-            # box among them) own that swap outside setup - or, since 2026-10-23, own it through setup: with
-            # --ple-q8 on the Q8_0 downloads under the slot's name and checks against the table's own pin, and
-            # the sizes pinned above then describe the bundled file that stayed behind.
+                ok(f"{s.name} already downloaded")
+                continue
+            # the original's shard 2 is the same file for all its sizes and the Coder: reuse one that is already here
             other = [p for p in Path(a.models_dir).glob("*/Qwen3.8-Flash-Next-GSQ-RCO-*-00002-of-00002.gguf") if done(p)]
-            if ple_swap:                               # the slot wants the Q8_0 blob: a finished file of exactly
-                other = [p for p in sorted(Path(a.models_dir).glob("*/*.gguf"))   # the table's size, under any name
-                         if done(p) and p.stat().st_size == PLE_Q8["ista"][2]]    # (the pinned hash below keeps it honest)
-            if (family in ("qwen", "coder", "dau") or ple_swap) and s.name.endswith("00002-of-00002.gguf") and other and not s.exists():
+            if family in ("qwen", "coder") and s.name.endswith("00002-of-00002.gguf") and other and not s.exists():
                 try:
                     os.link(other[0], s)
                     mark(s)
@@ -12425,25 +12145,13 @@ def main() -> int:
                     continue
                 except OSError:
                     pass
-            download(hf(PLE_Q8["ista"][0]) + PLE_Q8["ista"][1] if ple_swap and s.name.endswith("-00002-of-00002.gguf")
-                     else model_hf(fam, model) + s.name, s)
+            download(model_hf(fam, model) + s.name, s)
     if not ready:
         check_shards(shards)
     for s in ([] if ready else shards):                # the Unsloth files: pinned sizes and SHA-256
-        if (family in PLE_Q8_TREE and PLE_Q8_TREE[family] == "ista" and s.is_file() and not ready
-                and s.name.endswith("-00002-of-00002.gguf") and s.stat().st_size == PLE_Q8["ista"][2]):
-            # the slot holds the tree's Q8_0 table - swapped by --ple-q8 or by a hand swap that outlived it (the
-            # dev box's since 2026-10-09): checked against the table's pin, not the IQ4_NL pin the family dict
-            # carries, so the swap survives every later setup run in both directions, by these bytes
-            verify_sha256(s, *PLE_Q8["ista"][2:], own=bool(a.gguf_dir))
-        elif s.name in fam.get("sha256", {}):
+        if s.name in fam.get("sha256", {}):
             verify_sha256(s, *fam_pin(fam, s), own=bool(a.gguf_dir))
     ok("model files present")
-    if want_q8 == "on" and ple_swap:
-        ok(f"n-gram table: the model's second file is the Q8_0 table in its slot ({PLE_Q8['ista'][1]} read under "
-           f"{shards[1].name}) - the IQ4_NL file was not downloaded, and no --ple-gguf sidecar line is needed")
-    elif want_q8 == "on":                              # the four-file Unsloth family keeps every shard (the table is
-        ple_sidecar = get_ple_q8(Path(a.models_dir), PLE_Q8_TREE[family])   # mixed with the experts): the table rides beside them
     mmproj = Path(a.models_dir) / fam.get("mmproj", MMPROJ)
     if not mmproj.exists():                            # an earlier install's copy (the same file for every family)
         mmproj = find_in(roots, f"models/{fam.get('mmproj', MMPROJ)}") or mmproj      # a feed model without a picture reader has no fam["mmproj"]
@@ -12541,21 +12249,12 @@ def main() -> int:
         ple = next((s for s in shards if any(t.name == "per_layer_token_embd.weight" for t in GGUFFile(s).tensors)), None)
         if ple is None:
             fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
-        # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup;
-        #  an opted-in Q8_0 sidecar rides by name instead, --ple-gguf, over the in-file IQ4_NL one - and on
-        #  a 4-shard file the shards must then be enumerated as native dense too: the engine reads an
-        #  external table as a native-dense additional shard and refuses its split metadata against the
-        #  4-of-4 first shard ("additional shard must match the architecture-validated first shard's split
-        #  metadata", measured 2026-10-23 11:24 on the huihui arm; with the four --native-dense-gguf lines
-        #  it started at 11:32 - the shape the owner wired by hand and the swift config already ran))
-        if ple_sidecar is not None:
-            ple = ple_sidecar
-        dense = [x for s in shards for x in ("--native-dense-gguf", str(s))] if ple_sidecar is not None and len(shards) > 2 else []
-        model_args = ["--pack", str(pack), "--native", str(shards[0]), *dense,
-                      *(["--ple-gguf", str(ple)] if ple_sidecar is not None or len(shards) <= 2 else [])]
+        # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
+        model_args = ["--pack", str(pack), "--native", str(shards[0]),
+                      *(["--ple-gguf", str(ple)] if len(shards) <= 2 else [])]
     from strata_control import setup_config            # the seam: the lines that built the run config live in strata_control/setup_config.py
     _built = setup_config.config_for(setup_config.SetupInputs(
-        a=a, adopted=adopted, chosen=chosen, cuda_tk=cuda_tk, data=data, draft_vocab=draft_vocab, eng=eng, engine_ver=engine_ver, esp=esp, fam=fam, family=family, gpu=gpu, hip=hip, in_budget=in_budget, lib_dirs=lib_dirs, low_ram=low_ram, meta=meta, mmproj=mmproj, model=model, model_args=model_args, models_dir=models_dir, multi=multi, pack=pack, ple=ple, port=port, q4_split=q4_split, ram=ram, reader=reader, ready=ready, rope_scale=rope_scale, rt=rt, scaling=scaling, shards=shards, tag=tag, vision=vision, ctx=ctx, kv=kv, resident=resident, budget=budget, GGUFFile=GGUFFile), sys.modules[__name__])
+        a=a, adopted=adopted, chosen=chosen, cuda_tk=cuda_tk, draft_vocab=draft_vocab, eng=eng, engine_ver=engine_ver, esp=esp, fam=fam, family=family, gpu=gpu, hip=hip, in_budget=in_budget, lib_dirs=lib_dirs, low_ram=low_ram, meta=meta, mmproj=mmproj, model=model, model_args=model_args, models_dir=models_dir, multi=multi, pack=pack, ple=ple, port=port, q4_split=q4_split, ram=ram, reader=reader, ready=ready, rope_scale=rope_scale, rt=rt, scaling=scaling, shards=shards, tag=tag, vision=vision, ctx=ctx, kv=kv, resident=resident, budget=budget, GGUFFile=GGUFFile), sys.modules[__name__])
     cfg, cfg_path, cal, args, ctx, kv, resident = (_built.cfg, _built.cfg_path, _built.cal, _built.args, _built.ctx, _built.kv, _built.resident)
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a),
                        after_carry=(lambda c: uma_cache_guard(c, model, gpu)) if gpu.get("uma") else None)

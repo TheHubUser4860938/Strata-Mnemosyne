@@ -196,15 +196,14 @@ def install_logprobs():
 
     keys = Eng.sampling_keys
 
-    def sampling_keys(sampling, split=False, hy4=False, inkling=False):
-        # `split`, `hy4` and `inkling` ride through to the real builder: the server calls this with
-        # split=self.split_engine, hy4=self.hy4_engine and inkling=self.inkling_engine, and a wrapper
-        # that drops them hands the split engine the shared engine's key set (a cache miss on every
-        # prompt) and the Hy4-Flash / Inkling-2-Mini parsers the Flash-Next-only keys they refuse - and
-        # a wrapper that forgets the parameter raises TypeError on the first request of an Arc boot.
+    def sampling_keys(sampling, **kw):
+        # `**kw` is the drift fix (0.2.20): the server calls this with split=, hy4= and inkling=, and a
+        # wrapper that names each keyword has to be edited the release after every new shape engine -
+        # 0.2.15 `split=`, 0.2.18 `hy4=`, 0.2.19 `inkling=`. Dropping one hands the split engine the
+        # shared key set (a cache miss on every prompt) and the shape parsers the keys they refuse.
         k = top_logprobs(sampling or {})
-        drop_lp = hy4 or inkling          # both parsers refuse logprobs (serve/hy4_kind.py, serve/inkling_kind.py)
-        return keys(sampling, split=split, hy4=hy4, inkling=inkling) + ("" if drop_lp else (f" logprobs={k}" if k is not None else ""))
+        drop_lp = bool(kw.get("hy4") or kw.get("inkling"))          # both parsers refuse logprobs (serve/hy4_kind.py, serve/inkling_kind.py)
+        return keys(sampling, **kw) + ("" if drop_lp else (f" logprobs={k}" if k is not None else ""))
     Eng.sampling_keys = staticmethod(sampling_keys)
 
     generate = Eng.generate

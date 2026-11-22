@@ -224,9 +224,14 @@ public:
     static std::vector<double> parse_split(const std::string& spec, int64_t n_layers);
     bool layer_split() const { return !split_.empty(); }
 
-    /// The device address of one slot.
+    /// The device address of one slot, and its byte capacity inside the arena.
     uint8_t* device_slot(int32_t slot);
     const uint8_t* device_slot(int32_t slot) const;
+    size_t slot_capacity(int32_t slot) const;
+
+    /// Zeros up to 512 boundary bytes at the start of `first_lent_slot` after a prefill loan ends, so vectorized
+    /// row-padded quantized kernels reading the tail of `first_lent_slot - 1` never overread leftover NaN scratch.
+    bool scrub_loan_boundary(int32_t first_lent_slot, std::string& err, void* stream = nullptr);
 
     /// Copies `(layer, expert)`'s blob from `host_blob` into `slot` on `stream`.  Asynchronous: the caller
     /// orders it.  Returns false if the indices are out of range rather than reading past the arena.
