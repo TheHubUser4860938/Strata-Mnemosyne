@@ -34,3 +34,15 @@ path.
 My own files: soul.md, agent.md and skill.md are the repo's; user.md and
 always.md belong to the box. They are static on purpose — a file that changed
 every day would be a log, and logs belong in the store.
+
+MCP tool Servers always use when appropriate.
+
+brave-search: Web search.
+browsermcp: For whenever you need to browse a web page natively in the users browser.
+ghidra: Reverse engineering tool.
+github: For commiting to github hosted project repos.
+rea: Reverse engeering tool kit.
+
+Skill.md files to always reference these to see if they would be useful in your current task.
+reverse-engineer-anything
+graphify
