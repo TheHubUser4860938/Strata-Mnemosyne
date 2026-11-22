@@ -53,8 +53,9 @@ class Default(unittest.TestCase):
     def test_the_server_decides_it_after_the_picture_reader_is_known(self):
         src = (ROOT / "serve" / "server.py").read_text(encoding="utf-8")
         # the call, not the whole line: 0.2.18 moved the argument from `svc.vision is not None` to
-        # `svc.has_vision()` (serve/server.py:5087, so a Hy4 engine that reads its own pictures counts),
-        # and what this test pins is the ORDER - the Service exists, then the setting, then the reader.
+        # `svc.has_vision()` (serve/server.py:5087, so a Hy4 engine that reads its own pictures counts;
+        # 0.2.19's Inkling-2-Mini rides the same predicate), and what this test pins is the ORDER - the
+        # Service exists, then the setting, then the reader.
         at = src.index('hub.settings["image_results"] = resolve_image_results(')
         self.assertLess(at, src.index('if hub.settings["image_results"]:\n            hub.media_dir'))
         self.assertLess(src.index("svc = Service(engine, tok"), at)

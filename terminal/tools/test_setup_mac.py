@@ -505,12 +505,15 @@ class ControlMode(unittest.TestCase):
 
     def test_other_platforms_and_the_terminal_still_use_their_own_setup(self):
         src = (ROOT / "setup.py").read_text(encoding="utf-8")
-        # 0.2.18 collapsed the two Mac branches into one: the Terminal delegates to metal/setup_mac.py,
-        # and the app (Control mode) AND a Hy4-Flash pack go on below in setup.py's own path
-        # (setup.py:10964, `and not CONTROL and not _hy4_ask`). Upstream's own test still pins the
-        # second branch that is gone; measured on their v0.2.18 in a clean worktree: 47 tests, 1 fail.
-        self.assertIn('if sys.platform == "darwin" and not CONTROL and not _hy4_ask:', src)
+        # 0.2.18 collapsed the two Mac branches into one and 0.2.19 restored the Control arm, so all three
+        # lines are in setup.py now: the Terminal delegates to metal/setup_mac.py, and the app (Control
+        # mode), a Hy4-Flash pack and an Inkling-2-Mini pack go on below in setup.py's own path.
+        # The condition is pinned WITHOUT its trailing colon: 0.2.19 appended `and not _ink_ask` to a line
+        # 0.2.18 wrote, and a pin that ends at the colon breaks on every new shape engine (red 1 of 47 on
+        # upstream's own v0.2.19). What this test is about is who delegates and who does not.
+        self.assertIn('if sys.platform == "darwin" and not CONTROL and not _hy4_ask', src)
         self.assertIn("return mac_setup(sys.argv[1:])", src)
+        self.assertIn('return mac_control_setup(a)', src)
 
 
 class MacAppUnsloth(unittest.TestCase):
