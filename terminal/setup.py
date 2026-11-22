@@ -10736,15 +10736,44 @@ def inkling_tokenizer_dir(a, model: Path, folder: Path, out: Path, engine: Path 
         return out
     tok_json = folder / inkling_family.TOKENIZER_FILE
     tmpl_file = folder / inkling_family.CHAT_TEMPLATE_FILE
-    # 1. Try reading Section 0 manifest directly (uses embedded chat_template + tokenizer_json or companion tokenizer.json)
-    try:
-        manifest = inkling_tokenizer.read_manifest(model)
-        if manifest.get("tokenizer_json") is None and not tok_json.is_file() and not own:
-            tok_json = inkling_fetch(a, inkling_family.TOKENIZER_FILE, folder, own)
-        inkling_tokenizer.convert_manifest(manifest, out, tokenizer_json_path=tok_json if tok_json.is_file() else None)
-        return out
-    except RuntimeError:
-        pass
+    gguf = str(model).lower().endswith(".gguf")     # a GGUF carries its own o200k vocab and chat template; it has no Section 0
+
+    def export_via_engine() -> Path | None:
+        """Ask `strata-inkling --export-tokenizer` to read the tokenizer out of the model file itself."""
+        if engine is None or not Path(engine).is_file():
+            return None
+        raw = out.with_name(out.name + "-export")
+        raw.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ)
+        var = "PATH" if WIN else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
+        eng_dir = str(Path(engine).resolve().parent)
+        env[var] = os.pathsep.join([eng_dir, env[var]]) if env.get(var) else eng_dir
+        run([str(engine), "--export-tokenizer", str(model), str(raw)], env=env)
+        src_tok = (raw / "tokenizer.hf.json") if (raw / "tokenizer.hf.json").is_file() else tok_json
+        src_tpl = (raw / "chat_template.jinja") if (raw / "chat_template.jinja").is_file() else tmpl_file
+        if src_tok.is_file() and src_tpl.is_file():
+            inkling_tokenizer.convert_files(src_tok, src_tpl, out)
+            return out
+        return None
+
+    # 1. Try reading Section 0 manifest directly (uses embedded chat_template + tokenizer_json or companion tokenizer.json).
+    # A `.gguf` has no Section 0 - read_manifest says so with a ValueError, which is a branch, not a failure.
+    if not gguf:
+        try:
+            manifest = inkling_tokenizer.read_manifest(model)
+            if manifest.get("tokenizer_json") is None and not tok_json.is_file() and not own:
+                tok_json = inkling_fetch(a, inkling_family.TOKENIZER_FILE, folder, own)
+            inkling_tokenizer.convert_manifest(manifest, out, tokenizer_json_path=tok_json if tok_json.is_file() else None)
+            return out
+        except (RuntimeError, ValueError):
+            pass
+    else:
+        # 1b. A `.gguf` (Unsloth's UD-* packs): the engine loads this exact file, so its own tokenizer is the
+        # authoritative one and costs no download. The companion HF files below are the fallback for a box
+        # whose Inkling component is not installed yet.
+        built = export_via_engine()
+        if built is not None:
+            return built
     # 2. Try companion HF files (tokenizer.json + chat_template.jinja) directly (no zstd needed)
     if not tok_json.is_file() and not own:
         try:
@@ -10760,20 +10789,7 @@ def inkling_tokenizer_dir(a, model: Path, folder: Path, out: Path, engine: Path 
         inkling_tokenizer.convert_files(tok_json, tmpl_file, out)
         return out
     # 3. Fallback to strata-inkling --export-tokenizer
-    if engine is not None and Path(engine).is_file():
-        raw = out.with_name(out.name + "-export")
-        raw.mkdir(parents=True, exist_ok=True)
-        env = dict(os.environ)
-        var = "PATH" if WIN else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
-        eng_dir = str(Path(engine).resolve().parent)
-        env[var] = os.pathsep.join([eng_dir, env[var]]) if env.get(var) else eng_dir
-        run([str(engine), "--export-tokenizer", str(model), str(raw)], env=env)
-        src_tok = (raw / "tokenizer.hf.json") if (raw / "tokenizer.hf.json").is_file() else tok_json
-        src_tpl = (raw / "chat_template.jinja") if (raw / "chat_template.jinja").is_file() else tmpl_file
-        if src_tok.is_file() and src_tpl.is_file():
-            inkling_tokenizer.convert_files(src_tok, src_tpl, out)
-            return out
-    return None
+    return export_via_engine()
 
 
 def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted):
