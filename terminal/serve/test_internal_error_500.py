@@ -11,7 +11,8 @@ import serve.server as server
 
 
 def handler(raise_this, answer_started=False):
-    svc = SimpleNamespace(begin_request=lambda path, req: None, drop_embeddings=lambda: None, reserve_inference=lambda: True, release_inference=lambda: None)
+    svc = SimpleNamespace(begin_request=lambda path, req: None, drop_embeddings=lambda: None, reserve_inference=lambda: True, release_inference=lambda: None,
+                          check_model=lambda req: None)      # 0.2.20: _post asks the service to accept the model name before it routes (serve/server.py:9659)
     H = server.make_handler(svc)
     h = H.__new__(H)
     h.path = "/v1/chat/completions"
