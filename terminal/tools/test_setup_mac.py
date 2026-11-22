@@ -505,8 +505,12 @@ class ControlMode(unittest.TestCase):
 
     def test_other_platforms_and_the_terminal_still_use_their_own_setup(self):
         src = (ROOT / "setup.py").read_text(encoding="utf-8")
-        self.assertIn('if sys.platform == "darwin" and not CONTROL:', src)
-        self.assertIn('if sys.platform == "darwin" and CONTROL:', src)
+        # 0.2.18 collapsed the two Mac branches into one: the Terminal delegates to metal/setup_mac.py,
+        # and the app (Control mode) AND a Hy4-Flash pack go on below in setup.py's own path
+        # (setup.py:10964, `and not CONTROL and not _hy4_ask`). Upstream's own test still pins the
+        # second branch that is gone; measured on their v0.2.18 in a clean worktree: 47 tests, 1 fail.
+        self.assertIn('if sys.platform == "darwin" and not CONTROL and not _hy4_ask:', src)
+        self.assertIn("return mac_setup(sys.argv[1:])", src)
 
 
 class MacAppUnsloth(unittest.TestCase):

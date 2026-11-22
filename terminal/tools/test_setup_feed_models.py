@@ -415,7 +415,12 @@ class TerminalAndApp(Base):
 
     def test_without_a_list_the_table_is_the_same(self):
         s, rows = self.table()
-        self.assertEqual([r["family"] for r in rows], [f for f in fresh_setup("setup_reference").FAMILIES] + ["qwen36"])
+        # 0.2.18: strata_mcp lists Hy4-Flash last (tools/strata_mcp.py:668, `hy4_visible()` after the
+        # built-ins and this fork's qwen36), and its family lives in setup's own HY4_FAMILIES table,
+        # not in FAMILIES - so the expected list is FAMILIES, then qwen36, then the HY4 families.
+        setup = fresh_setup("setup_reference")
+        self.assertEqual([r["family"] for r in rows],
+                         [f for f in setup.FAMILIES] + ["qwen36"] + list(setup.HY4_FAMILIES))
         self.assertTrue(all("available" not in r for r in rows))
 
     def test_a_cached_list_adds_its_sizes_after_the_built_in_ones_and_hides_what_cannot_run(self):
