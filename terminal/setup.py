@@ -10669,7 +10669,7 @@ def inkling_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=inkling_fami
     }
     out = []
     for r in inkling_fit.rows(vram_gib, ram_gib, unified, ctx, vision):
-        out.append((r["build"], f"{r['build']:7s} {inkling_family.BUILD_ABOUT[r['build']]}; download {r['download_gb']:.1f} GB   <- {words[r['mode']]}"
+        out.append((r["build"], f"{r['build']:18s} {inkling_family.BUILD_ABOUT[r['build']]}   <- {words[r['mode']]}"
                     + ("   (recommended)" if r["build"] == rec else "")))
     return out
 
@@ -10679,12 +10679,12 @@ def inkling_have(a, dst: Path) -> bool:
         return False
     if done(dst) or bool(getattr(a, "gguf_dir", None)):
         return True
-    pin = inkling_family.FILES.get(dst.name) or inkling_family.TOKENIZER_FILES.get(dst.name)
+    pin = inkling_family.ALL_FILES.get(dst.name) or inkling_family.TOKENIZER_FILES.get(dst.name)
     return bool(pin and dst.stat().st_size == pin[0] and not dst.with_name(dst.name + ".part").exists())
 
 
 def inkling_verify(dst: Path, name: str, own: bool) -> None:
-    pin = inkling_family.FILES.get(name) or inkling_family.TOKENIZER_FILES.get(name)
+    pin = inkling_family.ALL_FILES.get(name) or inkling_family.TOKENIZER_FILES.get(name)
     if not pin:
         return
     size, sha = pin
@@ -10823,7 +10823,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         p = folder / n
         if not inkling_have(a, p):
             part = p.with_name(p.name + ".part")
-            left += (inkling_family.FILES[n][0] - (part.stat().st_size if part.is_file() else 0)) / 1e9
+            left += ((inkling_family.size_of(n) or 0) - (part.stat().st_size if part.is_file() else 0)) / 1e9
     if left and free_gb(folder) < left:
         fail(f"not enough free disk space in {folder}: need ~{left:.1f} GB, {free_gb(folder):.1f} GB free",
              ("use --data-dir on a bigger drive (strata launch --data-dir)" if CONTROL else "use --models-dir on a bigger drive"))
@@ -10856,7 +10856,10 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     step(7, "writing the start script")
     args = ["--native", str(paths[files[0]]), "--max-context", str(ctx)]
     if vision:
-        args += ["--vision", str(paths[inkling_family.VISION_FILE])]
+        args += ["--vision", str(paths[inkling_family.vision_file(model)])]
+    drafter = inkling_family.dspark_file(model)
+    if drafter:                                   # a `.strata` pack carries its DSpark drafter inside; a GGUF brings its own file
+        args += ["--dspark", str(paths[drafter])]
     if len(dual_gpus) >= 2:
         args += ["--gpus", "2"]
     if not unified and len(dual_gpus) < 2:

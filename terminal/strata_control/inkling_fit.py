@@ -53,8 +53,22 @@ BUILDS = {
     "SQ-20": {"file": "Inkling-2-Mini-SQ-20.strata", "footprint_gb": 19.35, "dense_gb": 3.67, "bodies_gb": 15.68, "file_gb": 19.35},
     "SQ-15": {"file": "Inkling-2-Mini-SQ-15.strata", "footprint_gb": 14.35, "dense_gb": 2.07, "bodies_gb": 12.28, "file_gb": 14.35},
     "SQ-10": {"file": "Inkling-2-Mini-SQ-10.strata", "footprint_gb": 10.47, "dense_gb": 1.87, "bodies_gb": 8.60, "file_gb": 10.47},
+    # SC117's abliterated packs are byte-for-byte the same sizes as the stock three (his SHA256SUMS.txt and HF's tree
+    # API agree, read 2026-11-22): the ablation changes 20 attention out-projection tensors, not the layout, so the
+    # placement numbers carry over unchanged.  Only the bytes differ.
+    "SQ-20-abliterated": {"file": "Inkling-2-Mini-SQ-20-abliterated.strata", "footprint_gb": 19.35, "dense_gb": 3.67, "bodies_gb": 15.68, "file_gb": 19.35},
+    "SQ-15-abliterated": {"file": "Inkling-2-Mini-SQ-15-abliterated.strata", "footprint_gb": 14.35, "dense_gb": 2.07, "bodies_gb": 12.28, "file_gb": 14.35},
+    "SQ-10-abliterated": {"file": "Inkling-2-Mini-SQ-10-abliterated.strata", "footprint_gb": 10.47, "dense_gb": 1.87, "bodies_gb": 8.60, "file_gb": 10.47},
+    # The community Unsloth GGUFs, read as written (no requantization).  This box has not measured their dense-vs-expert
+    # split, so the whole file is placed as expert bodies: the conservative read, which never promises more VRAM room
+    # than the file needs.  Their DSpark head (0.40 GB) and mmproj (0.64 GB) are extra files beside the model.
+    "UD-Q8_K_XL": {"file": "Inkling-2-Mini-UD-Q8_K_XL.gguf", "footprint_gb": 22.87, "dense_gb": 0.0, "bodies_gb": 22.87, "file_gb": 22.87},
+    "UD-Q4_K_XL": {"file": "Inkling-2-Mini-UD-Q4_K_XL.gguf", "footprint_gb": 17.63, "dense_gb": 0.0, "bodies_gb": 17.63, "file_gb": 17.63},
+    "UD-IQ4_XS": {"file": "Inkling-2-Mini-UD-IQ4_XS.gguf", "footprint_gb": 15.73, "dense_gb": 0.0, "bodies_gb": 15.73, "file_gb": 15.73},
+    "UD-IQ3_XXS": {"file": "Inkling-2-Mini-UD-IQ3_XXS.gguf", "footprint_gb": 11.66, "dense_gb": 0.0, "bodies_gb": 11.66, "file_gb": 11.66},
 }
-ORDER = ("SQ-20", "SQ-15", "SQ-10")       # best quality first
+ORDER = ("SQ-20", "SQ-20-abliterated", "SQ-15", "SQ-15-abliterated", "SQ-10", "SQ-10-abliterated",
+         "UD-Q8_K_XL", "UD-Q4_K_XL", "UD-IQ4_XS", "UD-IQ3_XXS")       # best quality first
 
 
 def build_names() -> list[str]:

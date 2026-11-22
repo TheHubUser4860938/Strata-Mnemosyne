@@ -247,6 +247,14 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
                     'BASE_URL = f"https://huggingface.co/{REPO}/resolve/{REVISION}/"',
                     'https://huggingface.co/nazeshinjite/Qwen3.8-Flash-Next-DFlash2-GGUF',   # the credit link in drafting.py's comment and drafting_fetch.py's docstring (nothing opens it)
                     'HF_DEFAULT = "https://huggingface.co"',
+                    # 0.2.19's transfer helper: the one place that decides whether a URL points at a model host (its own
+                    # docstring names the hosts, and the two lines below read them). Nothing here downloads: acquisition.require does.
+                    '"""True when `hostname` is Hugging Face (huggingface.co / hf.co) or the configured HF_ENDPOINT host."""',
+                    'if h == "huggingface.co" or h.endswith(".huggingface.co") or h == "hf.co" or h.endswith(".hf.co"):',
+                    'ep = (env.get("HF_ENDPOINT") or "").strip()',
+                    # the Inkling-2-Mini community packs (SC117's abliterated `.strata`, Unsloth's GGUF): the source list a
+                    # fetch walks, behind inkling_fetch. The stock `.strata` source stays first.
+                    'out += [{"kind": "http", "base": f"https://huggingface.co/{repo}/resolve/main"} for repo in (ABLITERATED_REPO, GGUF_REPO)]',
                     'base = (endpoint if endpoint is not None else (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or HF_DEFAULT)')
         found = []
         for folder in ("strata_cli", "serve", "strata_control"):

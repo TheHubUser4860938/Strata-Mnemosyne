@@ -2746,7 +2746,13 @@ no header gets exactly yesterday's bytes.
 carries cart bodies is marked on the request (`cart=1`, which the server sends when riders rode and
 never when every ask was refused), and the engine parks it in its OWN quota of `N`: ordinary traffic
 can no longer evict it, and an eleventh cart pushes the oldest cart rather than a user's
-conversation. The quota is additive - the ordinary `--conversation-cache-slots` keep their own four -
+conversation. The fence is the `strata` engine's lever. The two shape engines' GEN parsers do not
+know the key — `engine/src/inkling2/ink_serve.h:224-247` and the Hy4-Flash serve headers list the
+sampling keys plus `prefill`, `image` and `hold` and refuse anything else — so on a Hy4-Flash or
+Inkling-2-Mini boot `sampling_keys` returns early and the carts ride the shared pool. The bodies
+still attach and the tier-2 prefix still loads; only the parking rule is the ordinary oldest-first
+one. (`graft=1` is dropped by the same return, for the same reason.)
+The quota is additive - the ordinary `--conversation-cache-slots` keep their own four -
 and RAM still rules, so a cart that the carts cannot make room for may take an ordinary conversation
 instead of going un-parked. `0` (the default everywhere, upstream's shape) is one shared pool with
 the oldest-first rule over everything. What the SERVER attached is a separate ledger: the distinct
