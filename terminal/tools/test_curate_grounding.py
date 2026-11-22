@@ -75,13 +75,19 @@ class DatedPrompt(unittest.TestCase):
         # the paragraph costs a line and its receipts live in the code comment instead of being paid
         # as prefill on every ask all day. 1900 -> 2100: measured 1955, plus one more law of
         # headroom, still nowhere near a context dump.
-        # RE-BASED 2026-11-22: measured 2224, and date-stable (2224 on 2026-11-01, 11-22, 12-31 and
-        # 2027-01-01 - the delta is the four rules, the rendered date cancels against the control
-        # arm). The 0.2.18 merge touched neither file (git diff HEAD^1 HEAD is empty for
-        # curate_loop.py and this test), so the bar was simply stale: it has been red since the
-        # 0.2.16 move, hidden in the tools run by the curate tests' tokenizer dependency, which
-        # errored instead of asserting. 2100 -> 2400: measured 2224 plus one law of headroom.
-        self.assertLess(delta, 2400)
+        # RE-BASED 2026-11-22 (twice, same day, both with a cause). First: the bar was stale since
+        # the 0.2.16 move - measured 2224, date-stable on four dates, the merge touched neither
+        # file. Then: _ANCHOR_RULE was wired into the shipped arm (it had been dead code since
+        # 2026-11-16 - the "NAME THE SUBJECT" law was in no harvest ask), which costs +313 bytes
+        # and is the fifth paragraph this budget counts: measured 2537, shipped prompt 3214.
+        # 2400 -> 2800: measured 2537 plus one law of headroom.
+        self.assertLess(delta, 2800)
+        # and the paragraph this bar exists to budget must actually be in the ask (2026-11-22:
+        # it was defined and joined nowhere for six days, which no size check can see).
+        self.assertIn("NAME THE SUBJECT", EXTRACT_PROMPT,
+                      "the owner's 2026-11-16 law rides the shipped arm")
+        self.assertNotIn("NAME THE SUBJECT", EXTRACT_PROMPT_UNDATED,
+                         "and the control arm stays byte-identical: one variable")
 
     def test_both_arms_see_the_same_conversation(self):
         dated, ctl = extract_prompt(TURN, 3), extract_prompt(TURN, 3, dated=False)

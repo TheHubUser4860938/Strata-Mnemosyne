@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from curate_loop import (parse_extract_line, fact_class, _state_pick,
+from curate_loop import (parse_extract_line, extract_lines, fact_class, _state_pick, state_text,
                          EXTRACT_PROMPT, EXTRACT_PROMPT_UNDATED)
 
 TURN_U = ("we replayed the debate clip in class - Maria argued that women should not "
@@ -176,6 +176,97 @@ class TheReasonField(unittest.TestCase):
         self.assertIn("WHY:", EXTRACT_PROMPT, "the shipped shape asks for the reason")
         self.assertNotIn("WHY:", EXTRACT_PROMPT_UNDATED,
                          "and the control arm is untouched: one variable, byte for byte")
+
+
+class TailGrammar(unittest.TestCase):
+    """The 2026-11-22 pair: the tail fields are read BY NAME, and a wrapped candidate is one
+    candidate. Both come from the live store, both used to cost facts permanently - a line that
+    parsed to nothing is a turn marked processed with nothing written. 84 of 618 extracts (13.6%)
+    stored nothing; on the four pending turns probed at temp 0.8 only 4 of 16 emitted lines
+    became candidates."""
+    HEAD = ("FACT: the engine on this box is 0.1.64 || PROBE: which engine runs here? || "
+            "GOLD: 0.1.64 || SCOPE: project")
+
+    def test_lane_written_before_attr_parses(self):
+        # the verbatim shape of live turn 42991: LANE first, ATTR second. The positional regex
+        # could not consume it and dropped both of the turn's lines.
+        ln = self.HEAD + " || LANE: state:version || ATTR: observed || QUOTE: the engine is 0.1.64"
+        c = parse_extract_line(ln, "the engine is 0.1.64 now", "noted")
+        self.assertIsNotNone(c, "field order is not a contract the model has to honour")
+        self.assertEqual((c["lane"], c["state_key"]), ("state", "version"))
+        self.assertEqual(c["attr"], "observed")
+        self.assertTrue(c["quote_ok"], "and the quote still grounds")
+
+    def test_the_fields_in_any_order_carry_the_same_fields(self):
+        ordered = self.HEAD + " || ATTR: user || LANE: taboo || QUOTE: the graft needs RAM || WHY: because the pool is full"
+        shuffled = self.HEAD + " || WHY: because the pool is full || QUOTE: the graft needs RAM || LANE: taboo || ATTR: user"
+        a, b = parse_extract_line(ordered, "the graft needs RAM", "noted"), \
+            parse_extract_line(shuffled, "the graft needs RAM", "noted")
+        self.assertIsNotNone(a) and self.assertIsNotNone(b)
+        self.assertEqual(a, b, "the grammar is a set of named fields, not a sequence")
+
+    def test_a_wrapped_candidate_keeps_its_grounding(self):
+        # live turn 42993 emitted one candidate as three lines.
+        reply = (self.HEAD + "\nATTR: attributed\nLANE: fact\n"
+                 + self.HEAD.replace("0.1.64", "0.1.63"))
+        lines = extract_lines(reply)
+        self.assertEqual(len(lines), 2, "two candidates, not four lines")
+        c = parse_extract_line(lines[0], "the engine is 0.1.64 now", "noted")
+        self.assertIsNotNone(c)
+        self.assertEqual(c["attr"], "attributed", "the fact keeps the fields that were on the next line")
+        self.assertEqual(c["lane"], "fact")
+
+    def test_a_bare_tail_line_joins_the_candidate_above(self):
+        # live turn 42992's second line: a tail with no FACT of its own.
+        reply = self.HEAD + "\nATTR: observed || LANE: fact || QUOTE: the engine is 0.1.64"
+        lines = extract_lines(reply)
+        self.assertEqual(len(lines), 1)
+        c = parse_extract_line(lines[0], "the engine is 0.1.64 now", "noted")
+        self.assertEqual(c["attr"], "observed")
+        self.assertTrue(c["quote_ok"])
+
+    def test_a_quote_that_carries_the_separator_survives(self):
+        ln = self.HEAD + " || ATTR: user || QUOTE: a || b || WHY: it is written that way"
+        c = parse_extract_line(ln, "a || b", "noted")
+        self.assertIsNotNone(c)
+        self.assertEqual(c["why"], "it is written that way", "the join stops at the next known key")
+        self.assertTrue(c["quote_ok"], "the re-joined quote is the span the turn carries")
+
+    def test_an_unknown_key_costs_the_key_not_the_fact(self):
+        ln = self.HEAD + " || TAG: shiny || ATTR: observed"
+        c = parse_extract_line(ln, "x", "y")
+        self.assertIsNotNone(c)
+        self.assertEqual(c["attr"], "observed")
+
+    def test_the_ordered_line_parses_as_it_always_did(self):
+        # the byte-identical law: the canonical order reads exactly as before the tail became a set.
+        ln = self.HEAD + " || ATTR: observed || LANE: state:engine || QUOTE: the engine is 0.1.64 || WHY: the boot says so"
+        c = parse_extract_line(ln, "the engine is 0.1.64", "noted")
+        self.assertEqual((c["attr"], c["lane"], c["state_key"], c["why"]),
+                         ("observed", "state", "engine", "the boot says so"))
+        self.assertTrue(c["quote_ok"])
+
+
+class StateLaneKey(unittest.TestCase):
+    """The row must wear the key it is matched by (2026-11-22). The lane supersedes BY KEY and
+    _state_pick reads the shape out of the text; measured on the live store, 0 of 366 active
+    lane=state rows carried the canonical form, so the durability law retired nothing - key
+    `engine` had 18 active rows, `path` 14, `suite` 7."""
+
+    def test_a_prose_state_row_gets_its_key_prefix(self):
+        t = state_text("hotpath", "The Vulkan renderer's CPU hot path measured 31-36 ms")
+        self.assertTrue(t.startswith("hotpath = "), "the row leads with the key it will be found by")
+        self.assertIn("31-36 ms", t, "and keeps the observation, the part a reader wants")
+
+    def test_the_key_round_trips_through_the_matcher(self):
+        t = state_text("engine", "The engine on this box is 0.1.61")
+        self.assertEqual(_state_pick("engine", [(7, t, 100.0)]), 7,
+                         "the next observation retires this one")
+
+    def test_a_row_that_already_leads_with_the_key_is_untouched(self):
+        self.assertEqual(state_text("engine", "engine = 0.1.61 (2026-11-22)"),
+                         "engine = 0.1.61 (2026-11-22)")
+        self.assertEqual(state_text("", "no key, no prefix"), "no key, no prefix")
 
 
 if __name__ == "__main__":

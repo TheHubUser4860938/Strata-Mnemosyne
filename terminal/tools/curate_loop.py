@@ -126,8 +126,13 @@ _WHY_RULE = (
 # with (sha256 pinned by tools/test_curate_grounding.py) - the control arm must not move.
 # WHY (2026-10-29) joins the same way, as its OWN constant ahead of _DATES_RULE: the control
 # arm is HEAD + TAIL, so adding a rule between the others cannot move its hash by one byte.
-EXTRACT_PROMPT = (_EXTRACT_HEAD + _ATTR_RULE + _LANE_RULE + _WHY_RULE + _DATES_RULE
+EXTRACT_PROMPT = (_EXTRACT_HEAD + _ANCHOR_RULE + _ATTR_RULE + _LANE_RULE + _WHY_RULE + _DATES_RULE
                   + _EXTRACT_TAIL)                    # the shipped shape
+# ANCHOR WAS DEAD (2026-11-22, found on the optimization pass): the constant existed since
+# 2026-11-16 and joined nothing - measured, the shipped prompt was 2,824 chars and carried no
+# "NAME THE SUBJECT". Every harvest ask in that window ran without the owner's "vague one-liners
+# tied to nothing" fix, and the rows it produced are the ones the graph and the shelf route by an
+# unnamed subject. It joins after HEAD, so the control arm (HEAD + TAIL) keeps its pinned bytes.
 EXTRACT_PROMPT_UNDATED = _EXTRACT_HEAD + _EXTRACT_TAIL             # control arm: byte-identical to
 # the prompt every fact now in the store was written with (sha256 e7c8fa6b64114ee0, pinned by
 # tools/test_curate_grounding.py so the control cannot drift into a second variable)
@@ -370,6 +375,19 @@ def supersede_id(url, fact, scope, log, min_created=0.0):
     return None, None
 
 
+def state_text(key: str, text: str) -> str:
+    """The canonical shape the state lane is MATCHED by, written at store time.
+    `_state_pick` retires the row whose text starts with 'key =' / 'key:', and the model names the
+    key in LANE, not in the FACT (measured 2026-11-22: 0 of 366 active lane=state rows carried the
+    canonical form), so the row wears the key here. Idempotent, and it never touches a row that
+    already leads with its key."""
+    t = (text or "").strip()
+    k = (key or "").strip()
+    if not k or t.lower().startswith((k.lower() + " =", k.lower() + ":")):
+        return t
+    return f"{k} = {t}"
+
+
 def _state_pick(key, rows, min_created=0.0):
     """Pure matching for the machine-state lane (unit-tested offline): rows are
     (id, text, created_at); the target is the OLDEST active row whose text starts with the
@@ -467,13 +485,79 @@ _EXTRACT_RE = re.compile(
     # WHY (2026-10-29, the Mind survey's What/Why/Where template) joins as a THIRD optional tail
     # field for the same reason: a line written before the field existed must still parse, and a
     # model that forgets it loses the reason, not the fact.
-    r"\s*(?:\|\|\s*ATTR:\s*([^\|]*?))?\s*(?:\|\|\s*LANE:\s*([^\|]*?))?\s*(?:\|\|\s*QUOTE:\s*(.+?))?"
-    r"\s*(?:\|\|\s*WHY:\s*([^\|]*?))?\s*$", re.I)
+    # THE TAIL IS NOT POSITIONAL (2026-11-22). The four optional fields used to be four ordered
+    # groups, which made the field ORDER a contract the model had to honour: measured on the live
+    # store, turn 42991 wrote `LANE:` before `ATTR:` on both of its lines, and a positional regex
+    # cannot consume that - both lines parsed to nothing, the facts were lost, and the turn was
+    # marked processed, so the loss was permanent. 84 of 618 extracts (13.6%) stored nothing.
+    # SCOPE now captures the REST of the line (group 6) and _split_tail reads the fields by NAME,
+    # in any order, ignoring keys it does not know: the same demote-never-drop law the fields
+    # already follow, applied to the grammar itself.
+    r"(.*)$", re.I)
 ATTRS = ("user", "attributed", "observed")
+TAIL_KEYS = ("ATTR", "LANE", "QUOTE", "WHY")
+_TAIL_SPLIT = re.compile(r"\s*\|\|\s*")
+_TAIL_KV = re.compile(r"^\s*([A-Za-z_]+)\s*:\s*(.*)$", re.S)
+
+
+def _split_tail(rest: str) -> tuple[str, str, str, str]:
+    """The tail of an extract line -> (ATTR, LANE, QUOTE, WHY), read BY NAME. Any order parses;
+    a key that is repeated keeps its FIRST value; a chunk with no colon is ignored (the fact
+    survives, the field does not). QUOTE is the only field whose text may itself contain '||',
+    so it re-joins what its own split cut, up to the next recognised key."""
+    out = {k: "" for k in TAIL_KEYS}
+    parts = _TAIL_SPLIT.split(rest or "")
+    i = 0
+    while i < len(parts):
+        m = _TAIL_KV.match(parts[i])
+        if not m:
+            i += 1
+            continue
+        key, val = m.group(1).upper(), m.group(2).strip()
+        if key == "QUOTE":
+            # a quote that carries the separator: keep swallowing chunks until the next known key
+            j = i + 1
+            while j < len(parts) and not _TAIL_KV.match(parts[j]) \
+                    and not parts[j].strip().upper().split(":", 1)[0].strip() in TAIL_KEYS:
+                val += " || " + parts[j].strip()
+                j += 1
+            i = j
+        else:
+            i += 1
+        if key in out and not out[key]:
+            out[key] = val
+    return out["ATTR"], out["LANE"], out["QUOTE"], out["WHY"]
 
 
 def _norm_ws(s: str) -> str:
     return " ".join((s or "").lower().split())
+
+
+_FIELD_START = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)?(FACT|PROBE|GOLD|SCOPE|ATTR|LANE|QUOTE|WHY)\s*:", re.I)
+
+
+def extract_lines(text: str) -> list[str]:
+    """One extract reply -> candidate LINES, with WRAPPED candidates joined.
+
+    A small model breaks a long candidate across lines: measured 2026-11-22 on live turn 42993,
+    which emitted `FACT: … || SCOPE: project` then `ATTR: attributed` then `LANE: fact` as three
+    lines, and on 42992 whose second line was a bare `ATTR: observed || LANE: fact || QUOTE: …`
+    tail. The parse is per line, so the FACT survived and its grounding fields went - the richest
+    lines were the ones lost, and the store's 771 `unverified` rows are part that artifact rather
+    than the model's judgment. A line that opens with a field name and is not a new FACT is a
+    CONTINUATION of the candidate above it, so it is joined with the separator the fields already
+    speak. Costs no engine time: same asks, same tokens, more of them read."""
+    out: list[str] = []
+    for raw in (text or "").splitlines():
+        ln = raw.strip()
+        if not ln:
+            continue
+        m = _FIELD_START.match(ln)
+        if out and m and m.group(1).upper() != "FACT":
+            out[-1] += " || " + ln
+            continue
+        out.append(ln)
+    return out
 
 
 def parse_extract_line(ln: str, turn_user: str = "", turn_assistant: str = "") -> dict | None:
@@ -492,8 +576,8 @@ def parse_extract_line(ln: str, turn_user: str = "", turn_assistant: str = "") -
     m = _EXTRACT_RE.match(ln)
     if not m:
         return None
-    fact, probe, gold, scope, attr, lane_raw, quote, why = (
-        (scrub(g).strip() if g else "") for g in m.groups())
+    fact, probe, gold, scope, rest = ((scrub(g).strip() if g else "") for g in m.groups())
+    attr, lane_raw, quote, why = _split_tail(rest)      # by NAME, any order (see _EXTRACT_RE)
     if not fact or not probe or not gold:
         return None
     if norm(gold) in IDK:            # the idk-gold law (was inline): a candidate whose GOLD
@@ -1115,6 +1199,17 @@ def main():
                                           # world instead of re-deriving from scratch.
                                           "why": c.get("why", ""),
                                           "state_key": c.get("state_key", "")}}
+                if c.get("lane") == "state" and c.get("state_key"):
+                    # THE ROW MUST WEAR THE KEY IT IS MATCHED BY (2026-11-22, the optimization pass).
+                    # The state lane supersedes BY KEY, and _state_pick reads the canonical shape out of
+                    # the TEXT ('key =' / 'key:'); measured on the live store, 0 of 366 active
+                    # lane=state rows carried it - the model writes "The Vulkan renderer's CPU hot path
+                    # measured 31-36 ms" and names the key only in LANE - so the durability law retired
+                    # nothing and every fresh observation added a row (key `engine`: 18 active, `path`
+                    # 14, `suite` 7). Prefix the key at store time: the row stays readable, the next
+                    # look retires it, and the lane's promise becomes true of the store.
+                    fields = {**fields, "text": state_text(c["state_key"], fields["text"])}
+                    c["fact"] = fields["text"]
                 body = {"op": "remember", **fields}
                 stored_now = False
                 if cls == "CORRECT":
@@ -1292,7 +1387,7 @@ def main():
                 continue
             n = 0
             new_facts: list[str] = []
-            for ln in ans.splitlines():
+            for ln in extract_lines(ans):
                 if n >= a.max_facts:
                     # --max-facts was ADVISORY (audit 2026-11-07): the prompt says "up to k" and the
                     # loop capped nothing, so the live histogram ran 0..4 against a default of 2 and
