@@ -609,7 +609,6 @@ public:
             const ConversationCheckpoint* deepest = nullptr;
             for (const auto& c : e.checkpoints)
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-<<<<<<< HEAD
             // The fence's third rule (audit 2026-11-07, static analysis): make_room and evict_oldest
             // read the class and this one did not, so an ORDINARY park whose chain held a CART
             // conversation's deepest checkpoint dropped the cart's copy - "only other cartridges
