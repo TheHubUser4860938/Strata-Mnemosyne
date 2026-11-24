@@ -682,6 +682,7 @@ function paint3() {
 let GTAB = "notes";
 let GLAST = null;                                // the note payload the panes last rendered
 const GOPEN = new Set();                         // shelves opened in the explorer
+let GSEALED = false;                             // the default six, opened once, then user-owned
 
 function shelfOf(n) {
   // A fact node's id is `<shelf>_fact_<row>`: the shelf IS the folder. A concept is filed under
@@ -748,10 +749,15 @@ function renderTree() {
     const k = shelfOf(n);
     (groups[k] = groups[k] || []).push([n, i]);
   });
-  for (const k of Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length)) {
+  const keys = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
+  if (!GSEALED) {                             // the app opens the front of the vault, not all of it
+    GSEALED = true;
+    keys.slice(0, 6).forEach(k => GOPEN.add(k));
+  }
+  for (const k of keys) {
     const members = groups[k].slice().sort((a, b) => (b[0].degree || 0) - (a[0].degree || 0));
     const comm = members[0][0].community;
-    const open = GOPEN.has(k) || q !== "" || members.length <= 3;
+    const open = q !== "" || GOPEN.has(k);
     const f = document.createElement("div");
     f.className = "tr-folder" + (open ? " open" : "");
     f.innerHTML = `<span class="tr-caret">▶</span><span class="tr-dot" style="background:${gc(comm)}"></span>`
@@ -761,7 +767,7 @@ function renderTree() {
     f.onclick = () => {
       GGROUP = comm;
       if (GMODE === "local") setMode("global"); else paint();
-      GOPEN.has(k) && !q ? GOPEN.delete(k) : GOPEN.add(k);
+      GOPEN.has(k) ? GOPEN.delete(k) : GOPEN.add(k);   // a click toggles, every time, at any size
       renderTree(); renderList();
     };
     for (const [n, i] of members.slice(0, 120)) {
@@ -809,6 +815,8 @@ async function openNote(nid, push) {
   // a new one.
   if (!GTABS.includes(nid)) GTABS.push(nid);
   GACTIVE = nid;
+  GOPEN.add(shelfOf({ id: nid }));            // reveal the note in the explorer, as the app does
+  if (GSHOW !== "note") showView("note");
   renderTabs();
   await inspectNode(nid);
   if (GMODE === "local") await localView(nid);
@@ -837,14 +845,35 @@ function renderTabs() {
       else renderTabs();
     };
     t.append(lab, x);
-    t.onclick = () => { if (id !== GACTIVE) openNote(id, false); };
+    t.onclick = () => { showView("note"); if (id !== GACTIVE) openNote(id, false); };
     bar.append(t);
   }
+  const gt = document.createElement("div");
+  gt.className = "ws-tab" + (GSHOW === "graph" ? " active" : "");
+  gt.innerHTML = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">`
+    + `<circle cx="4" cy="11" r="2" fill="currentColor"/><circle cx="11" cy="4" r="2" fill="currentColor"/>`
+    + `<circle cx="12.5" cy="11.5" r="1.6" fill="currentColor"/>`
+    + `<path d="M5.4 9.6 9.7 5.4M6 11h5" stroke="currentColor" stroke-width="1" fill="none"/></svg><span>Graph</span>`;
+  gt.title = "the map of the vault";
+  gt.onclick = () => showView("graph");
+  bar.append(gt);
   const plus = document.createElement("div");
-  plus.className = "ws-new"; plus.title = "the newest note in the graph"; plus.textContent = "+";
+  plus.className = "ws-new"; plus.title = "the hub of the graph"; plus.textContent = "+";
   plus.onclick = () => { const n = GDATA && GDATA.nodes && GDATA.nodes.slice().sort((a, b) => (b.degree || 0) - (a.degree || 0))[0]; if (n) openNote(n.id); };
   bar.append(plus);
 }
+// One centre pane, two bodies: the note you are reading, or the map. The app works exactly this
+// way — the graph view is a tab, not a column competing for width.
+let GSHOW = "note";
+function showView(v) {
+  GSHOW = v;
+  $("g-note").hidden = v !== "note";
+  $("g-view").hidden = v !== "graph";
+  $("ws-actions").hidden = v !== "note";      // Local graph and Ledger are a note's actions
+  renderTabs();
+  if (v === "graph") paint();
+}
+
 function labelOf(id) {
   // The tab shows the note's NAME, not its address. Nodes outside the page's 40-community
   // sample (and every node the local graph and the switcher reach) are not in GDATA, so every

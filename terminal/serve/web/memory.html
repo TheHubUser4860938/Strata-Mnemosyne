@@ -43,17 +43,17 @@
   <section class="ws-main">
     <div class="ws-tabrow">
       <div class="ws-tabs" id="ws-tabs"></div>
-      <div class="ws-actions">
+      <div class="ws-actions" id="ws-actions">
         <button id="g-notelocal" title="centre the graph on this note">Local graph</button>
         <button id="g-notedbl" title="open the rows this note names, in the ledger below">Ledger</button>
       </div>
     </div>
     <div class="ws-content" id="g-note"><div class="gv-empty">Open a note: pick one in the explorer,
       click a dot in the graph, or hit Ctrl-O.</div></div>
-  </section>
 
-  <aside class="ws-graph">
-    <div class="ws-tabs"><div class="ws-tab active"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="4" cy="11" r="2" fill="currentColor"/><circle cx="11" cy="4" r="2" fill="currentColor"/><circle cx="12.5" cy="11.5" r="1.6" fill="currentColor"/><path d="M5.4 9.6 9.7 5.4M6 11h5" stroke="currentColor" stroke-width="1" fill="none"/></svg><span>Graph</span></div></div>
+    <!-- The graph is a TAB of the same pane, the way it is in the app: notes and the map share
+         the centre, and the tab strip is how you move between them. -->
+    <div class="ws-graph" id="g-view" hidden>
     <div class="g-bar">
       <button id="g-build" class="primary" title="read the shelves and ask what belongs with what">Run a pass</button>
       <button id="g-merge" title="graph only the facts stored since the last pass and merge them in">Graph new facts</button>
@@ -79,7 +79,8 @@
       <span class="small" id="gv-sub">the whole graph, grouped by shelf</span>
     </div>
     <ul class="g-list" id="g-list"><li class="gv-empty">Loading...</li></ul>
-  </aside>
+    </div>
+  </section>
 </div>
 
 <div class="g-strip cards">
