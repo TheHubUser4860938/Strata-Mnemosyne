@@ -408,7 +408,7 @@ async function graphView(rebuild) {
     const s = await graphStatus();
     if (s.running && !GPOLL) GPOLL = setInterval(graphTick, 15000);
     if (s.status !== "ready") {
-      $("g-list").innerHTML = `<li class="empty">No graph yet. A pass reads every shelf, a few files at a time; a drain loops until the queue is empty.</li>`;
+      $("g-list").innerHTML = `<li class="gv-empty">No graph yet. A pass reads every shelf, a few files at a time; a drain loops until the queue is empty.</li>`;
       return;
     }
     const v = await api("/memory", { op: "graph", action: "view" });
@@ -418,7 +418,7 @@ async function graphView(rebuild) {
       GDATA = d; GDATA.stamp = s.built;
       layout3(d);
       GGROUP = null;
-      renderVault(d);
+      renderTree(); renderList();
       if (GMODE === "local" && GNOTE) { localView(GNOTE); return; }   // the rebuild moved the floor
     }
     paint();
@@ -550,6 +550,7 @@ async function localView(nid) {
     const d = (r.result && r.result.graph) || r.graph || r;
     if (d.status !== "ok") { note(d.message || "no neighbourhood for that node", true); return; }
     GLOCAL = d;
+    (d.nodes || []).forEach(n => { if (n.label) GLAB[n.id] = n.label; });
     layoutLocal(d);
     GSEL = d.nodes.findIndex(n => n.hub);
     paint();
@@ -676,11 +677,11 @@ function paint3() {
     + ` · drag to orbit, wheel to zoom, click a node for the note`;
 }
 
-// The vault sidebar (2026-11-24): three panes, one list. `notes` is the graph itself grouped by
-// the shelf the facts were read from; `out` and `back` are the open note's two link panes, the
-// way Obsidian splits what a note cites from what cites it. Every row navigates.
+// The pane under the canvas is the app's link stack: Notes (the shelf on the canvas), Outgoing,
+// Linked from. The vault index itself lives in the explorer on the left.
 let GTAB = "notes";
-let GLAST = null;                                // the note payload the panel last rendered
+let GLAST = null;                                // the note payload the panes last rendered
+const GOPEN = new Set();                         // shelves opened in the explorer
 
 function shelfOf(n) {
   // A fact node's id is `<shelf>_fact_<row>`: the shelf IS the folder. A concept is filed under
@@ -694,8 +695,8 @@ function renderList() {
   const rows = GTAB === "out" ? (GLAST && GLAST.links || []) : (GLAST && GLAST.backlinks || []);
   const ul = $("g-list");
   ul.innerHTML = "";
-  $("gv-sub").textContent = GLAST ? `${GLAST.label.slice(0, 46)} · ${rows.length}` : "open a note first";
-  if (!GLAST) { ul.innerHTML = `<li class="gv-empty">Open a note: click a node, or jump to one above.</li>`; return; }
+  $("gv-sub").textContent = GLAST ? `${String(GLAST.label || "").slice(0, 40)} · ${rows.length}` : "open a note first";
+  if (!GLAST) { ul.innerHTML = `<li class="gv-empty">Open a note: click a dot, pick one in the explorer, or hit Ctrl-O.</li>`; return; }
   if (!rows.length) { ul.innerHTML = `<li class="gv-empty">nothing on this side</li>`; return; }
   for (const c of rows) {
     const li = document.createElement("li");
@@ -708,48 +709,71 @@ function renderList() {
   }
 }
 
+// Notes = what the canvas is showing, hub first. With a shelf on the canvas this reads as that
+// shelf's folder contents; with all of them, as the vault's front page.
 function renderVault(d) {
   const ul = $("g-list");
   if (!d || !d.nodes) { ul.innerHTML = `<li class="gv-empty">no graph yet.</li>`; return; }
+  d.nodes.forEach(n => { if (n.label) GLAB[n.id] = n.label; });
   ul.innerHTML = "";
+  const mine = d.nodes.map((n, i) => [n, i]).filter(([n]) => gActive(n.community));
   $("gv-sub").textContent = GGROUP === null
     ? `${d.nodes.length} notes · ${(d.communities || []).length} shelves`
-    : `community ${GGROUP} · click "all" to see the whole graph`;
+    : `${mine.length} notes on this shelf`;
+  mine.sort((a, b) => (b[0].degree || 0) - (a[0].degree || 0));
+  for (const [n, i] of mine) {
+    const li = document.createElement("li");
+    li.className = "gv-row" + (n.id === GNOTE ? " sel" : "");
+    li.innerHTML = esc(n.label || n.id) + (n.fact ? `<span class="gv-fact">#${esc(n.fact)}</span>` : "");
+    li.title = `${shelfOf(n)} · degree ${n.degree}`;
+    li.onclick = () => { GSEL = i; paint(); openNote(n.id); };
+    ul.append(li);
+  }
+}
+
+// The explorer: one folder per shelf, the way the app files notes by the folder they live in.
+// A fact's folder is its shelf; a concept's is the community the graph gave it. Typing in the
+// switcher box filters the tree as you type, which is what the box is for in the app.
+function renderTree() {
+  const box = $("gv-tree");
+  if (!box) return;
+  const d = GDATA;
+  box.innerHTML = "";
+  if (!d || !d.nodes) { box.innerHTML = `<div class="gv-empty">no graph yet.</div>`; return; }
+  d.nodes.forEach(n => { if (n.label) GLAB[n.id] = n.label; });
+  const q = ($("g-jump").value || "").trim().toLowerCase();
   const groups = {};
-  d.nodes.forEach((n, i) => { const k = shelfOf(n); (groups[k] = groups[k] || []).push([n, i]); });
-  const keys = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
-  const head = document.createElement("li");
-  head.className = "gv-group";
-  head.innerHTML = `<a><span class="gv-dot" style="background:var(--st-accent)"></span>all notes
-      <span class="gv-n">${d.nodes.length}</span></a>`;
-  head.querySelector("a").onclick = () => {
-    GGROUP = null;
-    if (GMODE === "local") setMode("global"); else paint();
-    renderList();                                   // the count line names what is on the canvas
-  };
-  ul.append(head);
-  for (const k of keys) {
+  d.nodes.forEach((n, i) => {
+    if (q && !String(n.label || n.id).toLowerCase().includes(q)) return;
+    const k = shelfOf(n);
+    (groups[k] = groups[k] || []).push([n, i]);
+  });
+  for (const k of Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length)) {
     const members = groups[k].slice().sort((a, b) => (b[0].degree || 0) - (a[0].degree || 0));
     const comm = members[0][0].community;
-    const li = document.createElement("li");
-    li.className = "gv-group";
-    const named = (d.communities || []).find(c => Number(c.id) === Number(comm));
-    li.innerHTML = `<a><span class="gv-dot" style="background:${gc(comm)}"></span>${esc(k)}`
-      + `<span class="gv-n">${members.length}</span></a>`;
-    li.querySelector("a").onclick = () => {   // a group is a place: put it in the middle of the canvas
+    const open = GOPEN.has(k) || q !== "" || members.length <= 3;
+    const f = document.createElement("div");
+    f.className = "tr-folder" + (open ? " open" : "");
+    f.innerHTML = `<span class="tr-caret">▶</span><span class="tr-dot" style="background:${gc(comm)}"></span>`
+      + `<span style="flex:1;overflow-wrap:anywhere">${esc(k)}</span><span class="tr-n">${members.length}</span>`;
+    const files = document.createElement("div");
+    files.className = "tr-files" + (open ? " open" : "");
+    f.onclick = () => {
       GGROUP = comm;
       if (GMODE === "local") setMode("global"); else paint();
-      renderList();                               // the count line names what is on the canvas
+      GOPEN.has(k) && !q ? GOPEN.delete(k) : GOPEN.add(k);
+      renderTree(); renderList();
     };
-    ul.append(li);
-    for (const [n, i] of members) {
-      const row = document.createElement("li");
-      row.className = "gv-row" + (GDATA && n.id === GNOTE ? " sel" : "");
-      row.innerHTML = esc(n.label || n.id) + (n.fact ? `<span class="gv-fact">#${esc(n.fact)}</span>` : "");
-      row.title = `community ${n.community} · degree ${n.degree}`;
-      row.onclick = () => { GSEL = i; paint(); openNote(n.id); };
-      ul.append(row);
+    for (const [n, i] of members.slice(0, 120)) {
+      const r = document.createElement("div");
+      r.className = "tr-file" + (n.id === GNOTE ? " sel" : "");
+      r.textContent = n.label || n.id;
+      if (n.fact) r.innerHTML += `<span class="gv-fact">#${esc(n.fact)}</span>`;
+      r.title = `${k} · degree ${n.degree}`;
+      r.onclick = ev => { ev.stopPropagation(); GSEL = i; paint(); openNote(n.id); };
+      files.append(r);
     }
+    box.append(f, files);
   }
 }
 function setTab(t) {
@@ -775,12 +799,65 @@ function focusNode(i) {
 // graph follows the reading. That is the Obsidian loop — open, read, follow, re-centre.
 async function openNote(nid, push) {
   if (!nid) return;
+  nid = String(nid);
   if (push !== false && GHIST[GHPOS] !== nid) {
-    GHIST.splice(GHPOS + 1); GHIST.push(String(nid)); GHPOS = GHIST.length - 1;
+    GHIST.splice(GHPOS + 1); GHIST.push(nid); GHPOS = GHIST.length - 1;
   }
   histBtns();
+  // Obsidian keeps two things apart: the tabs are the notes you have OPEN, the arrows are the
+  // walk you took to get here. So a tab is added once and reused, and back/forward never opens
+  // a new one.
+  if (!GTABS.includes(nid)) GTABS.push(nid);
+  GACTIVE = nid;
+  renderTabs();
   await inspectNode(nid);
   if (GMODE === "local") await localView(nid);
+}
+
+// The tab strip: one tab per open note, the active one the colour of the pane it opens (the
+// app's own cut-out trick), the × closing a tab without disturbing the walk behind it.
+const GTABS = [];
+let GACTIVE = null;
+function renderTabs() {
+  const bar = $("ws-tabs");
+  if (!bar) return;
+  bar.innerHTML = "";
+  for (const id of GTABS) {
+    const t = document.createElement("div");
+    t.className = "ws-tab" + (id === GACTIVE ? " active" : "");
+    const lab = document.createElement("span");
+    lab.textContent = (id === GACTIVE && GNOTE_LABEL) || labelOf(id) || id;
+    const x = document.createElement("span");
+    x.className = "x"; x.textContent = "×"; x.title = "close this tab";
+    x.onclick = ev => {
+      ev.stopPropagation();
+      const i = GTABS.indexOf(id);
+      GTABS.splice(i, 1);
+      if (id === GACTIVE) { const nx = GTABS[i] || GTABS[i - 1]; if (nx) openNote(nx, false); else { GACTIVE = null; renderTabs(); clearNote(); } }
+      else renderTabs();
+    };
+    t.append(lab, x);
+    t.onclick = () => { if (id !== GACTIVE) openNote(id, false); };
+    bar.append(t);
+  }
+  const plus = document.createElement("div");
+  plus.className = "ws-new"; plus.title = "the newest note in the graph"; plus.textContent = "+";
+  plus.onclick = () => { const n = GDATA && GDATA.nodes && GDATA.nodes.slice().sort((a, b) => (b.degree || 0) - (a.degree || 0))[0]; if (n) openNote(n.id); };
+  bar.append(plus);
+}
+function labelOf(id) {
+  // The tab shows the note's NAME, not its address. Nodes outside the page's 40-community
+  // sample (and every node the local graph and the switcher reach) are not in GDATA, so every
+  // label the page learns is cached here as it is learned.
+  if (GLAB[id]) return GLAB[id];
+  const n = GDATA && GDATA.nodes && GDATA.nodes.find(x => x.id === id);
+  return n ? n.label : null;
+}
+const GLAB = {};                                   // node id → label, learned as the page walks
+function clearNote() {
+  GNOTE = null; GNOTE_LABEL = ""; GLAST = null;
+  $("g-note").innerHTML = `<div class="gv-empty">Open a note: pick one in the explorer, click a dot in the graph, or hit Ctrl-O.</div>`;
+  renderList();
 }
 
 function histBtns() {
@@ -790,46 +867,49 @@ function histBtns() {
 $("g-back").onclick = () => { if (GHPOS > 0) { GHPOS--; histBtns(); openNote(GHIST[GHPOS], false); } };
 $("g-fwd").onclick = () => { if (GHPOS < GHIST.length - 1) { GHPOS++; histBtns(); openNote(GHIST[GHPOS], false); } };
 
-// ---- the note: what a node IS, read as a page. The body is the store's LIVE row (explain joins
-// it from the ledger), and the links are split the way a vault splits them: what this note cites,
-// and what cites it. The undirected list is the fallback for a graph with no direction on its edges.
+// ---- the note: what a node IS, rendered as a page. The body is the store's LIVE row (explain
+// joins it from the ledger), so the note says what the fact says TODAY. The links are split the
+// way a vault splits them — what this note cites, and what cites it — and the undirected list
+// stays as the fallback for a graph whose edges carry no direction.
 let GNOTE = null;                                    // node id currently open (for highlight)
-let GNOTE_LABEL = "";                                // its label, for the jump into the Text view
+let GNOTE_LABEL = "";                                // its label, for the jump into the ledger
 
 async function inspectNode(nid) {
   if (!nid) return;
-  const panel = $("g-notepanel"), body = $("g-note");
-  panel.hidden = false;
+  const body = $("g-note");
   GNOTE = String(nid);
-  body.innerHTML = `<div class="meta">opening ${esc(nid)}…</div>`;
+  body.innerHTML = `<div class="nt-empty">opening ${esc(nid)}…</div>`;
   let d;
   try {
     const r = await api("/memory", { op: "graph", action: "explain", name: String(nid) });
     d = (r.result && r.result.graph) || r.graph || r;
-  } catch (e) { body.innerHTML = `<div class="meta">${esc(e.message)}</div>`; return; }
+  } catch (e) { body.innerHTML = `<div class="nt-empty">${esc(e.message)}</div>`; return; }
   if (d.status !== "ok") {
-    body.innerHTML = `<div class="meta">no node for that name — ${esc(d.message || d.status)}</div>`;
+    body.innerHTML = `<div class="nt-empty">no node for that name — ${esc(d.message || d.status)}</div>`;
     return;
   }
-  GNOTE = d.id;
+  GNOTE = d.id; GACTIVE = d.id;
   GNOTE_LABEL = d.label || "";
-  const jb = $("g-jump");
-  if (jb && document.activeElement !== jb) jb.value = d.label || "";   // the field names the note you are on
-  $("g-noteid").textContent = d.id;
-  body.innerHTML = "";                             // the "opening…" placeholder yields to the note
-  const head = document.createElement("div");
-  head.className = "nt-head";
-  head.textContent = d.label || d.id;
-  const meta = document.createElement("div");
-  meta.className = "nt-meta";
-  meta.innerHTML = `<span class="chip cls" id="g-ntcomm" title="show this shelf on the canvas">community ${esc(d.community)}</span>`
-    + `<span class="chip">degree ${esc(d.degree)}</span>`
-    + (d.fact ? `<span class="chip">fact #${esc(d.fact)}</span>` : "")
-    + (d.shelf ? `<span class="chip">${esc(d.shelf)}</span>` : "")
-    + (d.file ? `<span class="chip">${esc(d.file)}</span>` : "")
-    + (d.type ? `<span class="chip">${esc(d.type)}</span>` : "");
-  body.append(head, meta);
-  $("g-ntcomm").onclick = () => { GGROUP = d.community; setMode("global"); };   // a tag you can click
+  GLAB[d.id] = d.label || d.id;
+  renderTabs();
+  body.innerHTML = "";
+  const front = document.createElement("div");
+  front.className = "nt-front";
+  const pill = (txt, cls, title) => `<span class="pill${cls ? " " + cls : ""}"${title ? ` title="${esc(title)}"` : ""}>${esc(txt)}</span>`;
+  front.innerHTML =
+      pill(`community ${d.community}`, "", "show this shelf on the canvas")
+    + pill(`degree ${d.degree}`, "dim")
+    + (d.fact ? pill(`#${d.fact}`, "dim", "this note's row in the ledger") : "")
+    + (d.shelf ? pill(d.shelf, "dim", "the shelf the graph read it from") : "")
+    + (d.file ? pill(d.file, "dim") : "")
+    + (d.type ? pill(d.type, "dim") : "");
+  body.append(front);
+  const comm = front.querySelector(".pill");
+  if (comm) comm.onclick = () => { GGROUP = d.community; setMode("global"); renderList(); };
+  const h = document.createElement("div");
+  h.className = "nt-title";
+  h.textContent = d.label || d.id;
+  body.append(h);
   if (d.text) {
     const t = document.createElement("div");
     t.className = "nt-body";
@@ -838,50 +918,43 @@ async function inspectNode(nid) {
   }
   const out = d.links || [], inn = d.backlinks || [];
   if (out.length || inn.length) {
-    body.append(linkSect(`Links out (${out.length})`, out, "this note cites"));
-    body.append(linkSect(`Linked from (${inn.length})`, inn, "cites this note"));
+    body.append(linkSect(`Links out (${out.length})`, out));
+    body.append(linkSect(`Linked from (${inn.length})`, inn));
   } else if ((d.connections || []).length) {
-    body.append(linkSect(`Connections (${d.connections.length})`, d.connections, "linked"));
+    body.append(linkSect(`Connections (${d.connections.length})`, d.connections));
   }
-  GLAST = d;                                       // the sidebar's Outgoing / Linked from panes
+  GLAST = d;                                        // the graph pane's Outgoing / Linked from
   renderList();
+  renderTree();
 }
 
-// One section of wikilinks: a relation chip that READS AS A SENTENCE (the relation names the
-// direction — "references → this fact"), so following a link tells you why it is there.
-function linkSect(title, rows, _verb) {
+// One section of wikilinks. The relation rides the line as a pill and the target reads as a
+// link, which is how the app says "this is a reference, and it goes somewhere".
+function linkSect(title, rows) {
   const wrap = document.createElement("div");
   wrap.className = "nt-sect";
-  const h = document.createElement("h4");
-  h.textContent = title;
-  wrap.append(h);
+  const h4 = document.createElement("h4");
+  h4.textContent = title;
+  wrap.append(h4);
   if (!rows.length) {
     const e = document.createElement("div");
     e.className = "nt-empty"; e.textContent = "nothing on this side";
     wrap.append(e); return wrap;
   }
-  const box = document.createElement("div");
-  box.className = "nt-conns";
   for (const c of rows) {
-    const a = document.createElement("a");
-    a.href = "#";
-    a.innerHTML = `<span class="nt-rel">${esc(c.relation || "linked")}</span>${esc(c.label || c.to)}`
-      + (c.confidence ? ` <span class="nt-tag">[${esc(c.confidence)}]</span>` : "")
-      + (c.fact ? ` <span class="nt-tag">#${esc(c.fact)}</span>` : "");
+    const a = document.createElement("div");
+    a.className = "nt-row";
+    a.innerHTML = `<span class="nt-rel">${esc(c.relation || "linked")}</span><span>${esc(c.label || c.to)}</span>`
+      + (c.confidence ? `<span class="nt-tag">[${esc(c.confidence)}]</span>` : "")
+      + (c.fact ? `<span class="nt-tag">#${esc(c.fact)}</span>` : "");
     a.title = c.to;
-    a.onclick = e => { e.preventDefault(); openNote(c.to); };
-    box.append(a);
+    a.onclick = () => openNote(c.to);
+    wrap.append(a);
   }
-  wrap.append(box);
   return wrap;
 }
-$("g-noteclose").onclick = () => { $("g-notepanel").hidden = true; GNOTE = null; GSEL = -1; paint(); };
 $("g-notelocal").onclick = () => { if (GNOTE) { setMode("local"); localView(GNOTE); } };
-$("g-notedbl").onclick = () => {
-  // The note's OWN label, not a lookup in the sampled view: a concept in community 211 is not
-  // in the page's 40 communities, and the jump used to silently do nothing for exactly those.
-  if (GNOTE_LABEL) gotoLedger(GNOTE_LABEL);
-};
+$("g-notedbl").onclick = () => { if (GNOTE_LABEL) gotoLedger(GNOTE_LABEL); };
 
 // ---- the mode switch: the whole graph, or the neighbourhood of the note under the cursor
 function setMode(m) {
@@ -924,7 +997,9 @@ function renderJump() {
 function pickJump(h) {
   if (!h) return;
   $("g-jumplist").hidden = true;
-  $("g-jump").value = h.label || "";
+  $("g-jump").value = "";                          // the app's switcher closes after a pick: the
+  renderTree();                                    //   box is a search, not a display of the file
+  GLAB[h.id] = h.label || h.id;
   openNote(h.id);
   if (GMODE === "global" && GDATA) {                 // put the dot in the middle of the map
     const i = GDATA.nodes.findIndex(n => n.id === h.id);
@@ -935,7 +1010,7 @@ $("g-jump").onfocus = () => jumpList("");
 $("g-jump").oninput = ev => {
   clearTimeout($("g-jump")._t);
   const v = ev.target.value;
-  $("g-jump")._t = setTimeout(() => jumpList(v.trim()), 140);
+  $("g-jump")._t = setTimeout(() => { jumpList(v.trim()); renderTree(); }, 140);   // and filter the tree
 };
 $("g-jump").onkeydown = ev => {
   if (!JQ || !JQ.length) { if (ev.key === "Escape") $("g-jump").blur(); return; }
@@ -1033,6 +1108,7 @@ $("g-build").onclick = () => graphPass(false);
 $("g-merge").onclick = () => graphPass(true);
 // One page, one boot: the ledger's rows, the graph's map, and the card catalog the sweep writes.
 // (Each band used to render on its own tab click; there are no tabs.)
+renderTabs();                                      // the empty strip still shows its "+"
 show("");
 graphView();
 renderCatlog();

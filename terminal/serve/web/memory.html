@@ -8,71 +8,7 @@
 <link rel="stylesheet" href="/web/tokens.css">
 <link rel="stylesheet" href="/web/components.css">
 <link rel="stylesheet" href="/web/app.css">
-<style>
-*{box-sizing:border-box}html{height:auto}body{margin:0;height:auto;display:block;overflow:visible;background:var(--st-bg);color:var(--st-ink);font:15px/1.5 var(--st-font)}
-button,input,textarea,select{font:inherit}button{cursor:pointer;color:inherit;background:var(--st-surface-2);border:1px solid var(--st-line);border-radius:9px;padding:8px 13px}button:hover{border-color:var(--st-accent)}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--st-focus);outline-offset:3px}[hidden]{display:none!important}
-main{display:flex;flex-direction:column;max-width:1200px;margin:auto;padding:28px 32px}
-/* One page, read top to bottom: the map, then the ledger under it, then the boot furniture.
-   The order is the reading order, not the markup order. */
-#grwrap{order:2}#t3wrap{order:3}#t2wrap{order:4}main>footer{order:5}main>.cards{order:1}h1{margin:0;font-size:29px;letter-spacing:-.7px}.sub,.muted{color:var(--st-ink-muted)}.sub{margin:4px 0 0}.controls{display:flex;gap:8px;flex-wrap:wrap}.primary{background:var(--st-accent);color:var(--st-accent-ink);border-color:transparent}
-.notice{margin-top:16px;padding:10px 14px;background:var(--st-danger-tint);color:var(--st-danger-text);border-radius:9px}
-.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:24px 0}.card{padding:18px 20px;border:1px solid var(--st-line);border-radius:13px;background:var(--st-surface)}.label{font-size:12px;color:var(--st-ink-muted);text-transform:uppercase;letter-spacing:.8px}.value{font-size:26px;font-weight:500;line-height:1.4;margin-top:3px}.small{font-size:12px;color:var(--st-ink-muted);overflow-wrap:anywhere}
-.panel{border:1px solid var(--st-line);border-radius:14px;background:var(--st-surface);overflow:hidden;margin-top:22px}.panel-bar{padding:14px 18px;border-bottom:1px solid var(--st-line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st-bg);padding:8px 10px;border-radius:8px}#q{flex:1;min-width:220px}#addtext{width:100%;min-height:64px;resize:vertical}
-.facts{display:block;list-style:none;margin:0;padding:0}.fact{display:flex;gap:14px;align-items:flex-start;padding:13px 18px;border-bottom:1px solid var(--st-line-soft)}.fact:last-child{border-bottom:0}
-.fact .body{flex:1;min-width:0}.fact .txt{overflow-wrap:anywhere;white-space:pre-wrap;max-height:148px;overflow-y:auto}.chip{font-size:11px;border-radius:5px;padding:2px 6px;background:var(--st-surface-2);color:var(--st-ink-muted);margin-right:6px;font-family:var(--st-font-mono)}.chip.cls{color:var(--st-accent-text);background:var(--st-accent-tint)}.chip.stale{color:var(--st-warn-text);background:var(--st-warn-tint)}
-.meta{font-size:12px;color:var(--st-ink-muted);margin-top:3px}.empty{padding:46px 24px;text-align:center;color:var(--st-ink-muted)}
-#g-note .nt-head{font-size:17px;font-weight:600;letter-spacing:-.2px}
-#g-note .nt-meta{margin-top:6px}#g-note .nt-meta .chip{margin:0 4px 0 0}
-#g-note .nt-body{margin-top:12px;overflow-wrap:anywhere;white-space:pre-wrap;line-height:1.55}
-#g-note .nt-conns{margin-top:6px;max-height:240px;overflow-y:auto;border-top:1px solid var(--st-line-soft);padding-top:6px}
-#g-note .nt-connlbl{margin-top:14px;font-size:12px;color:var(--st-ink-muted);text-transform:uppercase;letter-spacing:.8px}
-#g-note .nt-conns a{display:block;color:inherit;text-decoration:none;cursor:pointer;padding:3px 0;overflow-wrap:anywhere}
-#g-note .nt-conns a:hover{color:var(--st-accent-text)}
-#g-note .nt-tag{font-size:11px;color:var(--st-ink-muted);font-family:var(--st-font-mono)}
-#g-note .nt-conns .chip{margin-right:4px}
-/* The vault's own furniture (2026-11-24): a switcher dropdown, links out vs backlinks, and a
-   local-graph pane. Obsidian's whole feel is labels — a graph you can read the names in. */
-#g-jumplist{position:absolute;top:calc(100% - 4px);left:18px;z-index:30;width:min(460px,calc(100% - 36px));
-  background:var(--st-surface-1);border:1px solid var(--st-line);border-radius:9px;overflow:hidden;
-  box-shadow:0 12px 34px rgba(0,0,0,.45)}
-#g-jumplist a{display:flex;gap:9px;align-items:baseline;padding:7px 12px;cursor:pointer;
-  color:var(--st-ink);text-decoration:none;font-size:13px;border-top:1px solid var(--st-line-soft)}
-#g-jumplist a:first-child{border-top:0}
-#g-jumplist a:hover,#g-jumplist a.sel{background:var(--st-accent-tint)}
-#g-jumplist .jj-lab{flex:1;min-width:0;overflow-wrap:anywhere}
-#g-jumplist .jj-meta{font-family:var(--st-font-mono);font-size:11px;color:var(--st-ink-muted);white-space:nowrap}
-#g-note .nt-sect{margin-top:16px}
-#g-note .nt-sect h4{margin:0;font-size:12px;color:var(--st-ink-muted);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
-#g-note .nt-sect .nt-conns{margin-top:4px;border-top:0;padding-top:2px;max-height:280px}
-#g-note .nt-empty{font-size:12px;color:var(--st-ink-muted);padding:4px 0}
-#g-note .nt-rel{font-family:var(--st-font-mono);font-size:11px;color:var(--st-accent-text);
-  background:var(--st-accent-tint);border-radius:5px;padding:1px 5px;margin-right:5px}
-#g-note .nt-dir{font-family:var(--st-font-mono);font-size:11px;color:var(--st-ink-muted);margin-right:5px}
-#g-canvas.local{cursor:default}
-/* The vault sidebar: a list of notes, grouped, one row per note, the open one lit. Obsidian's
-   file explorer is the model — a group is a place you can go, not a filter to reason about. */
-#g-list{max-height:520px;overflow-y:auto}
-#g-list .gv-group{list-style:none;margin:10px 0 2px;padding:0 18px}
-#g-list .gv-group a{display:flex;gap:8px;align-items:baseline;cursor:pointer;color:var(--st-ink-muted);
-  text-decoration:none;font-size:11px;text-transform:uppercase;letter-spacing:.7px;font-weight:600;padding:3px 0}
-#g-list .gv-group a:hover{color:var(--st-accent-text)}
-#g-list .gv-dot{width:9px;height:9px;border-radius:50%;flex:none;transform:translateY(-1px)}
-#g-list .gv-n{font-family:var(--st-font-mono);font-size:10.5px;opacity:.75}
-#g-list .gv-row{display:block;padding:4px 18px;cursor:pointer;color:var(--st-ink);font-size:13px;
-  border-radius:0;overflow-wrap:anywhere;border-left:2px solid transparent}
-#g-list .gv-row:hover{background:var(--st-surface-2)}
-#g-list .gv-row.sel{background:var(--st-accent-tint);border-left-color:var(--st-accent)}
-#g-list .gv-row .gv-rel{font-family:var(--st-font-mono);font-size:11px;color:var(--st-accent-text);margin-right:6px}
-#g-list .gv-row .gv-fact{font-family:var(--st-font-mono);font-size:11px;color:var(--st-ink-muted);margin-left:6px}
-#g-list .gv-empty{padding:8px 18px;color:var(--st-ink-muted);font-size:12.5px}
-.addrow{display:flex;gap:8px;padding:14px 18px;flex-wrap:wrap}.addrow input{width:150px}footer{margin-top:14px;font-size:12px;color:var(--st-ink-muted)}
-@media(max-width:800px){.cards{grid-template-columns:repeat(2,1fr)}main,header{padding-left:16px;padding-right:16px}}
-/* the page's own chips are inline meta pills, not the header's 30px controls (audit 2026-11-07:
-   app.css's .chip sets height:30px and a 6px gap, and this page's .chip did not reset them) */
-.chip{display:inline-block;height:auto;gap:0;align-items:normal}
-.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-</style>
+<link rel="stylesheet" href="/web/memory.css">
 <script defer src="/web/memory.js"></script>
 </head>
 <body>
@@ -86,131 +22,133 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
   <div class="card"><div class="label">Curation</div><div class="value" id="pending">-</div><div class="small" id="pendsub"></div></div>
   <div class="card"><div class="label">Semantic arm</div><div class="value" id="embed">-</div><div class="small" id="embedsub"></div></div>
   <div class="card"><div class="label">At rest</div><div class="value" id="rest">-</div><div class="small" id="restsub"></div></div>
-  <!-- One page, three surfaces (2026-11-24, the owner's call): the graph is how the memories are
-       navigated, the ledger is the ground truth under it, the cartridge is boot furniture.
-       The three tabs that used to split them are gone - they were the same store seen thrice. -->
   <div class="card"><div class="label">Standing cart</div><div class="value" id="c-state">-</div>
-    <div class="small" id="c-sub">the five persona files, K/V-resident from the first token</div>
-    <div class="small" style="margin-top:8px"><button id="tierflip" title="tier-2 carries the five standing files; tier-3 carries the shelved facts as text">Carry facts</button></div></div>
+    <div class="small" id="c-sub">the persona files, K/V-resident from the first token</div>
+    <div class="small" style="margin-top:8px"><button id="tierflip" title="tier-2 carries the standing files; tier-3 carries the shelved facts as text">Carry facts</button></div></div>
 </div>
-<div id="t3wrap">
-<div class="panel">
-  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Ledger</h2><span class="small">the rows themselves - the graph is the map, this is the ground truth under it</span></div>
-  <div class="panel-bar">
-    <label class="sr" for="q">Search the store</label>
-    <input id="q" placeholder="Search the store - words of the question">
-    <label class="sr" for="scope">Scope</label>
-    <input id="scope" placeholder="scope (optional)" style="width:150px" list="scopes">
-    <label class="sr" for="klass">Shelf</label>
-    <input id="klass" placeholder="class (POL,USR)" style="width:140px" list="shelves">
-    <button id="search" class="primary">Search</button>
-    <button id="browse">Browse recent</button>
-    <label class="small" style="display:flex;align-items:center;gap:6px;margin-left:auto">
-      <input type="checkbox" id="inval" style="width:auto"> superseded
-    </label>
-  </div>
-  <datalist id="scopes"></datalist>
-  <datalist id="shelves"></datalist>
-  <div class="panel-bar" style="border-bottom:1px solid var(--st-line-soft)"><span class="small" id="caption">the fifty most recent facts</span></div>
-  <ul class="facts" id="list"><li class="empty">Loading...</li></ul>
-</div>
-<div class="panel">
-  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Add a fact</h2></div>
-  <div class="addrow" style="flex-direction:column;align-items:stretch">
-    <textarea id="addtext" placeholder="One fact per line, as it should be remembered."></textarea>
-    <div class="addrow" style="padding:0">
-      <label class="sr" for="addclass">Shelf for the new fact</label>
-      <input id="addclass" placeholder="class (optional)">
-      <label class="sr" for="addscope">Scope for the new fact</label>
-      <input id="addscope" placeholder="scope (optional)">
-      <button id="remember" class="primary">Remember</button>
-      <span class="small" id="addnote"></span>
+
+<!-- The workspace (2026-11-24, the owner's ask: clone obsidian.md's UI). Three panes, the way
+     the app reads: an explorer of shelves on the left, the note you are in the middle with real
+     tabs, and the graph on the right with its own tab. Below it, in the app's own order: the
+     ledger the notes are rows of, and the cartridge the engine loads at boot. -->
+<div class="ws">
+
+  <aside class="ws-side">
+    <div class="side-head">Explorer</div>
+    <div class="side-search"><input id="g-jump" type="text" autocomplete="off" spellcheck="false"
+        placeholder="Quick switcher  Ctrl-O"><div id="g-jumplist" hidden></div></div>
+    <div class="side-tree" id="gv-tree"></div>
+  </aside>
+
+  <section class="ws-main">
+    <div class="ws-tabrow">
+      <div class="ws-tabs" id="ws-tabs"></div>
+      <div class="ws-actions">
+        <button id="g-notelocal" title="centre the graph on this note">Local graph</button>
+        <button id="g-notedbl" title="open the rows this note names, in the ledger below">Ledger</button>
+      </div>
     </div>
-  </div>
+    <div class="ws-content" id="g-note"><div class="gv-empty">Open a note: pick one in the explorer,
+      click a dot in the graph, or hit Ctrl-O.</div></div>
+  </section>
+
+  <aside class="ws-graph">
+    <div class="ws-tabs"><div class="ws-tab active"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="4" cy="11" r="2" fill="currentColor"/><circle cx="11" cy="4" r="2" fill="currentColor"/><circle cx="12.5" cy="11.5" r="1.6" fill="currentColor"/><path d="M5.4 9.6 9.7 5.4M6 11h5" stroke="currentColor" stroke-width="1" fill="none"/></svg><span>Graph</span></div></div>
+    <div class="g-bar">
+      <button id="g-build" class="primary" title="read the shelves and ask what belongs with what">Run a pass</button>
+      <button id="g-merge" title="graph only the facts stored since the last pass and merge them in">Graph new facts</button>
+      <span class="small" id="g-progtxt">no pass running</span>
+    </div>
+    <div class="g-bar">
+      <button id="g-mode" title="show the whole graph, or the neighbourhood of the open note">Local</button>
+      <span class="small" id="g-depthbox" hidden>depth
+        <select id="g-depth" title="how many hops out the local graph walks">
+          <option value="1" selected>1 hop</option><option value="2">2 hops</option><option value="3">3 hops</option>
+        </select></span>
+      <span style="flex:1"></span>
+      <button id="g-back" title="the note you were reading before" disabled>‹</button>
+      <button id="g-fwd" title="the note you were reading after" disabled>›</button>
+    </div>
+    <canvas id="g-canvas"></canvas>
+    <div class="g-cap" id="g-cap"></div>
+    <div class="g-tabs">
+      <button id="gv-notes" class="primary">Notes</button>
+      <button id="gv-out">Outgoing</button>
+      <button id="gv-back">Linked from</button>
+      <span style="flex:1"></span>
+      <span class="small" id="gv-sub">the whole graph, grouped by shelf</span>
+    </div>
+    <ul class="g-list" id="g-list"><li class="gv-empty">Loading...</li></ul>
+  </aside>
 </div>
-</div><!-- /t3wrap -->
-<div id="t2wrap">
-<div class="panel-bar" style="padding:0 0 6px"><h2 style="margin:0;font-size:17px">At boot</h2>
-  <span class="small">the cartridge is K/V furniture: it loads once, rotates when a persona file moves, and needs nothing from you</span></div>
-<div class="cards">
-  <div class="card"><div class="label">Carts</div><div class="value" id="c-carts">-</div><div class="small" id="c-cartsub"></div></div>
-  <div class="card"><div class="label">Standing text</div><div class="value" id="c-facts">-</div><div class="small" id="c-factsub"></div></div>
-  <div class="card"><div class="label">Index</div><div class="value" id="c-index">-</div><div class="small" id="c-indexsub"></div></div>
-  <div class="card"><div class="label">Re-seed window</div><div class="value" id="c-window">-</div><div class="small" id="c-windowsub"></div></div>
-</div>
-<div class="panel">
-  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Slot vault</h2><button id="reseed" hidden>Reseed cartridge</button><button id="purge" hidden title="Delete bench slot saves older than 7 days; the standing cart and the applied file stay">Clear old saves</button><span class="small" id="vaultnote">one standing cartridge per engine pin; the rest are bench slot saves</span></div>
-  <ul class="facts" id="files"><li class="empty">Loading...</li></ul>
-</div>
-<div class="panel">
-  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Cart ledger</h2><span class="small">one experience, one cartridge - staleness is annotated, re-mints run in the sweep window, never on your turns</span></div>
-  <ul class="facts" id="carts"><li class="empty">-</li></ul>
-</div>
-<div class="panel">
-  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Index labels (MEM/CAT)</h2><span class="small">the card catalog of the browsable shelves - written by the catalog tick</span></div>
-  <ul class="facts" id="catlog"><li class="empty">-</li></ul>
-</div>
-</div>
-<div id="grwrap">
-<div class="panel-bar" style="padding:0 0 6px"><h2 style="margin:0;font-size:17px">The graph</h2>
-  <span class="small">how the memories are read now: open a note, walk its links, re-centre</span></div>
-<div class="cards">
-  <div class="card"><div class="label">Nodes</div><div class="value" id="g-nodes">-</div><div class="small" id="g-nodessub">one node per fact the graph placed</div></div>
-  <div class="card"><div class="label">Edges</div><div class="value" id="g-edges">-</div><div class="small" id="g-edgessub">relations the model read between facts</div></div>
+
+<div class="g-strip cards">
+  <div class="card"><div class="label">Nodes</div><div class="value" id="g-nodes">-</div><div class="small">one node per fact the graph placed</div></div>
+  <div class="card"><div class="label">Edges</div><div class="value" id="g-edges">-</div><div class="small">relations the model read between facts</div></div>
   <div class="card"><div class="label">Graphed</div><div class="value" id="g-graphed">-</div><div class="small" id="g-graphedsub">facts the graph names, over the live facts</div></div>
   <div class="card"><div class="label">Communities</div><div class="value" id="g-comm">-</div><div class="small">what the graph thinks the shelves are</div></div>
   <div class="card"><div class="label">Last pass</div><div class="value" id="g-built">-</div><div class="small" id="g-builtsub">a pass is LLM work on the served model</div></div>
 </div>
-<div class="panel">
-  <div class="panel-bar">
-    <button id="g-build" class="primary">Run a pass</button>
-    <button id="g-merge" title="graph only the facts stored since the last pass and merge them into the standing graph">Graph new facts</button>
-    <span class="small" id="g-passnote">serial, one chunk of shelf files at a time, so the box stays yours</span>
+
+<div id="t3wrap" class="band">
+  <div class="band-head"><h2>Ledger</h2><span class="small">the rows themselves - the graph is the map, this is the ground truth under it</span></div>
+  <div class="panel">
+    <div class="panel-bar">
+      <label class="sr" for="q">Search the store</label>
+      <input id="q" placeholder="Search the store - words of the question">
+      <label class="sr" for="scope">Scope</label>
+      <input id="scope" placeholder="scope (optional)" style="width:150px" list="scopes">
+      <label class="sr" for="klass">Shelf</label>
+      <input id="klass" placeholder="class (POL,USR)" style="width:140px" list="shelves">
+      <button id="search" class="primary">Search</button>
+      <button id="browse">Browse recent</button>
+      <label class="small" style="display:flex;align-items:center;gap:6px;margin-left:auto">
+        <input type="checkbox" id="inval" style="width:auto"> superseded
+      </label>
+    </div>
+    <datalist id="scopes"></datalist>
+    <datalist id="shelves"></datalist>
+    <div class="panel-bar" style="border-bottom:1px solid var(--st-line-soft)"><span class="small" id="caption">the fifty most recent facts</span></div>
+    <ul class="facts" id="list"><li class="empty">Loading...</li></ul>
   </div>
-  <div class="panel-bar" style="border-bottom:1px solid var(--st-line-soft)"><span class="small" id="g-progtxt">no pass running</span></div>
-  <!-- The vault toolbar (2026-11-24, the owner's Obsidian ask): a quick switcher to jump to a
-       note by name, and Global/Local so the hairball becomes the neighbourhood of the note you
-       opened. Ctrl-O focuses the switcher, the way Obsidian's does. -->
-  <div class="panel-bar" style="border-bottom:1px solid var(--st-line-soft);gap:10px;position:relative">
-    <input id="g-jump" type="text" autocomplete="off" spellcheck="false" placeholder="jump to a note…  (Ctrl-O)"
-           style="flex:1;min-width:180px;max-width:420px;background:var(--st-surface-2);color:var(--st-ink);border:1px solid var(--st-line);border-radius:7px;padding:7px 11px;font:inherit;font-size:13px">
-    <div id="g-jumplist" hidden></div>
-    <button id="g-mode" title="show the whole graph, or only the neighbourhood of the open note">Local</button>
-    <span class="small" id="g-depthbox" hidden>depth
-      <select id="g-depth" style="background:var(--st-surface-2);color:var(--st-ink);border:1px solid var(--st-line);border-radius:6px;font:inherit;font-size:12px;padding:2px 4px">
-        <option value="1" selected>1 hop</option><option value="2">2 hops</option><option value="3">3 hops</option>
-      </select></span>
-    <span style="flex:1"></span>
-    <button id="g-back" title="the note you were reading before" disabled>←</button>
-    <button id="g-fwd" title="the note you were reading after" disabled>→</button>
+  <div class="panel">
+    <div class="panel-bar"><h2 style="margin:0;font-size:17px">Add a fact</h2></div>
+    <div class="addrow" style="flex-direction:column;align-items:stretch">
+      <textarea id="addtext" placeholder="One fact per line, as it should be remembered."></textarea>
+      <div class="addrow" style="padding:0">
+        <label class="sr" for="addclass">Shelf for the new fact</label>
+        <input id="addclass" placeholder="class (optional)">
+        <label class="sr" for="addscope">Scope for the new fact</label>
+        <input id="addscope" placeholder="scope (optional)">
+        <button id="remember" class="primary">Remember</button>
+        <span class="small" id="addnote"></span>
+      </div>
+    </div>
   </div>
-  <canvas id="g-canvas" style="width:100%;height:600px;display:block"></canvas>
-  <div class="small" id="g-cap" style="padding:10px 18px;border-top:1px solid var(--st-line-soft)"></div>
+</div><!-- /t3wrap -->
+
+<div id="t2wrap" class="band">
+  <div class="band-head"><h2>At boot</h2><span class="small">the cartridge is K/V furniture: it loads once, rotates when a persona file moves, and needs nothing from you</span></div>
+  <div class="cards">
+    <div class="card"><div class="label">Carts</div><div class="value" id="c-carts">-</div><div class="small" id="c-cartsub"></div></div>
+    <div class="card"><div class="label">Standing text</div><div class="value" id="c-facts">-</div><div class="small" id="c-factsub"></div></div>
+    <div class="card"><div class="label">Index</div><div class="value" id="c-index">-</div><div class="small" id="c-indexsub"></div></div>
+    <div class="card"><div class="label">Re-seed window</div><div class="value" id="c-window">-</div><div class="small" id="c-windowsub"></div></div>
+  </div>
+  <div class="panel">
+    <div class="panel-bar"><h2 style="margin:0;font-size:17px">Slot vault</h2><button id="reseed" hidden>Reseed cartridge</button><button id="purge" hidden title="Delete bench slot saves older than 7 days; the standing cart and the applied file stay">Clear old saves</button><span class="small" id="vaultnote">one standing cartridge per engine pin; the rest are bench slot saves</span></div>
+    <ul class="facts" id="files"><li class="empty">Loading...</li></ul>
+  </div>
+  <div class="panel">
+    <div class="panel-bar"><h2 style="margin:0;font-size:17px">Cart ledger</h2><span class="small">one experience, one cartridge - staleness is annotated, re-mints run in the sweep window, never on your turns</span></div>
+    <ul class="facts" id="carts"><li class="empty">-</li></ul>
+  </div>
+  <div class="panel">
+    <div class="panel-bar"><h2 style="margin:0;font-size:17px">Index labels (MEM/CAT)</h2><span class="small">the card catalog of the browsable shelves - written by the catalog tick</span></div>
+    <ul class="facts" id="catlog"><li class="empty">-</li></ul>
+  </div>
 </div>
-<div class="panel">
-  <div class="panel" id="g-notepanel" hidden>
-    <div class="panel-bar"><h2 style="margin:0;font-size:17px">Note</h2>
-      <span class="small" id="g-noteid"></span><span style="flex:1"></span>
-      <button id="g-notelocal" title="centre the graph on this note">Local graph</button>
-      <button id="g-notedbl" title="open the fact this node names in the ledger view">Ledger</button>
-      <button id="g-noteclose">Close</button></div>
-    <div style="padding:14px 18px" id="g-note"></div>
-  </div>
-  <!-- The vault sidebar (2026-11-24): Obsidian's left pane, not a filter panel. Notes are the
-       whole graph grouped by the shelf it was read from; Outgoing and Linked from are the two
-       link panes a note carries. Every row navigates: it opens the note and re-centres the
-       graph on it. The community checkboxes it replaces were a filter nobody could name. -->
-  <div class="panel-bar" style="gap:8px">
-    <button id="gv-notes" class="primary">Notes</button>
-    <button id="gv-out">Outgoing</button>
-    <button id="gv-back">Linked from</button>
-    <span style="flex:1"></span>
-    <span class="small" id="gv-sub">the whole graph, grouped by shelf</span>
-  </div>
-  <ul class="facts" id="g-list"><li class="empty">-</li></ul>
-</div>
-</div>
-<footer>Every operation here is the same <code>/memory</code> API any client uses. One page, three surfaces: the <b>graph</b> is how the memories are navigated, the <b>ledger</b> is the Postgres rows under it, the <b>cart</b> is the tier-2 standing text the engine loads at boot (<code>/memory {op:"cartridge"}</code>) - and the <b>vault</b> at <code>~/vaults/strata</code> is the same rows as markdown, one command to rebuild.</footer>
+<footer>Every operation here is the same <code>/memory</code> API any client uses. The <b>graph</b> is how the memories are navigated, the <b>ledger</b> is the Postgres rows under it, the <b>cart</b> is the tier-2 standing text the engine loads at boot (<code>/memory {op:"cartridge"}</code>) - and the <b>vault</b> at <code>~/vaults/strata</code> is the same rows as markdown, one command to rebuild.</footer>
 </main>
 </body>
 </html>
