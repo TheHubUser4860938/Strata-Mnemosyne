@@ -724,6 +724,19 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
     # head is now TWICE the block's (the tool stays the reading arm), and the row says so, so a
     # model that needs the rest narrows its words instead of paying for twenty passages.
     cap = 2 * int(mem.block_doc_cap or 0)
+    # THE EVIDENCE BUDGET (2026-11-24, Phase 2b): the clerk's reason and the link text are the two
+    # families the model did not ask for. Spent in RANK ORDER - the top row's evidence rides
+    # first - and an item over what is left is SKIPPED, not truncated into the tail, because a
+    # half-sentence at the bottom of the list teaches less than a whole one at the top. 0 on a
+    # knob means "no cap", and the payload is byte-identical to the pre-budget shape.
+    row_ev_cap = int(getattr(mem, "evidence_chars", 0) or 0)
+    ev_left = int(getattr(mem, "evidence_budget", 0) or 0)
+    ev_bounded = ev_left > 0      # 0 means "no cap" as a STATE, not "a budget of zero": the
+                                  # arithmetic below must not consume it, or the first row's
+                                  # reason turns a 0 into -73 and the links fall off.
+    ev_spent = 0        # ONE WHOLE RESULT IS GUARANTEED (Hindsight's rule): the budget always
+                        # affords the first piece of evidence, so a small cap cannot empty the
+                        # field the top row's trust signal lives in.
     for h in hits:
         text, head = h["text"], 0
         if cap and str(h.get("class") or "").startswith("DOC/") and len(text) > cap:
@@ -751,9 +764,20 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
         if pinned.get(h["id"]):
             f["pinned"] = True
         if why.get(h["id"]):
-            f["why"] = why[h["id"]]
+            w = why[h["id"]]
+            if row_ev_cap and len(w) > row_ev_cap:      # the clerk's sentence, capped
+                w = w[:row_ev_cap].rsplit(" ", 1)[0] + " …"
+            if not ev_bounded or ev_spent == 0 or ev_left >= len(w):
+                f["why"] = w
+                ev_left -= len(w)
+                ev_spent += 1
         if links.get(h["id"]):
-            f["links"] = links[h["id"]]
+            ls = links[h["id"]]
+            cost = sum(len(l["text"]) + 24 for l in ls)     # the JSON the links ride, priced
+            if not ev_bounded or ev_spent == 0 or ev_left >= cost:
+                f["links"] = ls
+                ev_left -= cost
+                ev_spent += 1
         s, w = said.get(h["id"]), filed.get(h["id"])
         if s is not None and w is not None and abs((w - s).total_seconds()) > 3600:
             f["filed"] = _stamp(w)
@@ -979,6 +1003,8 @@ _PG_DDL: tuple[str, ...] = (
          kind text not null default 'about',
          note text not null default '',
          created_at timestamptz not null,
+         valid_at timestamptz,
+         invalid_at timestamptz,
          primary key (a_id, b_id))""",
     "create index if not exists links_b on links(b_id)",
     "create index if not exists mem_ts_gin on memories using gin(ts)",
@@ -1190,6 +1216,7 @@ class MemoryService:
                  block_position: str = "head",
                  auto_shelve: bool = False, block_min_score: float = 0.0,
                  block_doc_cap: int = 1200,
+                 evidence_chars: int = 0, evidence_budget: int = 0,
                  expose_window: int = 0, expose_step: float = 0.0, expose_cap: int = 3,
                  route_shelves: bool = False, route_demote: float = 0.0,
                  derived_weight: float = 1.0, block_cover_terms: int = 0,
@@ -1326,6 +1353,16 @@ class MemoryService:
         # row of ANY other class is shown whole, as it always was - the cap is for documents,
         # not for facts. 0 disables it (byte-identical to the pre-reading-stage block).
         self.block_doc_cap = max(0, int(block_doc_cap))
+        # THE EVIDENCE BUDGETS (2026-11-24, Phase 2b). Measured on this store, one `memory_search`
+        # at limit 20 costs ~7,100 characters: 46% fact text, 9.2% the clerk's `why`, 3.5% link
+        # text, 41% JSON framing. Evidence is the part the model did not ask for and the only part
+        # with no cap. `evidence_chars` is the per-ROW cap on the clerk's sentence;
+        # `evidence_budget` is the per-ASK budget for why + link text, spent in rank order. Fact
+        # text is never trimmed for budget - `limit` is its budget - and 0 on both is today's
+        # bytes exactly. Shape taken from Hindsight's `engine/fact_budget.py`: one cap per KIND of
+        # text, an oversized item skipped rather than the tail evicted.
+        self.evidence_chars = max(0, int(evidence_chars))
+        self.evidence_budget = max(0, int(evidence_budget))
         # EXPOSURE-DECAY (2026-10-16, the lever the m4_blockrule sweep pointed at): a row the last
         # expose_window journaled turns already injected pays step*min(exposures, expose_cap) off
         # its fused score. The ledger is turns.injected - what the model really read, not what
@@ -1568,6 +1605,21 @@ class MemoryService:
                 "select column_name from information_schema.columns where table_name = 'embeddings'")}
             if "model" not in ecols:
                 self.conn.execute("alter table embeddings add column model text")
+            # EVENT TIME ON THE EDGES (2026-11-24, Phase 3). `memories` is bi-temporal and `links`
+            # carried one timestamp, so "what did we believe in October?" was answerable for the
+            # claims and unanswerable for the relations — which is where `contradicts` lives, the
+            # most time-bound thing in the store. Two nullable columns, no backfill: an edge
+            # predating them reads as valid since `created_at`, which is true. Zep/Graphiti and
+            # Hindsight carry the same pair, so a store that grows into a full bitemporal edge
+            # graph grows into these. NOTE the migration law's caveat the comment above links
+            # states loosely: `create table if not exists` re-runs in full, but it does not add a
+            # COLUMN to a table that already exists — an old store needs the branch below.
+            lcols = {r[0] for r in self.conn.execute(
+                "select column_name from information_schema.columns where table_name = 'links'")}
+            if "valid_at" not in lcols:
+                self.conn.execute("alter table links add column valid_at timestamptz")
+            if "invalid_at" not in lcols:
+                self.conn.execute("alter table links add column invalid_at timestamptz")
             self.conn.commit()
 
     # ---- store ---------------------------------------------------------------
@@ -2259,17 +2311,41 @@ class MemoryService:
             # two of a row's four link slots naming the same neighbour, and a relabel of the
             # reverse direction was a second edge rather than a change of the first.
             a, b = (a, b) if a < b else (b, a)
+            now = self._dt(time.time())
+            # EVENT TIME (Phase 3): `created_at` is when this PAIR was first asserted and stops
+            # moving; `valid_at` is when the KIND on the row became true, so a relabel about ->
+            # contradicts starts a clock the reader can price. `invalid_at` is the edge's own
+            # supersession — an edge is a claim, and claims retire, they do not vanish.
             self.conn.execute(
-                "insert into links(a_id,b_id,kind,note,created_at) values(%s,%s,%s,%s,%s)"
+                "insert into links(a_id,b_id,kind,note,created_at,valid_at) "
+                "values(%s,%s,%s,%s,%s,%s)"
                 " on conflict (a_id,b_id) do update set kind = excluded.kind,"
-                " note = excluded.note, created_at = excluded.created_at",
-                (a, b, kind, str(note or "")[:300], self._dt(time.time())))
+                " note = excluded.note, valid_at = excluded.valid_at",
+                (a, b, kind, str(note or "")[:300], now, now))
             self._bump()
             self.conn.commit()
         return {"linked": True, "from": a, "to": b, "kind": kind}
 
     @_heals
-    def links_of(self, ids, scopes=None) -> dict[int, list[dict]]:
+    def unlink(self, a_id: int, b_id: int, by_id: int | None = None) -> dict:
+        """Retire an edge: `invalid_at` is stamped, the row stays (never erase, annotate). The
+        graph arm and `links_of` read the CURRENT edge, so an unlinked pair is neighbours no more;
+        a reader asking `at=` an older time still sees it."""
+        a, b = sorted((int(a_id), int(b_id)))
+        with self.lock, _rollback_on_error(self.conn):
+            r = self.conn.execute(
+                "update links set invalid_at = %s"
+                " where a_id = %s and b_id = %s and invalid_at is null returning kind",
+                (self._dt(time.time()), a, b)).fetchone()
+            self.conn.commit()
+        if r is None:
+            return {"unlinked": False, "error": "no active edge between that pair"}
+        self._bump()
+        return {"unlinked": True, "from": a, "to": b, "kind": r[0],
+                **({"by_id": int(by_id)} if by_id else {})}
+
+    @_heals
+    def links_of(self, ids, scopes=None, at: float | None = None) -> dict[int, list[dict]]:
         """Direct relations of these rows, BOTH directions, BOUNDED. Mind's lifecycle states the law
         this copies and the reason for it: "bounded to direct relations and metadata, so it is safe
         to use for orientation. It does not recursively traverse the graph." The bound is not
@@ -2286,26 +2362,40 @@ class MemoryService:
             return {}
         out: dict[int, list[dict]] = {i: [] for i in want}
         q = ("select l.a_id, l.b_id, l.kind, coalesce(ma.text, ''), coalesce(mb.text, ''),"
-             " ma.scope, mb.scope"
+             " ma.scope, mb.scope, coalesce(l.valid_at, l.created_at), l.invalid_at"
              " from links l left join memories ma on ma.id = l.a_id"
              " left join memories mb on mb.id = l.b_id"
-             " where l.a_id = any(%s) or l.b_id = any(%s)")
-        args: list = [want, want]
+             " where (l.a_id = any(%s) or l.b_id = any(%s))")   # PARENS: `A or B and C` is
+        args: list = [want, want]                                # `A or (B and C)`, and a hit on
+        # the first arm used to skip every filter that followed it.
+        # AS OF (Phase 3): no `at` means the CURRENT edge — a retired one is no longer a relation
+        # between the rows. With an epoch, the edge is the one that HELD then, which is the whole
+        # point of dating it: "what did we believe in October" was answerable for the claims and
+        # unanswerable for the relations, and `contradicts` lives on the relations.
+        if at is not None:
+            q += (" and (coalesce(l.valid_at, l.created_at) <= %s"
+                  " and (l.invalid_at is null or l.invalid_at > %s))")
+            args += [self._dt(at), self._dt(at)]
+        else:
+            q += " and l.invalid_at is null"
         if scopes:
             q += " and (ma.scope = any(%s) or mb.scope = any(%s))"
             args += [list(scopes), list(scopes)]
         with self.lock, _rollback_on_error(self.conn):
             rows = self.conn.execute(q + " order by l.a_id, l.b_id", args).fetchall()
             self.conn.commit()
-        for a, b, kind, ta, tb, sa, sb in rows:
+        for a, b, kind, ta, tb, sa, sb, v_at, i_at in rows:
             for me, other, direction, text, o_scope in ((a, b, "outgoing", tb, sb),
                                                         (b, a, "incoming", ta, sa)):
                 if scopes and o_scope not in scopes:
                     continue      # the EDGE may cross drawers; the row it names must be readable
                 seen = out.get(int(me))
                 if seen is not None and text and len(seen) < LINKS_PER_ROW:
-                    seen.append({"id": int(other), "kind": kind, "direction": direction,
-                                 "text": text[:LINK_TEXT_CHARS]})
+                    ent = {"id": int(other), "kind": kind, "direction": direction,
+                           "text": text[:LINK_TEXT_CHARS]}
+                    if v_at is not None:      # the edge's own birthday, to the day
+                        ent["since"] = v_at.strftime("%Y-%m-%d")
+                    seen.append(ent)
         return out
 
     @_heals
@@ -3570,7 +3660,8 @@ class MemoryService:
             " from links l"
             " join memories sa on sa.id = l.a_id"
             " join memories sb on sb.id = l.b_id"
-            " where l.a_id = any(%s) or l.b_id = any(%s)"
+            " where (l.a_id = any(%s) or l.b_id = any(%s))"
+            " and l.invalid_at is null"          # a retired edge votes no more (Phase 3)
             " order by case when l.kind = 'about' then 1 else 0 end, l.created_at desc",
             (want, want)).fetchall()
         self.conn.commit()
@@ -4880,6 +4971,8 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         graph_seeds=num("graph_seeds", 8),
         graph_sim_k=num("graph_sim_k", 0),
         block_doc_cap=num("block_doc_cap", 1200),
+        evidence_chars=num("evidence_chars", 0),          # the clerk's reason, per row
+        evidence_budget=num("evidence_budget", 0),        # reason + link text, per ask
         expose_window=num("expose_window", 0),
         expose_step=num("expose_step", 0.0, float),
         expose_cap=num("expose_cap", 3),

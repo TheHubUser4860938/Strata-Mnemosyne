@@ -939,6 +939,61 @@ class MemoryTool(unittest.TestCase):
         self.assertFalse([i for i in body["output"] if i["type"] == "function_call"],
                          "no function_call item reaches the Codex client")
 
+    # THE THREE BUDGETS (2026-11-24, Phase 2b). Measured on the live store, the browsed arm's
+    # `memory_search` at limit 20 costs ~7,100 chars: 46% fact text, 9.2% the clerk's `why`,
+    # 3.5% link text, 41% JSON framing. The evidence the model did not ask for is the only part
+    # with no cap, so it gets two: a per-row cap on the clerk's sentence, and a per-ask budget
+    # for evidence (why + links) that spends in rank order. Fact text is never the thing trimmed -
+    # `limit` is its budget - and 0 on both knobs is today's bytes exactly.
+
+    def test_the_clerk_s_reason_is_capped_per_row_when_the_knob_is_set(self):
+        long_why = ("the harvest judged this row a capacity fact because it names the card and the "
+                    "RAM side by side, and it filed it under hardware because the sentence is about "
+                    "the machine, not about the number")
+        svc = self._svc_with(evidence_chars=60)
+        rid = svc.remember("the 4090 has 24 GB", scope="fw")["id"]
+        with svc.lock:
+            svc.conn.execute("update memories set provenance = coalesce(provenance, '{}'::jsonb) || %s::jsonb where id=%s",
+                             (json.dumps({"why": long_why}), rid))
+            svc.conn.commit()
+        d = json.loads(tool_result(svc, {"q": "4090 has 24 GB"}, scope="fw")["text"])
+        self.assertIn(" …", d["facts"][0]["why"], "a capped reason says it was capped")
+        self.assertLessEqual(len(d["facts"][0]["why"]), 62)
+        self.assertIn("capacity fact", d["facts"][0]["why"], "the head is what survives")
+        plain = json.loads(tool_result(self.svc.memory, {"q": "4090 has 24 GB"}, scope="fw")["text"])
+        self.assertEqual(plain["facts"][0]["why"], long_why, "knob off = today's bytes")
+        svc.close()
+
+    def test_the_evidence_budget_spends_in_rank_order_and_never_eats_a_fact(self):
+        # Two rows, each with a reason; a budget that fits ONE. The top row keeps its evidence and
+        # the second keeps its TEXT - the trim is the metadata, not the memory.
+        a = self.svc.memory.remember("the cow purchase came before the fence repair", scope="fw")
+        b = self.svc.memory.remember("the fence repair cost forty dollars", scope="fw")
+        for rid in (a["id"], b["id"]):
+            with self.svc.memory.lock:
+                self.svc.memory.conn.execute(
+                    "update memories set provenance = coalesce(provenance, '{}'::jsonb) || %s::jsonb where id=%s",
+                    (json.dumps({"why": "the clerk wrote a long sentence about why this row is here"
+                                 " and which drawer it belongs in"}), rid))
+                self.svc.memory.conn.commit()
+        d = json.loads(tool_result(self.svc.memory, {"q": "the fence repair"}, scope="fw")["text"])
+        self.assertEqual(len(d["facts"]), 2, "both rows ride the ask")
+        self.assertTrue(all(f["text"] for f in d["facts"]), "a fact is never trimmed for budget")
+        svc = self._svc_with(evidence_budget=80)
+        d = json.loads(tool_result(svc, {"q": "the fence repair"}, scope="fw")["text"])
+        self.assertTrue(d["facts"][0].get("why"), "the top row spends the budget")
+        spent = sum(len(f.get("why") or "") for f in d["facts"])
+        self.assertLess(spent, 190, "the ask's evidence is bounded by the cap plus the ONE "
+                                    "guaranteed whole item (the first row never competes)")
+        self.assertEqual(len(d["facts"]), 2, "the budget cut metadata, not rows")
+        svc.close()
+
+    def _svc_with(self, **knobs):
+        """A second service on the SAME store dir (the attach path the curation tool uses), with
+        the knobs the test is about. Everything else is the constructor's default, which is what
+        the knob-off control asserts against."""
+        return MemoryService(self.tmp.name, tool=True, **knobs)
+
     def test_tool_result_shape(self):
         self.svc.memory.remember("The zygost scale reads 41.2 after calibration", scope="fw")
         r = tool_result(self.svc.memory, {"q": "zygost scale"}, scope="fw")
@@ -4050,6 +4105,44 @@ class TierThreeIdeals(unittest.TestCase):
         self.assertIn("plain words", pair[0]["text"])
         alone = self.mem.links_of([d["id"]], scopes=["default"])[d["id"]]
         self.assertEqual(alone, [], "a user-scope fact rode a project ask's tool result")
+
+    def test_an_edge_relabels_in_place_and_keeps_its_birthday(self):
+        a = self.mem.remember("the graft lever was fixed by 4a2c8fef", scope="default")
+        b = self.mem.remember("the graft had never once fired through a day of green tests",
+                              scope="default")
+        self.mem.link(a["id"], b["id"], "about", "the fix is evidence the claim stands")
+        with self.mem.lock:
+            born = self.mem.conn.execute("select created_at, valid_at from links").fetchone()
+            self.mem.conn.commit()
+        self.mem.link(a["id"], b["id"], "contradicts", "the run order says the opposite")
+        with self.mem.lock:
+            row = self.mem.conn.execute("select kind, created_at, valid_at, note from links").fetchone()
+            self.mem.conn.commit()
+        self.assertEqual(row[0], "contradicts")
+        self.assertEqual(row[1], born[0], "created_at is when the PAIR was asserted; a relabel "
+                                          "must not rewrite history")
+        self.assertGreaterEqual(row[2], born[1], "valid_at is when THIS kind became true")
+        self.assertIn("run order", row[3], "the note rides the relabel, as it always did")
+
+    def test_a_retired_edge_stops_voting_and_a_reader_as_of_a_date_still_sees_it(self):
+        """Event time on the edges (Phase 3, 2026-11-24): `memories` is bi-temporal and `links`
+        carried one timestamp, so a relation could not be dated and "what did we believe in
+        October" had no answer for the `contradicts` edges."""
+        a = self.mem.remember("the venue box keeps its own store", scope="default")
+        b = self.mem.remember("the venue box was retired with the DeepSeek arm", scope="default")
+        self.mem.link(a["id"], b["id"], "contradicts", "one of them has to move")
+        mid = time.time()
+        r = self.mem.unlink(a["id"], b["id"])
+        self.assertTrue(r["unlinked"], r)
+        self.assertEqual(r["kind"], "contradicts", "the reply names what it retired")
+        now = self.mem.links_of([a["id"]])[a["id"]]
+        self.assertEqual(now, [], "a retired edge is no longer a relation between the rows")
+        back = self.mem.links_of([a["id"]], at=mid)[a["id"]]
+        self.assertTrue(back, "the as-of read lost the edge that held at that moment")
+        self.assertEqual(back[0]["kind"], "contradicts")
+        self.assertIn("since", back[0], "the edge says when it began")
+        self.assertEqual(self.mem._link_neighbours([a["id"]]).get(a["id"], []), [],
+                         "the graph arm must not vote a retired edge")
 
     def test_relabeling_a_pair_replaces_the_kind_instead_of_stacking_a_second_one(self):
         a = self.mem.remember("row 6585 restates the cart truth one way", scope="default")

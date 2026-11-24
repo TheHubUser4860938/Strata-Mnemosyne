@@ -10471,6 +10471,14 @@ def make_handler(svc: Service):
                     raise ValueError("no such row: " + ", ".join(str(x) for x in r["missing"]))
                 if r.get("error"):
                     raise ValueError(str(r["error"]))
+            elif op == "unlink":
+                # EVENT TIME (2026-11-24, Phase 3): an edge is a claim, so it retires rather than
+                # vanishes — invalid_at is stamped and the row stays for the next reader who asks
+                # what we believed in October. {"from", "to"}.
+                r = svc.memory.unlink(int(req.get("from") or 0), int(req.get("to") or 0),
+                                      by_id=req.get("by_id"))
+                if r.get("error"):
+                    raise ValueError(str(r["error"]))
             elif op == "curate":
                 # THE MANUAL TRIGGER (2026-10-29): drain everything pending, starting NOW, in the
                 # background. The reply must not wait on the curation any more than the curation
