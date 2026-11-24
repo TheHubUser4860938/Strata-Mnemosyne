@@ -50,6 +50,8 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
+from serve.codegraph import CodeGraph, default_graph   # the row↔code seam (2026-11-24, the merge)
+
 import psycopg
 from psycopg.types.json import Jsonb
 
@@ -529,6 +531,12 @@ MEMORY_TOOL = {
                                                        " (\"live state\", \"the boot stack\"). Pass"
                                                        " it with nothing else to read that page, or"
                                                        " with page:true to list what exists"},
+            "code": {"type": "string", "description": "the join to the code graph: a file path"
+                                                       " answers \"what did we decide about this"
+                                                       " file?\" with the rows that name it plus the"
+                                                       " graph's nodes for it (graphify-out/"
+                                                       " graph.json). Ask with words for content;"
+                                                       " ask with code for a file"},
         },
         "required": [],
 }
@@ -720,6 +728,14 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
     cat = args.get("catalog")
     catalog = cat is True or (isinstance(cat, str) and cat.strip().lower() in ("1", "true", "on", "yes"))
     named = [x.strip() for x in str(args.get("class") or "").split(",") if x.strip()]
+    code = args.get("code")
+    if code:
+        # THE SIXTH VERB (the merge, 2026-11-24): a file path answers "what did we decide about
+        # this file?" — the rows that name it, and the repo graph's nodes for it. The store and the
+        # code graph have never shared an address space; this is the seam.
+        out = mem.code_ref(path=str(code), scope=scope)
+        mem.note_tool("code", not out.get("rows") and not out.get("nodes"))
+        return _tool_done(t0, True, json.dumps(out, ensure_ascii=False))
     pg = args.get("page")
     if pg is not None:
         # THE FIFTH VERB (item 6, 2026-11-24): a standing answer, read as one row. `page: true`
@@ -1471,7 +1487,7 @@ class MemoryService:
         # unmeasured history. These counters answer it over HTTP instead: every memory_search tool
         # call lands here by mode. Counters, not facts - no lock: one lost increment in a busy boot
         # is honest noise; a wrong block byte is not. See note_tool() and stats().
-        self._tool = {"calls": 0, "searches": 0, "walks": 0, "maps": 0, "cites": 0, "pages": 0,
+        self._tool = {"calls": 0, "searches": 0, "walks": 0, "maps": 0, "cites": 0, "pages": 0, "code": 0,
                       "empty": 0}
         # BLOCK FLOOR (cap-not-quota, m4_blockrule 2026-10-16): _render_block stops taking
         # candidates once the fused RRF score falls below this floor - the budget stays as the
@@ -4671,6 +4687,53 @@ class MemoryService:
         return {"cites": out, "checked": len(out), "clean": ok}
 
     @_heals
+    def code_ref(self, memory_id: int | None = None, path: str = "",
+                 scope: str = DEFAULT_PROJECT, limit: int = 8) -> dict:
+        """The join, in both directions (2026-11-24, the merge).
+
+        A row in → the code nodes its citation names: "what in the graph is this decision about?"
+        A path in → the rows that name it: "what did we decide about `serve/memory.py`?" That
+        second question is the one the store could not ask, and it is the reason the seam is worth
+        a module: the repo graph has 454,530 structural edges and the store has 3,978 facts, and
+        the two only ever met in a person's head.
+
+        The reverse direction is a `class`-independent text read over the rows that NAME the path —
+        the citation is in the text, not in a column, because a row is a sentence, not a record.
+        """
+        cg = default_graph()
+        if memory_id:
+            with self.lock, _rollback_on_error(self.conn):
+                r = self.conn.execute("select text, coalesce(class,''), coalesce(provenance->>'why',''),"
+                                      " provenance->'code_ref' from memories where id = %s",
+                                      (int(memory_id),)).fetchone()
+                self.conn.commit()
+            if r is None:
+                return {"id": int(memory_id), "found": False}
+            names = _CITE_FILE_RE.findall(f"{r[0] or ''} {r[2] or ''}")
+            names = [n for n in dict.fromkeys(names) if not _REMOTE_RE.match(n)]
+            resolved = [cg.resolve(n) for n in names[:4]]
+            return {"id": int(memory_id), "found": True, "class": r[1],
+                    "cites": names[:4], "resolved": resolved,
+                    "code_ref": (r[3] if isinstance(r[3], dict) else None),
+                    "live": any(x["live"] for x in resolved) if resolved else None}
+        if not path:
+            return {"error": "name a row (id) or a path"}
+        want = str(path).strip().lstrip("./")
+        like = "%" + want.split("/")[-1] + "%"
+        with self.lock, _rollback_on_error(self.conn):
+            rows = self.conn.execute(
+                "select id, text, coalesce(class,''), created_at from memories"
+                " where invalid_at is null and (text like %s or coalesce(provenance->>'why','') like %s)"
+                " order by updated_at desc limit %s", (like, like, int(limit))).fetchall()
+            self.conn.commit()
+        mine = [x for x in rows if want.split("/")[-1] in (x[1] or "")
+                or want in (x[1] or "")]
+        return {"path": want, "on_disk": cg.exists(want), "nodes": cg.nodes_for(want),
+                "rows": [{"id": int(x[0]), "class": x[2], "text": x[1],
+                          "when": _stamp(x[3])} for x in mine],
+                "count": len(mine)}
+
+    @_heals
     def mark_stale_citations(self, root: str | Path = "", limit: int = 500) -> dict:
         """Decisions that go stale (2026-11-24, item 14 — agentic-graphrag's flagged decisions).
 
@@ -4687,6 +4750,7 @@ class MemoryService:
         citation.
         """
         root = Path(str(root)) if str(root) else None
+        cg = default_graph() if root is None else CodeGraph(roots=[root, root / "terminal"])
         with self.lock, _rollback_on_error(self.conn):
             rows = self.conn.execute(
                 "select id, text, coalesce(provenance->>'why',''), provenance from memories"
@@ -4699,13 +4763,11 @@ class MemoryService:
                 if not names:
                     continue
                 checked += 1
-                hit = False
-                for nm in dict.fromkeys(names):           # each distinct path, once
-                    cands = [Path(nm)]
-                    if root and not Path(nm).is_absolute():
-                        cands.append(root / nm)
-                    if any(c.exists() for c in cands):
-                        hit = True
+                hit = None
+                for nm in dict.fromkeys(names):             # each distinct path, once
+                    r = cg.resolve(nm)
+                    if r["live"]:
+                        hit = r
                         break
                 if not hit:
                     p = dict(prov or {})
@@ -4713,13 +4775,17 @@ class MemoryService:
                     self.conn.execute("update memories set provenance = %s::jsonb where id = %s",
                                       (json.dumps(p), rid))
                     stale += 1
-                elif prov and "stale" in prov:
-                    # THE STAMP IS RE-ASSESSED, not fossilised: the file came back (a merge moved
-                    # it home), so the row is citing a live address again. The scar survives where
-                    # the row keeps it — in `provenance.scar` and the supersession chain — and the
-                    # STALE flag is a statement about right now, so it clears.
-                    p = dict(prov)
+                elif prov and (prov.get("stale") or {}).get("resolved") != (hit or {}).get("path"):
+                    # THE STAMP CARRIES THE ADDRESS IT FOUND (2026-11-24, the merge): "stale" was a
+                    # yes/no; a row citing `serve/memory.py` is live at
+                    # `terminal/serve/memory.py`, and the next reader wants to know WHICH file the
+                    # claim rests on, because that is what a `graphify affected` query starts from.
+                    p = dict(prov or {})
                     p.pop("stale", None)
+                    if hit:
+                        p["code_ref"] = {"path": hit.get("path"),
+                                         "on_disk": bool(hit.get("on_disk")),
+                                         "nodes": [x["node"] for x in (hit.get("nodes") or [])][:6]}
                     self.conn.execute("update memories set provenance = %s::jsonb where id = %s",
                                       (json.dumps(p), rid))
             self.conn.commit()

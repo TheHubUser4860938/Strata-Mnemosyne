@@ -2998,8 +2998,10 @@ eighteen things) and a plan (`PLAN-2026-11-24.md`: seven phases). One day shippe
 store migration is **additive**: `links +valid_at +invalid_at`, `docs +mode +cap +chunker_hash`,
 and two tables, `pages` and `candidates`. No rows deleted, no re-ingest.
 
-**The read path.** `memory_search` now has five verbs: words search, `class` walks a drawer,
-`catalog` reads the map, `cites` grades a citation, `page` reads a standing answer.
+**The read path.** `memory_search` now has six verbs: words search, `class` walks a drawer,
+`catalog` reads the map, `cites` grades a citation, `page` reads a standing answer, `code` joins
+a file path to the repo graph — the rows that name it, graphify's nodes for it, and the embedding
+edges (`tools/m11_semantic.py`'s sidecar) one hop out. The seam is `serve/codegraph.py`.
 
 - `fusion: "interleave"` round-robins the two arms' lists — each arm's #1 gets a slot — priced in
   the same RRF currency so nothing downstream changes. It runs LAST, over the union: the meaning
