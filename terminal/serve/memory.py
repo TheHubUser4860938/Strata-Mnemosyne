@@ -40,6 +40,7 @@ import contextlib
 import datetime
 import functools
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -107,6 +108,8 @@ LINK_FAN = 8                          # typed-edge neighbours per seed: a hand w
                                         # they vote FIRST inside a seed's neighbourhood, ahead of
                                         # the graph's inferred edges and the vectors' neighbours
 RRF_K = 1.0                             # reciprocal-rank fusion constant, a module constant so a probe can
+LEX_CAND_CAP = 4000                     # the lexical arm's candidate ceiling (item 18: a full cap is
+                                        # reported as `truncated`, not hidden behind a full list)
                                         # sweep it (tools/lme_retrieval_ab.py --rrf-k). CHANGED from the
                                         # conventional 60 on 2026-10-14, measured on the venue copy (10,973
                                         # rows, 500 questions, deterministic - one run is one answer):
@@ -504,14 +507,64 @@ MEMORY_TOOL = {
             "offset": {"type": "integer", "description": "the walk's cursor: rows (or shelves, with"
                                                          " catalog) to skip - page 2 of a drawer is"
                                                          " the same call at limit 20 offset 20",},
+            "cites": {"type": "array", "items": {"type": "integer"},
+                      "description": "the row ids this answer leans on: the store checks each was"
+                                     " actually shown in this conversation, returns a version-pinned"
+                                     " cite (fact:<id>:<sha8>) and says when the row has been"
+                                     " superseded. Ask with words for content; ask with cites to"
+                                     " prove what you cited"},
         },
         "required": [],
 }
 }
 
 
-def _tool_done(t0: float, ok: bool, text: str) -> dict:
-    return {"ok": ok, "text": text, "chars": len(text), "truncated": False,
+def _payload_text(mem: "MemoryService", out: dict) -> str:
+    """The tool result's bytes (2026-11-24, item 2c). Measured on this store, one `memory_search`
+    at limit 20 costs ~7,100 chars and only 46% of it is fact text: 41% is JSON framing — a row
+    carries 213 characters of keys and braces around a 71-character fact. The envelope is not a
+    budget question, it is a RENDERING one, and the compact arm spends one line per row:
+
+        [3] OPS/STATE rel .98 said 2026-11-23 · the standing cart grew to 4.63 GB
+
+    Same fields the JSON carries (id, class, rel, when, and the text), the drawer address the
+    model walks with, and the `found:` header the block's honesty rule asks for. `why`/`links`
+    ride as trailing clauses on the row they belong to. Default "json" is byte-identical.
+    """
+    if mem.payload_style != "compact" or "facts" not in out:
+        return json.dumps(out, ensure_ascii=False)
+    rows = out["facts"]
+    head = f"found: {out.get('found', len(rows))}"
+    if out.get("gap"):
+        head += f" · gap: {out['gap']}"
+    if out.get("notice"):
+        head += f" · {out['notice']}"
+    lines = [head]
+    for i, f in enumerate(rows, start=1):
+        # THE ID RIDES: it is the handle for op=docs read/expand and for a follow-up ask that names
+        # the row, and the JSON arm carries it on every line, so dropping it to buy bytes would
+        # trade the envelope for the store's own addressing.
+        bits = [f"[{i}] id {f.get('id')}", f.get("class") or "WILD"]
+        if f.get("rel") is not None:
+            bits.append(f"rel {float(f['rel']):.2f}")
+        if f.get("when"):
+            bits.append(f"said {f['when'][:10]}")
+        if f.get("pinned"):
+            bits.append("pinned")
+        if f.get("why"):
+            bits.append(f"why: {f['why']}")
+        if f.get("links"):
+            bits.append("links " + ", ".join(f"{l['kind']}→{l['id']}" for l in f["links"]))
+        bits.append(f.get("text") or "")
+        lines.append(" · ".join(bits))
+    return "\n".join(lines)
+
+
+def _tool_done(t0: float, ok: bool, text: str, truncated: bool = False) -> dict:
+    # `truncated` (item 18, 2026-11-24): the ceiling bound what the arms got to vote on. It used to
+    # be a constant False, so a full list and a window on 6,419 matching rows looked identical to
+    # the reader. Only the search arm can know, so only it passes it.
+    return {"ok": ok, "text": text, "chars": len(text), "truncated": truncated,
             "ms": int((time.perf_counter() - t0) * 1000)}
 
 
@@ -651,6 +704,18 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
     cat = args.get("catalog")
     catalog = cat is True or (isinstance(cat, str) and cat.strip().lower() in ("1", "true", "on", "yes"))
     named = [x.strip() for x in str(args.get("class") or "").split(",") if x.strip()]
+    cites = args.get("cites")
+    if cites:
+        # THE FOURTH VERB (2026-11-24, items 12 + 17): the model names what it leaned on and the
+        # store grades it. It is checked against THIS conversation's ledger, not the model's
+        # memory of the prompt, which is the whole point — a citation is a claim about the store.
+        try:
+            ids = [int(x) for x in (cites if isinstance(cites, (list, tuple)) else [cites])]
+        except (TypeError, ValueError) as e:
+            return _tool_done(t0, False, json.dumps({"error": f"cites: row ids, not {e}"}))
+        out = mem.check_cites(ids, scope=scope)
+        mem.note_tool("cites", not out["cites"])
+        return _tool_done(t0, True, json.dumps(out, ensure_ascii=False))
     try:
         limit = max(1, min(20, int(args.get("limit") or 8)))
         # An explicit class argument that names no shelf returns nothing, not the whole store (see
@@ -674,8 +739,9 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
         out["mode"] = "walk"
         mem.note_tool("walks", not out["rows"])
         return _tool_done(t0, True, json.dumps(out, ensure_ascii=False))
+    stats: dict = {}
     hits = mem.search(q, scope=scope, limit=limit, classes=cls, since=since, until=until,
-                      semantic=semantic)
+                      semantic=semantic, stats=stats)
     said: dict[int, object] = {}
     filed: dict[int, object] = {}
     pinned: dict[int, bool] = {}
@@ -802,7 +868,8 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
                             f"these {len(facts)} rows came from the meaning arm alone, not from your "
                             "words; judge them at half weight"))
     mem.note_tool("searches", not facts)
-    return _tool_done(t0, True, json.dumps(out, ensure_ascii=False))
+    return _tool_done(t0, True, _payload_text(mem, out),
+                      truncated=bool(stats.get("cap_bound")))
 
 
 def prepend_head(messages: list[dict], text: str) -> list[dict]:
@@ -1217,6 +1284,7 @@ class MemoryService:
                  auto_shelve: bool = False, block_min_score: float = 0.0,
                  block_doc_cap: int = 1200,
                  evidence_chars: int = 0, evidence_budget: int = 0,
+                 fusion: str = "rrf", payload_style: str = "json",
                  expose_window: int = 0, expose_step: float = 0.0, expose_cap: int = 3,
                  route_shelves: bool = False, route_demote: float = 0.0,
                  derived_weight: float = 1.0, block_cover_terms: int = 0,
@@ -1337,7 +1405,7 @@ class MemoryService:
         # unmeasured history. These counters answer it over HTTP instead: every memory_search tool
         # call lands here by mode. Counters, not facts - no lock: one lost increment in a busy boot
         # is honest noise; a wrong block byte is not. See note_tool() and stats().
-        self._tool = {"calls": 0, "searches": 0, "walks": 0, "maps": 0, "empty": 0}
+        self._tool = {"calls": 0, "searches": 0, "walks": 0, "maps": 0, "cites": 0, "empty": 0}
         # BLOCK FLOOR (cap-not-quota, m4_blockrule 2026-10-16): _render_block stops taking
         # candidates once the fused RRF score falls below this floor - the budget stays as the
         # hard ceiling, but a full block of weak rows no longer beats an honest short one.
@@ -1363,6 +1431,12 @@ class MemoryService:
         # text, an oversized item skipped rather than the tail evicted.
         self.evidence_chars = max(0, int(evidence_chars))
         self.evidence_budget = max(0, int(evidence_budget))
+        # FUSION MODE (item 11, 2026-11-24): "rrf" is the shipped arithmetic; "interleave" gives
+        # each arm's #1 a guaranteed slot. "json" payload vs "compact": the measured envelope
+        # (41% of the browse payload is JSON keys around 46% fact text) is a RENDERING cost, and
+        # compact is the one knob that can take it back without touching what the model reads.
+        self.fusion = str(fusion or "rrf").strip().lower()
+        self.payload_style = str(payload_style or "json").strip().lower()
         # EXPOSURE-DECAY (2026-10-16, the lever the m4_blockrule sweep pointed at): a row the last
         # expose_window journaled turns already injected pays step*min(exposures, expose_cap) off
         # its fused score. The ledger is turns.injected - what the model really read, not what
@@ -2923,7 +2997,7 @@ class MemoryService:
     def search(self, query: str, scope: str = DEFAULT_PROJECT, limit: int | None = None,
                classes: list[str] | None = None, since: float | None = None,
                until: float | None = None, semantic: bool = True,
-               credit: bool = True) -> list[dict]:
+               credit: bool = True, stats: dict | None = None) -> list[dict]:
         """tsvector/GIN candidates over the user scope plus this request's project scope - the native
         twin of the SQLite-era bm25 arm (ADR-002): to_tsquery ORs with |, the GIN probe supplies the
         candidate set, _bm25() ranks it with REAL Lucene bm25 (ts_rank_cd was tried and rejected the
@@ -3004,8 +3078,17 @@ class MemoryService:
                     f" from memories m, to_tsquery('{FTS_CFG}', %s) q"
                     " where m.ts @@ q and m.invalid_at is null and m.scope in ("
                     + ",".join(["%s"] * len(scopes)) + ")" + shelf + bounds
-                    + " order by ts_rank_cd(m.ts, q) desc, m.id limit 4000",
+                    + f" order by ts_rank_cd(m.ts, q) desc, m.id limit {LEX_CAND_CAP}",
                     [match] + scopes + prefixes + bparams).fetchall()
+                if stats is not None:
+                    # A FULL CAP IS A FACT ABOUT THE ANSWER (2026-11-24, item 18): the cap keeps the
+                    # best-ranked 4,000, so a query that lands exactly on it is a window on a bigger
+                    # pile — "liberty" matches 6,419 rows in the founding corpus. The tool result's
+                    # `truncated` said False unconditionally for a year; it now means the ceiling
+                    # bound the candidate set, which is the one thing the reader can act on (narrow
+                    # the words) and cannot infer from a full list.
+                    stats["cands"] = len(cand)
+                    stats["cap_bound"] = len(cand) >= LEX_CAND_CAP
                 # the query's STEMMED tokens in one round trip: to_tsvector runs the SAME parser and
                 # english_stem as the to_tsquery that matched, so the token sets agree by
                 # construction - and df then probes exactly the lexemes the candidates matched.
@@ -3487,6 +3570,7 @@ class MemoryService:
         now = time.time()
         cos_rank: dict[int, int] = {}
         picked: list[int] = []
+        cos_order: list[int] = []      # the meaning arm's list IN ITS OWN ORDER: item 11's
         for cr, j in enumerate(order, start=1):
             if not mask[j]:
                 continue
@@ -3497,14 +3581,23 @@ class MemoryService:
                 continue
             rid = int(meta["ids"][j])
             cos_rank[rid] = cr
+            cos_order.append(rid)
             if rid not in by_id:
                 picked.append(rid)
 
         def fused(lr: int | None, cr: int | None, upd: float, conf: float) -> float:
             v = (1.0 / (rrf_k + lr) if lr else 0.0) + (1.0 / (rrf_k + cr) if cr else 0.0)
-            fresh = math.exp(-max(0.0, now - float(upd)) / 86400.0 / AGE_SCALE_DAYS)
+            fresh = math.exp(-max(0.0, now - upd) / 86400.0 / AGE_SCALE_DAYS)
             return round(v + 1e-5 * fresh + 1e-6 * float(conf), 6)
 
+        # INTERLEAVE (2026-11-24, item 11 — Hindsight's `interleave_fusion`, added for exactly the
+        # bug we filed too): RRF AVERAGES a single-arm winner below the cutoff, so the near-duplicate
+        # TWIN — the row only the meaning arm recognizes, `m4_families.py` measured 90 violating
+        # pairs across 25 families on this store — is voted out by the arm that never saw it. Round
+        # robin gives every arm's #1 a slot at rank 1-2, its #2 at 3-4, and so on, dedup as you go.
+        # The score is then the SAME currency (1/(k+position)) so nothing downstream changes, and
+        # "rrf" is today's bytes exactly.
+        # The round-robin arm runs at the END of this pass, over the UNION — see item 11 there.
         for c in cands:
             j = meta["ix"].get(c["id"])
             lr, cr = lex_rank[c["id"]], cos_rank.get(c["id"])
@@ -3535,6 +3628,33 @@ class MemoryService:
                                   source=r[6],                    # the cosine arm's rows get a tier too -
                                   #   a derived row the lexical pass never proposed is still derived
                                   **{"class": r[3]}))
+        # INTERLEAVE (2026-11-24, item 11 — Hindsight's `interleave_fusion`, added for exactly the
+        # bug we filed too): RRF AVERAGES a single-arm winner below the cutoff, so the near-duplicate
+        # TWIN — the row only the meaning arm recognizes, `m4_families.py` measured 90 violating
+        # pairs across 25 families on this store — is voted out by the arm that never saw it. Round
+        # robin gives every arm's #1 a slot at rank 1-2, its #2 at 3-4, and so on, dedup as you go.
+        # The score is then the SAME currency (1/(k+position)) so nothing downstream changes, and
+        # "rrf" is today's bytes exactly. It runs LAST, over the union, because the meaning arm's
+        # own picks are appended after the lexical pass and an interleave before them would price a
+        # half-seen list.
+        if self.fusion == "interleave" and cos_order:
+            merged, seen_i = [], set()
+            for a, b in itertools.zip_longest([c["id"] for c in cands], cos_order):
+                for rid in (a, b):
+                    if rid is not None and rid not in seen_i:
+                        seen_i.add(rid)
+                        merged.append(rid)
+            by_id2 = {c["id"]: c for c in cands}
+            for pos, rid in enumerate(merged, start=1):
+                c = by_id2.get(rid)
+                if c is None:
+                    continue                       # the row went away between scan and fetch
+                j = meta["ix"].get(rid)
+                upd = now if j is None else float(meta["updated"][j])
+                conf = 0.8 if j is None else float(meta["conf"][j])
+                fresh = math.exp(-max(0.0, now - upd) / 86400.0 / AGE_SCALE_DAYS)
+                c["score"] = round(1.0 / (rrf_k + pos) + 1e-5 * fresh + 1e-6 * conf, 6)
+                c["fuse_rank"] = pos               # provenance: the round-robin priced this row
         return cands
 
     @_heals
@@ -4209,6 +4329,60 @@ class MemoryService:
     # ---- journal (raw turns; the curation loop reads these) -------------------
 
     @_heals
+    @_heals
+    def check_cites(self, ids: list[int], scope: str = DEFAULT_PROJECT,
+                    recent: int = 40) -> dict:
+        """Did this conversation actually SEE the rows it is citing, and is it citing the CURRENT
+        version? (2026-11-24, items 12 + 17 — agentic-graphrag's citation check and its
+        version-pinned evidence ids.)
+
+        The primitive has existed since 2026-10-29 — `turns.injected` is the id list the server
+        really showed — and it was used by exactly one audit. This is the read path: the model
+        names the rows it leaned on, and the store answers row by row.
+
+        `shown` is the honesty test (a cited row must have been in this scope's recent turns — a
+        citation to a row the model never read is a guess wearing a footnote). `cite` is the
+        version: `fact:<id>:<sha8>` over the row's own text, agentic-graphrag's self-decoding id,
+        so a citation names WHICH text it rested on and a reader can tell a moved row from a moved
+        quote. `superseded` says the row has been replaced and names the heir.
+        """
+        want = [int(i) for i in ids]
+        if not want:
+            return {"cites": [], "checked": 0}
+        s = scope_name(scope)
+        scopes = [USER_SCOPE] + ([s] if s != USER_SCOPE else [])
+        with self.lock, _rollback_on_error(self.conn):
+            rows = self.conn.execute(
+                "select id, text, coalesce(class,''), invalid_at, superseded_by, scope"
+                " from memories where id = any(%s)", (want,)).fetchall()
+            seen = self.conn.execute(
+                "select distinct x::bigint from (select injected from turns"
+                " where scope = any(%s) and injected is not null"
+                " order by created_at desc limit %s) t, jsonb_array_elements_text(t.injected) x",
+                (scopes, int(recent))).fetchall()
+            self.conn.commit()
+        shown = {int(r[0]) for r in seen}
+        by_id = {int(r[0]): r for r in rows}
+        out = []
+        for i in want:
+            r = by_id.get(i)
+            if r is None:
+                out.append({"id": i, "found": False,
+                            "verdict": "no such row - the citation points at nothing"})
+                continue
+            text = r[1] or ""
+            sha = hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
+            ent = {"id": i, "found": True, "cite": f"fact:{i}:{sha}", "shown": i in shown,
+                   "class": r[2], "scope": r[5],
+                   "head": text[:160] + (" …" if len(text) > 160 else "")}
+            if r[3] is not None:
+                ent["superseded"] = True
+                if r[4]:
+                    ent["heir"] = int(r[4])
+            out.append(ent)
+        ok = sum(1 for e in out if e.get("found") and e.get("shown") and not e.get("superseded"))
+        return {"cites": out, "checked": len(out), "clean": ok}
+
     def journal_turn(self, scope: str, user_text: str, assistant_text: str, model: str | None = None,
                      injected: list[int] | None = None) -> int:
         """Store one completed turn for curation to read later. `injected` is the list of memory row ids
@@ -4973,6 +5147,8 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         block_doc_cap=num("block_doc_cap", 1200),
         evidence_chars=num("evidence_chars", 0),          # the clerk's reason, per row
         evidence_budget=num("evidence_budget", 0),        # reason + link text, per ask
+        fusion=str(mcfg.get("fusion") or "rrf"),          # "rrf" (shipped) | "interleave"
+        payload_style=str(mcfg.get("payload_style") or "json"),   # "json" | "compact"
         expose_window=num("expose_window", 0),
         expose_step=num("expose_step", 0.0, float),
         expose_cap=num("expose_cap", 3),

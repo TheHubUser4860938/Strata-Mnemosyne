@@ -8,7 +8,9 @@ injected block is byte-stable for a conversation while the store changes underne
 """
 import http.client
 import json
+import hashlib
 import os
+import shutil
 import tempfile
 import time
 import unittest
@@ -5171,6 +5173,135 @@ class BlockHarvestTest(unittest.TestCase):
         m.conn.execute("update turns set processed=1")
         m.conn.commit()
         self.assertIn('harvest="current"', self._head(m), "drained is a word, not a number")
+
+
+class TheReadPathsThreeKnobs(unittest.TestCase):
+    """Items 11, 18 and 2c (2026-11-24): the fusion MODE, what `truncated` claims, and the shape of
+    the bytes the model reads. Each is a knob whose OFF state is today's payload exactly."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.svc = MemoryService(self.tmp.name)
+        self.svc.remember("the cow purchase came before the fence repair", scope="default")
+        self.svc.remember("fences keep cattle in the pasture", scope="default")
+
+    def tearDown(self):
+        self.svc.close()
+        self.tmp.cleanup()
+
+    def test_interleave_gives_each_arms_first_row_a_guaranteed_slot(self):
+        """The mechanism, not the theory (the venue day owns the outcome number): RRF lets a row two
+        arms like moderately beat a row ONE arm won outright, because the average of 2 and 2 beats
+        1 and 40. Round-robin cannot: each arm's #1 takes slot 1 and 2 by construction.
+        Hindsight added `interleave_fusion` for the near-duplicate twin — the row only the meaning
+        arm recognizes (`m4_families.py` filed 90 such pairs across 25 families on this store)."""
+        v, w = [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]
+        stub = StubEmbedder({"fence repair": v, "the twin about wire": v, "cattle market": w})
+        tmp = tempfile.mkdtemp()
+        svc = MemoryService(tmp, embedder=stub)
+        try:
+            svc.remember("fence repair", scope="default")            # the lexical arm's #1
+            svc.remember("the twin about wire", scope="default")     # the meaning arm's #1 only
+            r = svc.search("fence repair", limit=2)
+            self.assertNotIn("fuse_rank", r[0], "rrf is today's arithmetic, untouched")
+            svc.fusion = "interleave"
+            il = svc.search("fence repair", limit=2)
+            self.assertEqual([x["id"] for x in il][:1], [x["id"] for x in r][:1],
+                             "the lexical winner keeps first place in both modes")
+            self.assertEqual(il[0].get("fuse_rank"), 1)
+            self.assertEqual(il[1].get("fuse_rank"), 2,
+                             "the meaning arm's #1 has a slot, not an average")
+        finally:
+            svc.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_truncated_means_the_candidate_ceiling_bound_the_arms(self):
+        st: dict = {}
+        self.svc.search("fence", limit=5, stats=st, semantic=False)
+        self.assertFalse(st.get("cap_bound"), "two rows cannot fill a 4,000 cap")
+        self.assertEqual(st.get("cands"), 2)
+        old = _memory_mod.LEX_CAND_CAP
+        try:
+            _memory_mod.LEX_CAND_CAP = 1        # the ceiling binds: the arm saw one of two
+            r = tool_result(self.svc, {"q": "fence", "limit": 5}, scope="default",
+                            semantic=False)
+            self.assertTrue(r["truncated"], "a full cap is a fact the reader can act on")
+        finally:
+            _memory_mod.LEX_CAND_CAP = old
+        self.assertFalse(tool_result(self.svc, {"q": "fence", "limit": 5}, scope="default",
+                                     semantic=False)["truncated"],
+                         "and it goes back to False when the ceiling has room")
+
+    def test_the_compact_envelope_carries_the_same_rows_in_fewer_bytes(self):
+        j = tool_result(self.svc, {"q": "fence", "limit": 5}, scope="default", semantic=False)
+        self.svc.payload_style = "compact"
+        c = tool_result(self.svc, {"q": "fence", "limit": 5}, scope="default", semantic=False)
+        self.svc.payload_style = "json"
+        rows = json.loads(j["text"])["facts"]
+        self.assertLess(len(c["text"]), len(j["text"]),
+                        "the compact arm is the answer to the 41% envelope, not a re-labelling")
+        self.assertTrue(c["text"].startswith("found: "), c["text"][:40])
+        for f in rows:
+            self.assertIn(f'"id": {f["id"]}', j["text"])
+            self.assertIn(f"id {f['id']}", c["text"], "the id is the handle for op=docs read")
+            self.assertIn(f["text"], c["text"], "the fact text is byte-identical in both arms")
+            self.assertIn(f.get("class") or "WILD", c["text"], "the drawer address rides too")
+
+
+class TheCitationCheck(unittest.TestCase):
+    """Items 12 + 17 (2026-11-24): a cited row must have been SHOWN, in scope, at the version the
+    answer leaned on. `turns.injected` has carried the shown list since 2026-10-29 and one audit
+    had read it; this is the same evidence on the read path."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.svc = MemoryService(self.tmp.name)
+        self.a = self.svc.remember("the fence repair cost forty dollars", scope="default")
+        self.b = self.svc.remember("the cow was bought before the fence", scope="default")
+
+    def tearDown(self):
+        self.svc.close()
+        self.tmp.cleanup()
+
+    def test_a_cited_row_that_was_shown_comes_back_clean_and_version_pinned(self):
+        self.svc.journal_turn("default", "what did the fence cost?", "forty dollars",
+                              injected=[self.a["id"]])
+        r = tool_result(self.svc, {"cites": [self.a["id"]]}, scope="default")
+        out = json.loads(r["text"])
+        self.assertEqual(out["checked"], 1)
+        self.assertEqual(out["clean"], 1, "shown, in scope, current")
+        e = out["cites"][0]
+        self.assertTrue(e["shown"])
+        self.assertEqual(e["cite"], f"fact:{self.a['id']}:"
+                                    + hashlib.sha1("the fence repair cost forty dollars"
+                                                   .encode()).hexdigest()[:8],
+                         "the cite names the VERSION, so a moved row reads as moved")
+        self.assertIn("forty dollars", e["head"])
+
+    def test_a_row_the_conversation_never_saw_is_a_guess_wearing_a_footnote(self):
+        self.svc.journal_turn("default", "what did the fence cost?", "forty dollars",
+                              injected=[self.a["id"]])
+        out = json.loads(tool_result(self.svc, {"cites": [self.a["id"], self.b["id"]]},
+                                     scope="default")["text"])
+        self.assertEqual(out["clean"], 1, "one shown, one not")
+        self.assertFalse(out["cites"][1]["shown"], "the cow row was never injected on this ask")
+
+    def test_a_superseded_row_says_so_and_names_its_heir(self):
+        self.svc.journal_turn("default", "q", "a", injected=[self.a["id"]])
+        heir = self.svc.remember("the fence repair cost fifty-five dollars", scope="default")
+        self.svc.invalidate(self.a["id"], by_id=heir["id"])       # the version chain
+        out = json.loads(tool_result(self.svc, {"cites": [self.a["id"]]},
+                                     scope="default")["text"])
+        e = out["cites"][0]
+        self.assertTrue(e.get("superseded"), "the quote is still true of the row it came from")
+        self.assertEqual(e.get("heir"), heir["id"], "and the answer says where the claim lives now")
+        self.assertEqual(out["clean"], 0, "a superseded citation is not a clean one")
+
+    def test_a_citation_to_a_row_that_does_not_exist_is_reported_not_swallowed(self):
+        out = json.loads(tool_result(self.svc, {"cites": [999999]}, scope="default")["text"])
+        self.assertFalse(out["cites"][0]["found"])
+        self.assertIn("nothing", out["cites"][0]["verdict"])
+        self.assertEqual(self.svc.stats()["tool"]["cites"], 1, "the verb counts in the ledger")
 
 
 if __name__ == "__main__":
