@@ -517,6 +517,11 @@ MEMORY_TOOL = {
                                      " cite (fact:<id>:<sha8>) and says when the row has been"
                                      " superseded. Ask with words for content; ask with cites to"
                                      " prove what you cited"},
+            "page": {"type": "string", "description": "a standing answer by name - the store's own"
+                                                       " write-up of a question it is asked a lot"
+                                                       " (\"live state\", \"the boot stack\"). Pass"
+                                                       " it with nothing else to read that page, or"
+                                                       " with page:true to list what exists"},
         },
         "required": [],
 }
@@ -708,6 +713,15 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
     cat = args.get("catalog")
     catalog = cat is True or (isinstance(cat, str) and cat.strip().lower() in ("1", "true", "on", "yes"))
     named = [x.strip() for x in str(args.get("class") or "").split(",") if x.strip()]
+    pg = args.get("page")
+    if pg is not None:
+        # THE FIFTH VERB (item 6, 2026-11-24): a standing answer, read as one row. `page: true`
+        # (or "") is the index; a name is the page. The answer is a VIEW over rows, so it costs no
+        # ranking and no generation on the read path.
+        out = mem.page(name=(str(pg) if str(pg).strip() and str(pg).lower() not in ("true", "1")
+                             else None), scope=scope)
+        mem.note_tool("pages", not (out.get("pages") or out.get("page")))
+        return _tool_done(t0, True, json.dumps(out, ensure_ascii=False))
     cites = args.get("cites")
     if cites:
         # THE FOURTH VERB (2026-11-24, items 12 + 17): the model names what it leaned on and the
@@ -772,7 +786,8 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
         with mem.lock, _rollback_on_error(mem.conn):
             got = mem.conn.execute(
                 "select r.id, coalesce(t.created_at, r.created_at), r.created_at,"
-                " r.pinned, r.provenance ->> 'why'"
+                " r.pinned, r.provenance ->> 'why', r.provenance ->> 'proof',"
+                " r.provenance -> 'scar'"
                 " from (select id, created_at, pinned, provenance,"
                 "              case when provenance ->> 'turn_id' ~ '^[0-9]+$'"
                 "                   then (provenance ->> 'turn_id')::bigint end as tid"
@@ -783,6 +798,8 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
         filed = {r[0]: r[2] for r in got}
         pinned = {r[0]: bool(r[3]) for r in got}
         why = {r[0]: r[4] for r in got}
+        proof = {r[0]: (int(r[5]) if r[5] and str(r[5]).isdigit() else None) for r in got}
+        scar = {r[0]: (r[6] or []) for r in got}      # the last states, newest first (item 5)
         links = mem.links_of(ids, scopes=[USER_SCOPE, scope])   # bounded direct relations, both
                                         # directions, inside the scopes THIS ask can read (see
                                         # links_of: the search filtered, the links did not)
@@ -837,6 +854,12 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
             # The row's cited file is gone (item 14). The score moved and the payload says why —
             # a model that knows the address is stale quotes the DECISION without quoting the path.
             f["stale"] = True
+        if proof.get(h["id"]):
+            # THE OBSERVATION RUNG (item 5): how many sayings back this belief. A 4 is "the person
+            # said this repeatedly"; a 1 is "the harvest inferred it once". Same words, weightier.
+            f["proof"] = proof[h["id"]]
+        if scar.get(h["id"]):
+            f["scar"] = [s[:160] for s in list(scar[h["id"]])[:2]]   # what it used to say
         if why.get(h["id"]):
             w = why[h["id"]]
             if row_ev_cap and len(w) > row_ev_cap:      # the clerk's sentence, capped
@@ -1082,6 +1105,19 @@ _PG_DDL: tuple[str, ...] = (
          invalid_at timestamptz,
          primary key (a_id, b_id))""",
     "create index if not exists links_b on links(b_id)",
+    # A PAGE IS A STANDING ANSWER (2026-11-24, item 6 — Hindsight's mental models / pages). The
+    # store answers a question the same way twice a day and the answer is assembled fresh from
+    # rows every time. A page names the question, keeps the answer, and says which rows it was
+    # written from; the sweep rewrites it when those rows move; reading it is one SELECT. The tree
+    # of them is markdown for the vault (item 13), and no LLM call is on the read path.
+    """create table if not exists pages(
+         name text primary key,
+         question text not null default '',
+         answer text not null default '',
+         scope text not null default 'default',
+         source jsonb,
+         updated_at timestamptz not null,
+         rev integer not null default 1)""",
     "create index if not exists mem_ts_gin on memories using gin(ts)",
     "create index if not exists mem_updated on memories(updated_at)",
     "create index if not exists mem_scope_active on memories(scope) where invalid_at is null",
@@ -1414,7 +1450,8 @@ class MemoryService:
         # unmeasured history. These counters answer it over HTTP instead: every memory_search tool
         # call lands here by mode. Counters, not facts - no lock: one lost increment in a busy boot
         # is honest noise; a wrong block byte is not. See note_tool() and stats().
-        self._tool = {"calls": 0, "searches": 0, "walks": 0, "maps": 0, "cites": 0, "empty": 0}
+        self._tool = {"calls": 0, "searches": 0, "walks": 0, "maps": 0, "cites": 0, "pages": 0,
+                      "empty": 0}
         # BLOCK FLOOR (cap-not-quota, m4_blockrule 2026-10-16): _render_block stops taking
         # candidates once the fused RRF score falls below this floor - the budget stays as the
         # hard ceiling, but a full block of weak rows no longer beats an honest short one.
@@ -1937,6 +1974,11 @@ class MemoryService:
             if vec is not None and guard:
                 verdict = self._semantic_dupe(text, same, vec)
                 if verdict and verdict[0] == "suppress":
+                    # THE OBSERVATION RUNG (item 5, 2026-11-24): the carrier is the belief, this
+                    # restatement is a PROVING saying. A counter says "a near-dupe arrived"; a set
+                    # of turn ids says "the user said this on these exchanges", which is the
+                    # difference between a belief the harvest inferred once and one the person
+                    # repeated five times — the same `proof_weight` prices, on better evidence.
                     self.conn.execute(
                         "update memories set updated_at=%s, confidence=greatest(confidence,%s), "
                         "class=coalesce(nullif(class,''),%s), "
@@ -3254,6 +3296,128 @@ class MemoryService:
                     h["score"] = round(float(h["score"] or 0.0) * d, 6)
         if d < 1.0:
             hits.sort(key=lambda x: -x["score"])
+
+    @_heals
+    def add_proof(self, memory_id: int, turn_id: int | str | None = None,
+                  quote: str = "") -> dict:
+        """The observation rung (2026-11-24, item 5 — Hindsight's `consolidation.py:174`, where a
+        belief's `proof_count` is a **set union in SQL**).
+
+        Proofs were a counter: `provenance.proof = proof + 1`. A counter cannot answer "how many
+        TIMES did the user say this?" when the harvest restates one saying five times, and the
+        harvest does exactly that (the 57-row username policy). A SET of turn ids can, and the
+        cardinality is the number the read already uses, so `proof` survives as the cached size of
+        the set and `proof_weight` prices it unchanged.
+
+        `quote` is Hindsight's other half of the rung: the belief keeps an EXACT quote of a saying
+        that backs it, so the abstraction can be checked against the words it came from. Bounded to
+        the latest three, newest first, because the payload rides the model's context.
+        """
+        mid = int(memory_id)
+        tok = str(turn_id) if turn_id not in (None, "") else None
+        with self.lock, _rollback_on_error(self.conn):
+            row = self.conn.execute(
+                "select provenance from memories where id = %s", (mid,)).fetchone()
+            if row is None:
+                self.conn.commit()
+                return {"id": mid, "ok": False, "error": "no such row"}
+            prov = dict(row[0] or {})
+            proofs = prov.get("proofs")
+            if not isinstance(proofs, list):
+                # THE FIRST UNION migrates the counter: a row that has been proved n times by the
+                # old arithmetic starts a set of n, and its own turn joins it. Nothing is invented
+                # — the count is what the row already claimed.
+                n = int(prov.get("proof") or 1)
+                own = prov.get("turn_id")
+                proofs = [str(own)] if own not in (None, "") else []
+                while len(proofs) < n:
+                    proofs.append(f"legacy{len(proofs) + 1}")
+            if tok and tok not in [str(x) for x in proofs]:
+                proofs.append(tok)
+            prov["proofs"] = proofs
+            prov["proof"] = len(proofs)          # the cached cardinality _proofs() reads
+            if quote:
+                qs = [q for q in (prov.get("quotes") or []) if q]
+                qs.insert(0, str(quote)[:400])
+                prov["quotes"] = qs[:3]          # exact sayings, newest first, bounded
+            self.conn.execute("update memories set provenance = %s::jsonb where id = %s",
+                              (json.dumps(prov), mid))
+            self.conn.commit()
+        return {"id": mid, "ok": True, "proof": len(proofs), "proofs": len(proofs)}
+
+    @_heals
+    def scar(self, memory_id: int, prior_text: str) -> dict:
+        """The bounded inline scar (item 5, Hindsight's three-state shape): a belief refined in
+        place carries what it used to say, up to the last three, newest first. The deep history
+        stays where it always was — the supersession chain — so the scar is for the READER in the
+        block, and the chain is for the auditor. Never erase, annotate."""
+        mid = int(memory_id)
+        with self.lock, _rollback_on_error(self.conn):
+            row = self.conn.execute("select provenance from memories where id = %s",
+                                    (mid,)).fetchone()
+            if row is None:
+                self.conn.commit()
+                return {"id": mid, "ok": False, "error": "no such row"}
+            prov = dict(row[0] or {})
+            s = [x for x in (prov.get("scar") or []) if x]
+            t = str(prior_text or "")[:400]
+            if t and t != s[:1]:
+                s.insert(0, t)
+            prov["scar"] = s[:3]
+            self.conn.execute("update memories set provenance = %s::jsonb where id = %s",
+                              (json.dumps(prov), mid))
+            self.conn.commit()
+        return {"id": mid, "ok": True, "states": len(prov["scar"])}
+
+    @_heals
+    def page(self, name: str | None = None, answer: str | None = None,
+             question: str = "", scope: str = DEFAULT_PROJECT,
+             source: list[int] | None = None) -> dict:
+        """Read or write a standing answer (2026-11-24, item 6).
+
+        No name → the index of pages (name, question, the revision, when it was last rewritten):
+        one read, so a model can see what the store already knows how to say. A name → that page.
+        A name and an answer → the page is written, `rev` advances, and `source` records WHICH
+        rows it was written from, which is what makes a rewrite checkable: the sweep re-asks the
+        question, compares, and only spends a generation when the rows moved.
+
+        The answer is prose, not a row: it is a VIEW over rows, and it never joins the ranking.
+        """
+        with self.lock, _rollback_on_error(self.conn):
+            if name is None:
+                rows = self.conn.execute(
+                    "select name, question, rev, updated_at, scope from pages"
+                    " order by updated_at desc limit 100").fetchall()
+                self.conn.commit()
+                return {"pages": [{"name": r[0], "question": r[1], "rev": r[2],
+                                   "updated_at": _stamp(r[3]), "scope": r[4]} for r in rows],
+                        "count": len(rows)}
+            q = "select name, question, answer, scope, source, updated_at, rev from pages" \
+                " where name = %s"
+            if answer is None:
+                r = self.conn.execute(q, (name,)).fetchone()
+                self.conn.commit()
+                if r is None:
+                    return {"page": None, "name": name,
+                            "hint": "no page by that name — ask with words, or read the index"}
+                return {"page": {"name": r[0], "question": r[1], "answer": r[2],
+                                 "scope": r[3], "source": r[4] or [],
+                                 "updated_at": _stamp(r[5]), "rev": r[6]}}
+            cur = self.conn.execute(q, (name,)).fetchone()
+            rev = (cur[6] + 1) if cur else 1
+            self.conn.execute(
+                "insert into pages(name, question, answer, scope, source, updated_at, rev)"
+                " values(%s,%s,%s,%s,%s,%s,%s)"
+                " on conflict (name) do update set question = excluded.question,"
+                " answer = excluded.answer, scope = excluded.scope,"
+                " source = excluded.source, updated_at = excluded.updated_at,"
+                " rev = excluded.rev",
+                (name, str(question or (cur[1] if cur else "")), str(answer),
+                 scope_name(scope), json.dumps([int(s) for s in (source or [])]),
+                 self._dt(time.time()), rev))
+            self.conn.commit()
+        return {"page": {"name": name, "rev": rev}, "written": True,
+                "changed": bool(cur and cur[2] != answer)}
 
     def _proofs(self, ids: list[int]) -> dict[int, int]:
         """{row id: proof count} - how many turns this fact is backed by. The merge path writes it

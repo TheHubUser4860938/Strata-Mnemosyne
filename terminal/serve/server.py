@@ -10486,6 +10486,25 @@ def make_handler(svc: Service):
                 # and `stale_demote` is what prices it at read time.
                 r = svc.memory.mark_stale_citations(str(req.get("root") or ""),
                                                     int(req.get("limit") or 500))
+            elif op == "observe":
+                # THE OBSERVATION RUNG (2026-11-24, item 5): {"id", "turn_id"?, "quote"?,
+                # "prior"?} — a saying that backs a belief is unioned into its proof set, an exact
+                # quote is kept (bounded), and a refined belief carries what it used to say.
+                rid = int(req.get("id") or 0)
+                r = svc.memory.add_proof(rid, turn_id=req.get("turn_id"),
+                                         quote=str(req.get("quote") or ""))
+                if req.get("prior"):
+                    r.update(svc.memory.scar(rid, str(req["prior"])))
+                if r.get("error"):
+                    raise ValueError(str(r["error"]))
+            elif op == "page":
+                # A STANDING ANSWER (2026-11-24, item 6). {} reads the index; {"name"} reads a
+                # page; {"name","answer","question"?,"source"?} writes one. The answer is a view
+                # over rows, so it never joins the ranking and reading it is one SELECT.
+                r = svc.memory.page(name=req.get("name"), answer=req.get("answer"),
+                                    question=str(req.get("question") or ""),
+                                    scope=str(req.get("scope") or "default"),
+                                    source=req.get("source") or None)
             elif op == "curate":
                 # THE MANUAL TRIGGER (2026-10-29): drain everything pending, starting NOW, in the
                 # background. The reply must not wait on the curation any more than the curation

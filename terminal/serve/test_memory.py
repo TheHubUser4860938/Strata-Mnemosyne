@@ -5363,6 +5363,131 @@ class TheStaleDecision(unittest.TestCase):
                         "the row carries the reason the number moved")
 
 
+class TheObservationRung(unittest.TestCase):
+    """Item 5 (2026-11-24, Hindsight's `consolidation.py:174`): a belief keeps the SET of sayings
+    that back it, an exact quote of the latest, and a bounded scar of what it used to say. Proofs
+    were a counter, so a harvest that restates one saying five times and a person who said it five
+    times priced the same."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.svc = MemoryService(self.tmp.name)
+        self.rid = self.svc.remember("the owner prefers plain words", scope="user",
+                                     provenance={"turn_id": 8654})["id"]
+
+    def tearDown(self):
+        self.svc.close()
+        self.tmp.cleanup()
+
+    def test_the_same_saying_proves_a_belief_once_not_five_times(self):
+        for _ in range(5):
+            self.svc.add_proof(self.rid, turn_id=9001)
+        got = self.svc._proofs([self.rid])[self.rid]
+        self.assertEqual(got, 2, "the row's own turn (8654) plus turn 9001, not seven")
+        with self.svc.lock:
+            prov = self.svc.conn.execute("select provenance from memories where id=%s",
+                                         (self.rid,)).fetchone()[0]
+            self.svc.conn.commit()
+        self.assertEqual(sorted(str(x) for x in prov["proofs"]), ["8654", "9001"])
+        self.assertEqual(prov["proof"], 2, "the cached cardinality is the set's size")
+
+    def test_an_old_counter_migrates_to_a_set_without_inventing_turns(self):
+        with self.svc.lock:
+            self.svc.conn.execute(
+                "update memories set provenance = provenance || %s::jsonb where id=%s",
+                (json.dumps({"proof": 3}), self.rid))
+            self.svc.conn.commit()
+        self.svc.add_proof(self.rid, turn_id=9100)
+        with self.svc.lock:
+            prov = self.svc.conn.execute("select provenance from memories where id=%s",
+                                         (self.rid,)).fetchone()[0]
+            self.svc.conn.commit()
+        self.assertEqual(prov["proof"], 4, "three the row claimed, plus the one just said")
+        self.assertIn("8654", [str(x) for x in prov["proofs"]],
+                      "the row's own exchange is a member of its proof set")
+
+    def test_the_belief_keeps_an_exact_quote_of_what_proved_it_bounded_to_three(self):
+        for i in range(5):
+            self.svc.add_proof(self.rid, turn_id=9200 + i, quote=f"sayings number {i}")
+        with self.svc.lock:
+            prov = self.svc.conn.execute("select provenance from memories where id=%s",
+                                         (self.rid,)).fetchone()[0]
+            self.svc.conn.commit()
+        self.assertEqual(prov["quotes"][0], "sayings number 4", "newest first")
+        self.assertEqual(len(prov["quotes"]), 3, "bounded, because this rides the model's context")
+
+    def test_a_refined_belief_carries_its_last_three_states_and_its_chain(self):
+        heir = self.svc.remember("the owner prefers plain words and short sentences",
+                                 scope="user")["id"]
+        self.svc.invalidate(self.rid, by_id=heir)
+        for i in range(4):
+            self.svc.scar(heir, f"earlier state {i}")
+        with self.svc.lock:
+            prov = self.svc.conn.execute("select provenance from memories where id=%s",
+                                         (heir,)).fetchone()[0]
+            self.svc.conn.commit()
+        self.assertEqual(prov["scar"][0], "earlier state 3", "newest first")
+        self.assertEqual(len(prov["scar"]), 3, "three states inline, Hindsight's shape")
+        with self.svc.lock:
+            old = self.svc.conn.execute("select invalid_at, superseded_by from memories where id=%s",
+                                        (self.rid,)).fetchone()
+            self.svc.conn.commit()
+        self.assertIsNotNone(old[0], "the deep history is the chain, and the scar did not eat it")
+        self.assertEqual(old[1], heir)
+
+
+class TheStandingPage(unittest.TestCase):
+    """Item 6 (2026-11-24, Hindsight's pages / mental models): a named question with a standing
+    answer, rewritten by the sweep and read as one row. `always.md` is the hand-kept version of the
+    same idea — 55,881 characters, the fastest-aging of the six files."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.svc = MemoryService(self.tmp.name)
+
+    def tearDown(self):
+        self.svc.close()
+        self.tmp.cleanup()
+
+    def test_a_written_page_reads_back_and_the_index_names_it(self):
+        ans = "Engine 0.1.67, heretic IQ4_NL, 524,288 context, 4 cache slots."
+        r = self.svc.page(name="the boot stack", question="what does this box serve?",
+                          answer=ans, source=[11, 12])
+        self.assertTrue(r["written"])
+        got = self.svc.page(name="the boot stack")["page"]
+        self.assertEqual(got["answer"], ans, "the page reads back whole — it is the standing answer")
+        self.assertEqual(got["question"], "what does this box serve?")
+        self.assertEqual(got["source"], [11, 12], "the page says which rows it was written from")
+        self.assertEqual(got["rev"], 1)
+        idx = self.svc.page()
+        self.assertEqual(idx["count"], 1)
+        self.assertEqual(idx["pages"][0]["name"], "the boot stack")
+
+    def test_a_rewrite_advances_the_revision_and_says_whether_the_answer_moved(self):
+        self.svc.page(name="live state", answer="engine 0.1.66")
+        same = self.svc.page(name="live state", answer="engine 0.1.66")
+        self.assertEqual(same["page"]["rev"], 2, "a rewrite is a revision even when the words agree")
+        self.assertFalse(same["changed"], "and the run says it cost nothing new")
+        moved = self.svc.page(name="live state", answer="engine 0.1.67")
+        self.assertEqual(moved["page"]["rev"], 3)
+        self.assertTrue(moved["changed"])
+
+    def test_an_unknown_page_is_a_hint_not_an_error(self):
+        r = self.svc.page(name="the lost page")
+        self.assertIsNone(r["page"])
+        self.assertIn("index", r["hint"])
+
+    def test_the_model_reads_a_page_through_the_tool(self):
+        self.svc.page(name="the boot stack", question="what does this box serve?",
+                      answer="Engine 0.1.67 on the heretic IQ4_NL pack.")
+        r = tool_result(self.svc, {"page": "the boot stack"}, scope="default")
+        out = json.loads(r["text"])
+        self.assertIn("Engine 0.1.67", out["page"]["answer"])
+        idx = json.loads(tool_result(self.svc, {"page": True}, scope="default")["text"])
+        self.assertEqual(idx["pages"][0]["name"], "the boot stack")
+        self.assertEqual(self.svc.stats()["tool"]["pages"], 2, "the verb counts in the ledger")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
