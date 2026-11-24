@@ -84,6 +84,10 @@ input:focus, textarea:focus { outline: none; border-color: var(--ob-accent); }
 .empty { padding: 46px 24px; text-align: center; color: var(--ob-ink-3); }
 .g-strip { grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 12px 0 0; }
 .g-strip .value { font-size: 20px; }
+/* The boot furniture is a list you skim, not a list you read to the end: 209 cart rows made
+   the page 28,584px tall. The app's panels scroll; so do these. */
+#carts, #files, #catlog { max-height: 46vh; overflow-y: auto; }
+.ws-main { min-height: 440px; }
 
 main { font-family: var(--ob-ui); display: flex; flex-direction: column;
   max-width: 1440px; width: 100%; margin: auto; padding: 28px 32px; box-sizing: border-box; }
@@ -103,11 +107,15 @@ main { font-family: var(--ob-ui); display: flex; flex-direction: column;
    Two columns, a fixed height, and every pane scrolls inside itself - which is how the app
    behaves, and the fix for a tree that ran the page off the screen. The graph is not a third
    column: it is a tab of the centre pane, so the map gets the full width. */
+/* The panes hug their content and cap at 82vh, each scrolling inside itself. A fixed workspace
+   height (the first cut) left a 980px void under a short note on a tall screen; a min-height
+   with no cap let the 1,054-row tree run the page off the screen. This is the middle the app
+   uses: content-sized panes, bounded, internal scroll. */
 .ws { display: grid; grid-template-columns: 274px minmax(0, 1fr); gap: 10px;
-  margin: 18px 0 0; height: clamp(600px, 78vh, 980px); }
+  margin: 18px 0 0; align-items: start; }
 .ws > * { background: var(--ob-bg-1); border: 1px solid var(--ob-line);
   border-radius: var(--ob-r); color: var(--ob-ink); display: flex; flex-direction: column;
-  min-width: 0; overflow: hidden; }
+  min-width: 0; overflow: hidden; max-height: min(82vh, 940px); }
 .ws-main { background: var(--ob-bg); }
 .ws-graph { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 @media (max-width: 800px) { .ws { grid-template-columns: minmax(0, 1fr); height: auto; }
@@ -208,7 +216,7 @@ main { font-family: var(--ob-ui); display: flex; flex-direction: column;
 .g-tabs button:hover { color: var(--ob-ink); background: var(--ob-bg-2); }
 .g-tabs button.primary { color: var(--ob-ink); background: var(--ob-tint); font-weight: 600; }
 .g-list { list-style: none; margin: 0; padding: 4px 0 14px; overflow-y: auto;
-  flex: 1 1 auto; min-height: 120px; font-size: 13.5px; }
+  flex: 0 1 auto; min-height: 120px; max-height: min(34vh, 340px); font-size: 13.5px; }
 .g-list .gv-group { margin: 8px 0 2px; padding: 0 12px; }
 .g-list .gv-group a { display: flex; gap: 8px; align-items: baseline; cursor: pointer;
   color: var(--ob-ink-3); text-decoration: none; font-size: 11px; text-transform: uppercase;
