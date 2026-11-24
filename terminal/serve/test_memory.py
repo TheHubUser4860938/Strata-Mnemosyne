@@ -5304,6 +5304,65 @@ class TheCitationCheck(unittest.TestCase):
         self.assertEqual(self.svc.stats()["tool"]["cites"], 1, "the verb counts in the ledger")
 
 
+class TheStaleDecision(unittest.TestCase):
+    """Item 14 (2026-11-24, agentic-graphrag's flagged decisions): a DEC row names a file, the
+    file moves, and nothing in the store knows. The sweep stats what the row NAMES; the reader
+    prices it. 19 of 226 DEC rows on this store name a file, measured 2026-11-24."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "repo"
+        (self.root / "serve").mkdir(parents=True)
+        (self.root / "serve" / "lives.py").write_text("x = 1\n", encoding="utf-8")
+        self.svc = MemoryService(self.tmp.name + "-store")
+
+    def tearDown(self):
+        self.svc.close()
+        self.tmp.cleanup()
+
+    def test_a_row_naming_a_live_file_is_not_stamped(self):
+        self.svc.remember("the seam lives in serve/lives.py", scope="default", klass="DEC")
+        r = self.svc.mark_stale_citations(self.root)
+        self.assertEqual((r["checked"], r["stale"]), (1, 0), r)
+
+    def test_a_row_whose_only_cited_file_is_gone_is_stamped_and_not_deleted(self):
+        rid = self.svc.remember("the run config is written by strata_control/gone.py",
+                                scope="default", klass="DEC")["id"]
+        r = self.svc.mark_stale_citations(self.root)
+        self.assertEqual((r["checked"], r["stale"]), (1, 1), r)
+        with self.svc.lock:
+            prov = self.svc.conn.execute("select provenance, invalid_at from memories where id=%s",
+                                         (rid,)).fetchone()
+            self.svc.conn.commit()
+        self.assertIn("stale", prov[0], "annotate, never erase")
+        self.assertIn("gone.py", json.dumps(prov[0]))
+        self.assertIsNone(prov[1], "the row is still active: a stale address is half-true")
+
+    def test_the_demote_is_a_fraction_the_reader_pays_and_the_payload_says_why(self):
+        self.svc.remember("the seam lives in serve/lives.py", scope="default", klass="DEC")
+        self.svc.remember("the run config is written by strata_control/gone.py",
+                          scope="default", klass="DEC")
+        self.svc.mark_stale_citations(self.root)
+        # KNOB OFF: today's bytes. A stale row is recalled with no flag and no discount.
+        off = json.loads(tool_result(self.svc, {"q": "the config", "limit": 5},
+                                     scope="default", semantic=False)["text"])
+        self.assertFalse(any(f.get("stale") for f in off["facts"]),
+                         "0.0 on the knob is byte-identical, flag included")
+        # KNOB ON: the stale row loses ground, the hit carries the reason, and the MODEL reads it.
+        base = {h["id"]: h for h in self.svc.search("the config", limit=5, semantic=False)}
+        self.svc.stale_demote = 0.5
+        out = json.loads(tool_result(self.svc, {"q": "the config", "limit": 5},
+                                     scope="default", semantic=False)["text"])
+        by = {h["id"]: h for h in self.svc.search("the config", limit=5, semantic=False)}
+        self.svc.stale_demote = 0.0
+        self.assertTrue(any(f.get("stale") for f in out["facts"]),
+                        "the model reads the staleness, not just the score")
+        moved = [i for i in by if i in base and by[i]["score"] < base[i]["score"]]
+        self.assertTrue(moved, "the stale row lost ground and the fresh one did not")
+        self.assertTrue(all(by[i].get("stale") for i in moved),
+                        "the row carries the reason the number moved")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

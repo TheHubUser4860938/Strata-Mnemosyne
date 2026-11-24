@@ -10479,6 +10479,13 @@ def make_handler(svc: Service):
                                       by_id=req.get("by_id"))
                 if r.get("error"):
                     raise ValueError(str(r["error"]))
+            elif op == "stale_check":
+                # DECISIONS THAT GO STALE (2026-11-24, item 14): {"root": "/path/to/repo"} — the
+                # DEC rows name files; this stats them and stamps provenance.stale on the ones
+                # whose every cited path is gone. Annotate, never erase: the row stays recallable,
+                # and `stale_demote` is what prices it at read time.
+                r = svc.memory.mark_stale_citations(str(req.get("root") or ""),
+                                                    int(req.get("limit") or 500))
             elif op == "curate":
                 # THE MANUAL TRIGGER (2026-10-29): drain everything pending, starting NOW, in the
                 # background. The reply must not wait on the curation any more than the curation

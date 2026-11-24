@@ -110,6 +110,10 @@ LINK_FAN = 8                          # typed-edge neighbours per seed: a hand w
 RRF_K = 1.0                             # reciprocal-rank fusion constant, a module constant so a probe can
 LEX_CAND_CAP = 4000                     # the lexical arm's candidate ceiling (item 18: a full cap is
                                         # reported as `truncated`, not hidden behind a full list)
+_CITE_FILE_RE = re.compile(r"[\w][\w./-]*\.(?:py|md|json|jsonl|sh|ts|tsx|js|cu|cpp|hpp|txt|ino)\b")
+# The file tokens a DEC row NAMES (item 14). Greedy about directories, strict about the extension:
+# `serve/memory.py`, `terminal/spikes/…/PLAN-2026-11-24.md` and `BUILD.json` are what decisions
+# cite; a bare word like `Plan` is not.
                                         # sweep it (tools/lme_retrieval_ab.py --rrf-k). CHANGED from the
                                         # conventional 60 on 2026-10-14, measured on the venue copy (10,973
                                         # rows, 500 questions, deterministic - one run is one answer):
@@ -829,6 +833,10 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
         # cost per ask. pinned / why / links / filed appear exactly when they teach something.
         if pinned.get(h["id"]):
             f["pinned"] = True
+        if h.get("stale"):
+            # The row's cited file is gone (item 14). The score moved and the payload says why —
+            # a model that knows the address is stale quotes the DECISION without quoting the path.
+            f["stale"] = True
         if why.get(h["id"]):
             w = why[h["id"]]
             if row_ev_cap and len(w) > row_ev_cap:      # the clerk's sentence, capped
@@ -1285,6 +1293,7 @@ class MemoryService:
                  block_doc_cap: int = 1200,
                  evidence_chars: int = 0, evidence_budget: int = 0,
                  fusion: str = "rrf", payload_style: str = "json",
+                 stale_demote: float = 0.0,
                  expose_window: int = 0, expose_step: float = 0.0, expose_cap: int = 3,
                  route_shelves: bool = False, route_demote: float = 0.0,
                  derived_weight: float = 1.0, block_cover_terms: int = 0,
@@ -1437,6 +1446,9 @@ class MemoryService:
         # compact is the one knob that can take it back without touching what the model reads.
         self.fusion = str(fusion or "rrf").strip().lower()
         self.payload_style = str(payload_style or "json").strip().lower()
+        # THE STALE DECISION DEMOTE (item 14, 2026-11-24): a fraction off the score of a DEC row
+        # whose cited file no longer exists. 0.0 = every byte as it was.
+        self.stale_demote = min(0.9, max(0.0, float(stale_demote)))
         # EXPOSURE-DECAY (2026-10-16, the lever the m4_blockrule sweep pointed at): a row the last
         # expose_window journaled turns already injected pays step*min(exposures, expose_cap) off
         # its fused score. The ledger is turns.injected - what the model really read, not what
@@ -3074,7 +3086,7 @@ class MemoryService:
                 # (which never nears 4,000) is byte-identical to before.
                 cand = self.conn.execute(
                     f"select m.id, m.scope, m.text, m.confidence, m.updated_at, m.class, m.hits,"
-                    f" m.ts::text, coalesce(m.source, '')"
+                    f" m.ts::text, coalesce(m.source, ''), coalesce(m.provenance->>'stale', '')"
                     f" from memories m, to_tsquery('{FTS_CFG}', %s) q"
                     " where m.ts @@ q and m.invalid_at is null and m.scope in ("
                     + ",".join(["%s"] * len(scopes)) + ")" + shelf + bounds
@@ -3190,6 +3202,25 @@ class MemoryService:
                 out.sort(key=lambda x: -x["score"])
         if self.dedup_recall:
             out = self._dedupe(out)
+        if self.stale_demote and out:
+            # DECISIONS THAT GO STALE (2026-11-24, item 14). A `DEC` row citing a file the merge
+            # moved is a confident claim about an address that no longer exists; the sweep's
+            # `mark_stale_citations` stamps `provenance.stale` and this is where the reader pays
+            # for it. Multiplicative, in the same family as the trust tier: the row stays recallable
+            # — a stale address is a half-true decision, not a dead one — it just stops beating a
+            # fresh one. 0.0 (the default) leaves every byte alone.
+            ids = [h["id"] for h in out]
+            with self.lock, _rollback_on_error(self.conn):
+                got = {int(r[0]) for r in self.conn.execute(
+                    "select id from memories where id = any(%s)"
+                    " and provenance ? 'stale'", (ids,)).fetchall()}
+                self.conn.commit()
+            if got:
+                for h in out:
+                    if h["id"] in got:
+                        h["score"] = round(h["score"] * (1.0 - self.stale_demote), 6)
+                        h["stale"] = True       # the reader sees WHY the number moved
+                out.sort(key=lambda x: -x["score"])
         hits = out[:limit]
         if hits and credit:
             self._seen([h["id"] for h in hits])
@@ -4383,6 +4414,51 @@ class MemoryService:
         ok = sum(1 for e in out if e.get("found") and e.get("shown") and not e.get("superseded"))
         return {"cites": out, "checked": len(out), "clean": ok}
 
+    @_heals
+    def mark_stale_citations(self, root: str | Path = "", limit: int = 500) -> dict:
+        """Decisions that go stale (2026-11-24, item 14 — agentic-graphrag's flagged decisions).
+
+        A `DEC` row cites a file: "the seam lives in `strata_control/setup_config.py`". The file
+        moves in a merge and the decision keeps asserting the old address with full confidence —
+        nothing in the store can see the filesystem. This pass is the cheapest thing that can:
+        extract the file tokens the row NAMES, resolve them against the store's own repo root, and
+        stamp `provenance.stale` on the rows where NONE of them exist.
+
+        The stamp is an ANNOTATION, never a delete (the house law): the scar stays visible, the row
+        keeps being recalled, and `stale_demote` is the knob that prices it at read time. A row
+        citing `soul.md` and a row citing `terminal/serve/memory.py` are the same claim, so every
+        path the row names is tried before the row is called stale — a partial match is a live
+        citation.
+        """
+        root = Path(str(root)) if str(root) else None
+        with self.lock, _rollback_on_error(self.conn):
+            rows = self.conn.execute(
+                "select id, text, coalesce(provenance->>'why',''), provenance from memories"
+                " where invalid_at is null and class like 'DEC%%'"
+                " order by updated_at desc limit %s", (int(limit),)).fetchall()
+            checked = stale = 0
+            for rid, text, why, prov in rows:
+                names = _CITE_FILE_RE.findall(f"{text or ''} {why or ''}")
+                if not names:
+                    continue
+                checked += 1
+                hit = False
+                for nm in dict.fromkeys(names):           # each distinct path, once
+                    cands = [Path(nm)]
+                    if root and not Path(nm).is_absolute():
+                        cands.append(root / nm)
+                    if any(c.exists() for c in cands):
+                        hit = True
+                        break
+                if not hit:
+                    p = dict(prov or {})
+                    p["stale"] = {"paths": sorted(set(names))[:4], "checked": int(time.time())}
+                    self.conn.execute("update memories set provenance = %s::jsonb where id = %s",
+                                      (json.dumps(p), rid))
+                    stale += 1
+            self.conn.commit()
+        return {"checked": checked, "stale": stale, "root": str(root) if root else ""}
+
     def journal_turn(self, scope: str, user_text: str, assistant_text: str, model: str | None = None,
                      injected: list[int] | None = None) -> int:
         """Store one completed turn for curation to read later. `injected` is the list of memory row ids
@@ -5149,6 +5225,7 @@ def service_from_config(directory: str, mcfg: dict, *, pg_uri: str | None = None
         evidence_budget=num("evidence_budget", 0),        # reason + link text, per ask
         fusion=str(mcfg.get("fusion") or "rrf"),          # "rrf" (shipped) | "interleave"
         payload_style=str(mcfg.get("payload_style") or "json"),   # "json" | "compact"
+        stale_demote=num("stale_demote", 0.0, float),     # the fraction off a stale DEC row
         expose_window=num("expose_window", 0),
         expose_step=num("expose_step", 0.0, float),
         expose_cap=num("expose_cap", 3),
