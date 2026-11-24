@@ -2989,3 +2989,71 @@ Two sizing laws, both bought by failure:
 The harvest hook is split for the same reason the curation window is: `op=graph action=note`
 is a JSON append, so a drain never waits on the LLM. `--graphify` runs one pass at the end of
 a drain, gated by `--graphify-threshold` (24 facts), so 60 new facts cost one pass, not 60.
+
+## The 2026-11-24 merge: eighteen things taken from three outside memory systems, and the numbers they moved
+
+An outside read of Hindsight, `agentic-graphrag` and Obsidian (`terminal/spikes/memory_systems/`,
+read in code, not in READMEs) produced a decision (`DECISION-2026-11-23.md`: keep ours, take
+eighteen things) and a plan (`PLAN-2026-11-24.md`: seven phases). One day shipped all of it. The
+store migration is **additive**: `links +valid_at +invalid_at`, `docs +mode +cap +chunker_hash`,
+and two tables, `pages` and `candidates`. No rows deleted, no re-ingest.
+
+**The read path.** `memory_search` now has five verbs: words search, `class` walks a drawer,
+`catalog` reads the map, `cites` grades a citation, `page` reads a standing answer.
+
+- `fusion: "interleave"` round-robins the two arms' lists — each arm's #1 gets a slot — priced in
+  the same RRF currency so nothing downstream changes. It runs LAST, over the union: the meaning
+  arm's own picks are appended after the lexical pass. RRF averages a single-arm winner below the
+  cutoff, and this store has 90 near-duplicate pairs across 25 families to prove it.
+- `cites: [ids]` checks what an answer leaned on against `turns.injected` — the shown list the
+  server has recorded since 2026-10-29 and one audit had ever read — and answers
+  `fact:<id>:<sha8>`: a citation that names WHICH text it rested on, plus `superseded` and `heir`.
+- `truncated` means the 4,000-candidate ceiling bound what the arms got to vote on. It used to be
+  a constant `False`, so a full list and a window on 6,419 matching rows looked the same.
+- `payload_style: "compact"` renders one line per row. Measured on this box over 12 real asks at
+  limit 20, with the box's own knobs: **6,763 chars ≈ 1,734 tokens as JSON, 4,943 ≈ 1,267
+  compact — 27% of the payload back**, fact text byte-identical, the id and the drawer address
+  included. The envelope was 41% of the payload: a row carried 213 characters of JSON keys around
+  71 characters of fact.
+
+**The write path.** Proofs are a **set union in SQL**: `add_proof(id, turn_id, quote)` unions the
+saying's turn into `provenance.proofs` and writes `proof` as the set's cardinality, so
+`proof_weight` prices better evidence with no new knob. A belief carries an exact quote of what
+proved it (newest first, bounded to three) and a `scar` of its last three states, with the deep
+history left in the supersession chain. A new cutter is a **proposal**: `candidates(shelf, n,
+status)` is the queue, a drawer's first row *is* the proposal, and the bar is three rows —
+`SHELF_BAR`, shared by the store and the tidy tool. The queue is fed by the write, so a
+hand-written cutter counts, and a proposal cannot cost the write.
+
+**The two rungs.** A `page` is a named question with a standing answer and the row list it was
+written from; the sweep's `--pages N` pass re-asks the question, compares the list, and spends a
+generation only on pages whose rows moved. `tools/m10_vault.py` projects the store one-way into an
+Obsidian vault — shelf→folder, row→note named by id, supersede and `links`→wikilinks as
+`## Connections` bullets (the graph pane draws bullets, not properties), graphify's three
+exporter semantics (a manifest of owned files, never clobber a human note, write only on change),
+two `.base` ledgers and a lint. On this box: **3,978 notes, 16 MB; a second run writes 0; the lint
+finds 23 wild notes.**
+
+**The corpus and the graph.** The ledger names the cutters that made its rows
+(`chunker_fingerprint(mode, cap)` in the stat key, `CHUNKER_VERSION` for the packing rules,
+`--stamp-mode` for an existing corpus): stamped the founding shelf once and swept it — **0 files
+re-chunked, 140 unchanged, 0.024 s**, against 229 s plus a ~4.5 h re-embed. The graph arm reads all
+three of its edge sources (it read two: 1,020 of 3,133 edges, vectors off by config, 858 typed
+links casting no vote) and the queue that had no drainer since 2026-11-15 now drains in the idle
+window. `m7_consolidate --ladder` replaces one cosine threshold with the label gate → exact → name
+gate → fuzzy → embedding bands, and reports its bound: on 3,976 fact rows, **18 certain pairs cost
+no model, 856 ambiguous price at 86 requests, the name gate settles 2,218** — and undecided is not
+rejected.
+
+**The harvest.** The supersession judge is shown WHEN each fact was said (the store knows, the
+median between said and written is 6.92 h, and the judge was inferring a comparison the code had
+already made). The shelf clerk runs cold: `VERB_TEMP = {"shelf": 0.2}`, measured on the new label
+panel at **AGREEMENT 0.60 → 0.88** on the same 40 facts — the budget sweep was flat, the parser's
+two ends read the same token (0 of 24 replies carry a second code), and temperature was the lever.
+The clerk files a **batch** now: `--clerk-batch 8` is 10 calls for 40 facts against 80, and it
+files more (WILD 0.07 against 0.20).
+
+Four knobs the box carries for the reboot: `graph_weight 0.8`, `graph_sim_k 8`,
+`evidence_chars 160` / `evidence_budget 600`, `fusion interleave`, `payload_style compact`,
+`stale_demote 0.15`. Each is measured with its n in `PLAN-2026-11-24.md`; each falls back to
+today's bytes at its default.
