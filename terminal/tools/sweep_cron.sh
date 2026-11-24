@@ -56,7 +56,15 @@ if [ "${pressure:-0}" = "1" ] || [ "${pending:-0}" -gt "$PENDING_MAX" ]; then
     # re-curation into the existing rows instead of doubling them (measured: the 57-row
     # username policy is what lands WITHOUT that guard).
     flock -n -E 9 tools/state/sweep.lock \
-        .venv/bin/python tools/curate_loop.py --sweep --batches 2 --idle-window 90 --tag cron >> tools/state/cron.log 2>&1
+        .venv/bin/python tools/curate_loop.py --sweep --batches 2 --idle-window 90 --tag cron \
+        --graphify --graphify-threshold 48 >> tools/state/cron.log 2>&1
+# THE GRAPH DRAIN (2026-11-24): the harvest has noted new fact ids into
+# <store>/strata-graphify/pending.json since 2026-11-15, and NOTHING on the timer read them —
+# 612 rows sat queued on 2026-11-23 behind a 53-minute manual pass that covered 1,183 of 3,819
+# facts (31%). The pass is decode-bound at 273 output tokens per fact (measured: 323,288 out for
+# 1,183 facts at ~90 tok/s), so a merge pass over a 48-fact queue is ~3 minutes of GPU in the
+# idle window, against one 53-minute sweep every few days. The threshold is the batch: below it a
+# pass pays its fixed costs (corpus write, cluster, export) for too few rows to notice.
 # 2026-11-13 gate experiment: 240 -> 90 s of engine silence. One variable; the two numbers that
 # move against each other are facts filed per hour (this log) and REUSED tokens per request
 # (strata-heretic-iq4_nl.log). Baseline 2026-11-13: 240 s, median said->written 6.92 h, 14 of 22
