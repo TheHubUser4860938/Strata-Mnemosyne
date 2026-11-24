@@ -201,9 +201,10 @@ def install_logprobs():
         # wrapper that names each keyword has to be edited the release after every new shape engine -
         # 0.2.15 `split=`, 0.2.18 `hy4=`, 0.2.19 `inkling=`. Dropping one hands the split engine the
         # shared key set (a cache miss on every prompt) and the shape parsers the keys they refuse.
-        k = top_logprobs(sampling or {})
+        s = sampling or {}
+        k = top_logprobs(s)
         drop_lp = bool(kw.get("hy4") or kw.get("inkling"))          # both parsers refuse logprobs (serve/hy4_kind.py, serve/inkling_kind.py)
-        return keys(sampling, **kw) + ("" if drop_lp else (f" logprobs={k}" if k is not None else ""))
+        return keys(s, **kw) + ("" if drop_lp else (f" logprobs={k}" if k is not None else ""))
     Eng.sampling_keys = staticmethod(sampling_keys)
 
     generate = Eng.generate

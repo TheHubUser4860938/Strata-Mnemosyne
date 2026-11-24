@@ -3067,6 +3067,21 @@ class InklingOutputParser(JsonOutputParser):
                          declared_only=declared_only, deferred=deferred)
         from serve import inkling_dialect
         self._dialect = inkling_dialect.InklingDialect()
+        self.wrap_up = inkling_dialect.REASONING_WRAP_UP       # what closes the thinking when its budget is spent (#6734)
+        self.wrap_up_short = inkling_dialect.END_MSG          # ... and when the room left to answer is short: just the block's end
+
+    @property
+    def reasoning_now(self) -> bool:
+        """#6734: the model is inside a `<|content_thinking|>` block.  The base parser starts in content mode (the dialect hides the
+        thinking and sends only a truncated one as an event), so its own `state` never says "reasoning"; the server's thinking
+        budget reads this instead."""
+        return self._dialect.state in ("think", "think_end")
+
+    @property
+    def clean(self) -> bool:
+        """A clean point to close the thinking at: nothing held in the base parser, the dialect holds no half tag, and the
+        block's end is not waiting to be confirmed (`think_end`: the next token decides whether `<|end_message|>` was quoted)."""
+        return super().clean and not self._dialect.buf and self._dialect.state != "think_end"
 
     def _dispatch(self, chunks: list[tuple[str, str]]) -> list[Event]:
         out: list[Event] = []
@@ -3080,8 +3095,11 @@ class InklingOutputParser(JsonOutputParser):
     def feed(self, delta: str) -> list[Event]:
         return self._dispatch(self._dialect.feed_channels(delta))
 
+    def feed_token(self, piece: str, *, is_special: bool) -> list[Event]:
+        return self._dispatch(self._dialect.feed_token(piece, is_special=is_special))
+
     def finish(self, reason: str | None = None) -> list[Event]:
-        out = self._dispatch(self._dialect.feed_channels("", final=True))
+        out = self._dispatch(self._dialect.feed_channels("", final=True, reason=reason))
         return out + super().finish(reason)
 
 

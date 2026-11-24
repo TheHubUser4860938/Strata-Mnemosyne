@@ -255,6 +255,9 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
                     # the Inkling-2-Mini community packs (SC117's abliterated `.strata`, Unsloth's GGUF): the source list a
                     # fetch walks, behind inkling_fetch. The stock `.strata` source stays first.
                     'out += [{"kind": "http", "base": f"https://huggingface.co/{repo}/resolve/main"} for repo in (ABLITERATED_REPO, GGUF_REPO)]',
+                    'TOKENIZER_HF_BASE = "https://huggingface.co/tencent/Hy4-flash/resolve/main"',  # hy4_family.py tokenizer_sources (used by setup/fetch behind acquisition.require)
+                    '#: Unsloth Dynamic GGUF files hosted on huggingface.co/unsloth/Inkling-2-Mini-GGUF (exact byte sizes & LFS SHA-256 digests).',
+                    'MTP_BASE = f"https://huggingface.co/thinkingmachines/Inkling-2-Mini/resolve/{MTP_COMMIT}"',   # inkling_family.py: the pinned drafter source, only setup.py opens it (behind acquisition.require)
                     'base = (endpoint if endpoint is not None else (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or HF_DEFAULT)')
         found = []
         for folder in ("strata_cli", "serve", "strata_control"):

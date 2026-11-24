@@ -30,6 +30,7 @@ import { nearestBudget } from './llm-shape.mjs';
 import { DeliverableTracker, ActivityGroups, FolderClaims } from './deliverables.mjs';
 import { SkillsUsed, skillInfoFrom } from './skills-used.mjs';
 import { turnEngineSpeed } from './engine-speed.mjs';
+import { engineKeepsTurnAlive } from './engine-progress.mjs';
 import { TurnGuard, GoalGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
 import { ProgressGuard } from './progress-guard.mjs';
 import { requirementOf, StepEvidence } from './plan-brief.mjs';
@@ -157,7 +158,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, onWake = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, helperLimitMs = () => 0, contextOptimizer = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, liveMs = 90_000, startRuntimeImpl = null, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500, restartWaitMs = 120_000, controlRpcMs = 15_000, helperStopMs = 10_000 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, onWake = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 2 * 60 * 60_000, helperLimitMs = () => 0, contextOptimizer = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, liveMs = 90_000, startRuntimeImpl = null, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500, restartWaitMs = 120_000, controlRpcMs = 15_000, helperStopMs = 10_000 }) {
   const boundedRpc = (runtime, method, args, signal = null) => {
     const deadline = AbortSignal.timeout(controlRpcMs);
     const bounded = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -577,10 +578,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
 
     // The model and the chat's thinking level (the Reasoning menu) are sent to the Harness when either changed. A level the route does
     // not have (an API model with its own vocabulary) is dropped and the model's own default stands: never an error for the person.
-    const isHy4Route = route.kind === 'local' && /^hy4-flash/i.test(String(route.modelId ?? ''));
-    const isInklingRoute = route.kind === 'local' && /^inkling-2-mini/i.test(String(route.modelId ?? ''));
-    const rawLevel = isInklingRoute ? 'off' : effortOf(thinking ?? (isHy4Route ? 'High' : 'Medium'));
-    const level = isInklingRoute ? 'off' : (isHy4Route && (rawLevel === 'low' || rawLevel === 'medium' || rawLevel === 'minimal') ? 'high' : rawLevel);
+    const isHy4Route = route.kind === 'local' && /^hy4-flash/i.test(String(route.modelId ?? '')) || (route.kind === 'local' && route.arch === 'hy4flash');
+    const isInklingRoute = route.kind === 'local' && (/^inkling-2-mini/i.test(String(route.modelId ?? '')) || route.arch === 'inkling2_loop');
+    const rawLevel = effortOf(thinking ?? (isHy4Route ? 'High' : isInklingRoute ? 'Low' : 'Medium'));   // Inkling's default level is Low (0.2.21)
+    const level = (isHy4Route && (rawLevel === 'low' || rawLevel === 'medium' || rawLevel === 'minimal') ? 'high' : rawLevel);
     // Response settings the Harness cannot send itself (the thinking budget, the Expert sampling) go through this host's forwarding
     // endpoint, on a copy of the route; with every setting at its default the route is used directly, as before.
     const budget = level === 'off' ? 0 : nearestBudget(thinkingBudget);
@@ -694,6 +695,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           void turn.stopChild(h).catch(e => log(`agent · helper limit: ${e.message}`));
         }
       }
+      const waitingForUser = [...questions.values()].some(q => q.chatId === chatId);
+      if (waitingForUser) { turn.lastActivity = Date.now(); return; }
       const toolRunning = [...projector.tools.values()].some(x => x.card?.state === 'running' || x.card?.state === 'proposed') || pending.size > 0 && pendingFor(chatId).length > 0;
       const limit = toolRunning ? stallToolMs : stallMs;
       const endStalled = sinceMs => {
@@ -714,10 +717,11 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       }
       // A local engine reading a long prompt sends the Harness nothing for minutes (#3623). Its /metrics progress counts as activity,
       // for at most engineGraceMs after the Harness last spoke: progress for another chat cannot keep a lost turn alive forever.
-      if (turn.route?.kind === 'local' && Date.now() - turn.heard < engineGraceMs) {
+      // The mark counts every sampled token, a thinking model's hidden ones too, and a busy engine whose mark has not moved yet (one slow prompt chunk) keeps the turn alive for ENGINE_QUIET_MS (#6794).
+      if (turn.route?.kind === 'local') {
         let mark = null;
         try { mark = engineProgress(turn.route.instanceId); } catch { /* no progress known: the Harness alone decides */ }
-        if (mark != null && mark !== turn.engineMark) { turn.engineMark = mark; turn.lastActivity = Date.now(); return; }
+        if (engineKeepsTurnAlive(turn, mark, { graceMs: engineGraceMs })) return;
       }
       if (Date.now() - turn.lastActivity < limit) return;
       endStalled(Date.now() - turn.lastActivity);
@@ -727,7 +731,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (turn.finished) return;
       turn.finished = true;
       turn.snapshot.resolve();
-      for (const [k, v] of questions) if (v.chatId === chatId) questions.delete(k);
+      for (const [k, v] of questions) if (v.chatId === chatId) { questions.delete(k); emit({ type: 'agent-question-end', callId: v.callId }); }
       for (const [k, v] of pending) if (v.sessionId === sessionId) pending.delete(k);
       clearTimeout(turn.settleTimer);
       clearTimeout(turn.stopDeadline);
@@ -1643,6 +1647,7 @@ ${note.text}
     const outcome = skip ? 'next' : buildAnswer(entry.items, answers);
     await rt.gw.answerEvent({ clientId: entry.clientId ?? rt.clientId, eventId: entry.eventId, outcome });
     questions.delete(key);
+    chats.get(chatId)?.turn?.announceQuestion?.({ type: 'agent-question-end', callId });
     return { ok: true, skipped: !!skip };
   }
 

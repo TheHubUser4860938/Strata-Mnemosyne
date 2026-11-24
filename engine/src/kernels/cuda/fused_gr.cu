@@ -35,6 +35,7 @@ namespace strata::kernels {
 bool rdna_gr_enabled();
 void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* stream,
                         unsigned long long* sb = nullptr, int si = 0);
+void rdna_gr_init();
 }  // namespace strata::kernels
 
 namespace strata::kernels {
@@ -2199,7 +2200,7 @@ __device__ __forceinline__ uint32_t q8_ld16(const uint8_t* p) { return __ldg(rei
 // A Q8_0 block read from SHARED memory.  __ldg is a global-only hint: CUDA 13.5 on sm_89 turns it into an LDG
 // against the shared offset itself (0xb4, 0x15ec, ...), which compute-sanitizer reports as a wild global read and
 // which faults.  A shared read has to stay a plain load (LDS).
-__device__ __forceinline__ uint32_t q8_smem_ld16(const uint8_t* p) { return *(const uint16_t*) p; }
+__device__ __forceinline__ uint32_t q8_smem_ld16(const uint8_t* p) { return *reinterpret_cast<const uint16_t*>(p); }
 __device__ __forceinline__ float q8_half(uint32_t h) { return __half2float(__ushort_as_half((unsigned short) h)); }
 __device__ __forceinline__ float4 q8_four(uint32_t q, float d) {
     return make_float4(d * (float) (int8_t) (q & 255u), d * (float) (int8_t) ((q >> 8) & 255u),
@@ -4745,6 +4746,7 @@ void fused_gr_check() {
     int dev = 0;
     cudaGetDevice(&dev);
     (void) gr_v3_default_on(dev);   // decided here, before any graph capture asks
+    rdna_gr_init();                 // HIP, STRATA_GR_FUSED=1: the fused read's barrier word, allocated outside any capture (#6730 / #6760)
 #if !defined(__HIPCC__)
     {
         static bool q8_carve_done[64] = {};

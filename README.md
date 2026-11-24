@@ -13,21 +13,24 @@ itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one s
 harness ever has to re-send history. The server remembers, and it remembers the same way no
 matter which app is knocking.
 
-This fork is based on upstream Strata 0.2.20 — app and Terminal at 0.2.20, Control at 0.1.66,
-and every engine family (`strata-engine`, `strata-inkling`, `strata-hy4`) at 0.1.66. Upstream's own
-headline list for this round — **one 4-tier GPU + RAM + CPU + SSD Mixture-of-Experts planner across
-Qwen3.8-Flash-Next, HY-4 Flash and Inkling 2 Mini**, with automatic `--kv-offload auto` host K/V for
-32K+ context, hot experts in the VRAM that is left (cleanly down to `0` VRAM experts on 4 GiB and
-6 GiB cards), cold experts in pageable RAM with SIMD CPU workers, SSD Engram streaming, and
-multi-GPU `--layer-split auto` on 2..4 cards; **lossless direct `GGUF_RAW` Inkling 2 Mini execution**
-of the Unsloth packs with the fixed DSpark drafter (**`9.5x`, `6.5 -> 61.9 tok/s` on 12 GB GPUs**);
-Unsloth-quant and NVFP4 speedups on CUDA sm_60..sm_121 (**`1.04x–1.67x` MoE decode, up to `2.58x`
-down projection**), Apple Metal (to `6,769 tok/s` prefill on M5 Max), AMD HIP RDNA2-4 and Intel Arc
-SYCL (**`1.37x–2.73x`**); **`5.59x–5.95x` faster `quantize_q8_K`** and `+16.5%..+54.8%` faster
-cold-expert CPU dots; and **HY-4 Flash `4.27x`** in hybrid RAM+VRAM (`30 -> 128.25 tok/s` on an
-RTX 5090 with 128 GB) plus the Alder/Raptor Lake `0xC000001D` crash fix. The feed is sequence 132
-(shared) and 128 (`linux-aarch64`). Every number in this paragraph is upstream's, from the
-[0.2.20 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.20).
+This fork is based on upstream Strata 0.2.21 — app and Terminal at 0.2.21, Control at 0.1.67,
+and every engine family (`strata-engine`, `strata-inkling`, `strata-hy4`) at 0.1.67. Upstream's own
+headline list for this round — **Inkling 2 Mini far faster on most cards**: an RTX 4090 after a 32K
+prompt runs **92 tok/s where 0.2.20 managed 20** (SQ-20) and 92 against 29 (UD-Q4_K_XL); an RTX 3060 Ti
+8 GB on SQ-10 **43 against 11**; an RTX 5070 12 GB **68 against 12.5**; an RX 7900 XT on UD-IQ3_XXS
+**66 against 4.9**; an RTX 5090 prefilling **9,019 tok/s** (SQ-20) and **6,967** (UD-Q4_K_XL); Apple
+M5 Max **+62%** and DGX Spark **+12%..+58%**; 8 users at once **15%..27%** faster. Plus **agent prompt
+reuse on every backend**, Apple Silicon included; **the DSpark drafter working with Unsloth's re-uploaded
+GGUFs**, with a startup test that decides whether it runs on your card (the first start of a new setup
+takes about 3 minutes longer for it); **the Q8_0 hyper-connection Tensor Core kernels reading their staged
+weights from shared memory** — the `__ldg` fix (upstream #6713) behind "verify: layer 0 never rang"; a
+long-conversation crash fix (#6905); engine restarts capped at three with a clear message; downloads
+pinned so Unsloth re-uploads cannot break setup, with both GGUF layouts accepted; an AVX-512 CPU path for
+Inkling; and one **accuracy fix in Qwen's prompt reading (#6776)** that changes the order of one sum, so
+answers can differ from 0.2.20 after a few tokens at the same speed. On 24 GB RTX 40/50 cards the app now
+starts with **1 slot**. The feed is sequence 133 (shared) and 129 (`linux-aarch64`). Every number in this
+paragraph is upstream's, from the
+[0.2.21 release notes](https://github.com/Niko1221/Strata/releases/tag/v0.2.21).
 This fork adds the memory system and the steering described below.
 
 <p align="center">
@@ -66,19 +69,34 @@ cd Strata
 
 | Provider | Choices |
 | --- | --- |
-| **ISTA-DASLab · recommended** | [Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF). [Coder: IQ1\_M](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF) ([guide](docs/MODELS.md#coder)) for coding. |
-| **Unsloth** | [UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) |
+| **ISTA-DASLab · recommended** | Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S. [Coder: IQ1\_M](docs/MODELS.md#coder) for coding. |
+| **Unsloth** | UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0 |
 | **Gyro · agentionai** | [Gyro-S, Gyro-M](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF). Lower memory use but slower. |
-| **Other options** | [Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF) ([guide](docs/MODELS.md#swift-15)), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
+| **Other options** | [Swift 1.5](docs/MODELS.md#swift-15), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
 
-[Compare sizes, memory needs and compatibility](docs/MODELS.md#qwen38-flash-next).
+[Compare sizes, memory needs and compatibility](docs/MODELS.md).
+
+</details>
+
+<details>
+<summary><img src="docs/media/models/hunyuan.svg" width="22" alt="" align="middle"> &nbsp;<b>Tencent Hy4-Flash</b></summary>
+
+| Pack | Your RAM | Graphics card |
+| --- | --- | --- |
+| **SQ-64** | 64 GiB | 8, 12 or 16 GiB |
+| **SQ-96** | 96 GiB | 8 or 12 GiB |
+| **SQ-128** | 128 GiB | 8 or 12 GiB |
+
+The number in the name is the RAM the pack is made for.
+
+[Hy4-Flash packs on Hugging Face](https://huggingface.co/strata-engine/Hy4-Flash-Strata)
 
 </details>
 
 <details>
 <summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
-**Unsloth:** [UD-Q4\_K\_XL, UD-Q6\_K\_XL, Q8\_0](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF). These are the currently documented packs for this model.
+**Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. These are the currently documented packs for this model.
 
 [Model guide and compatibility](docs/QWEN36.md).
 
@@ -117,13 +135,14 @@ strata launch --family deepseek41 --model ist-das-2.00bpw --plan
 
 <img width="1265" height="542" alt="image" src="https://github.com/user-attachments/assets/238eb87c-45f2-4be4-8cb8-91d922efbda8" />
 
-<summary><b>Tencent Hy4-Flash</b></summary>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/models/thinking-machines-white.png"><img src="docs/media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
 
 | Provider | Choices |
 | --- | --- |
-| **Strata native (`.strata`)** | [SQ-64, SQ-96, SQ-128](https://huggingface.co/strata-engine/Hy4-Flash-Strata) (with Engram shard on SSD, DFly2 drafter, and vision; base model: [tencent/Hy4-flash](https://huggingface.co/tencent/Hy4-flash)). |
+| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
 
-[Compare sizes, memory needs and compatibility](docs/MODELS.md#tencent-hy4-flash).
+SQ-20 is made for a 24 GiB graphics card, SQ-15 for 16 GiB and SQ-10 for 12 GiB. A 4 GiB card is enough to start.
 
 </details>
 
@@ -142,7 +161,7 @@ strata launch --family deepseek41 --model ist-das-2.00bpw --plan
 
 <a id="the-other-sizes"></a>
 
-Version 0.2.20 (app and Terminal 0.2.20, Control 0.1.66, engine packages 0.1.66)
+Version 0.2.21 (app and Terminal 0.2.21, Control 0.1.67, engine packages 0.1.67)
 
 Two things arrive switched **on**, and everything else stays byte-identical to upstream Strata:
 
@@ -219,7 +238,7 @@ Download the file for your computer, open it, and press install on the model it 
 
 [![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.20-windows-x64-setup.exe)
 
-<sub>Files: `Strata-0.2.20-windows-x64-setup.exe` · `Strata-0.2.20-linux-x86_64.AppImage` · `Strata-0.2.20-macos-arm64.dmg`</sub>
+<sub>Files: `Strata-0.2.21-windows-x64-setup.exe` · `Strata-0.2.21-linux-x86_64.AppImage` · `Strata-0.2.21-macos-arm64.dmg`</sub>
 
 **Linux**
 
@@ -750,6 +769,15 @@ parts and every model have their own licenses ([which ones](docs/HOW_IT_WORKS.md
 
 [All guides](docs) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Report a bug](https://github.com/Niko1221/Strata/issues/new/choose) ·
 [Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](.github/CONTRIBUTING.md)
+
+## Sponsors of Strata
+
+<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
+<p align="center">
+  <a href="https://heylinger.com"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/sponsors/linger-logo-white.svg"><img src="docs/media/sponsors/linger-logo-color.svg" alt="Linger" title="Linger" width="130" align="middle"></picture></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/sponsors/olares-logo-white.svg"><img src="docs/media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130" align="middle"></picture></a>
+</p>
 
 ## Contributing
 
