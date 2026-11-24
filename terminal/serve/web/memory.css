@@ -87,7 +87,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--ob-accent); }
 /* The boot furniture is a list you skim, not a list you read to the end: 209 cart rows made
    the page 28,584px tall. The app's panels scroll; so do these. */
 #carts, #files, #catlog { max-height: 46vh; overflow-y: auto; }
-.ws-main { min-height: 440px; }
+
 
 main { font-family: var(--ob-ui); display: flex; flex-direction: column;
   max-width: 1440px; width: 100%; margin: auto; padding: 28px 32px; box-sizing: border-box; }
@@ -107,15 +107,14 @@ main { font-family: var(--ob-ui); display: flex; flex-direction: column;
    Two columns, a fixed height, and every pane scrolls inside itself - which is how the app
    behaves, and the fix for a tree that ran the page off the screen. The graph is not a third
    column: it is a tab of the centre pane, so the map gets the full width. */
-/* The panes hug their content and cap at 82vh, each scrolling inside itself. A fixed workspace
-   height (the first cut) left a 980px void under a short note on a tall screen; a min-height
-   with no cap let the 1,054-row tree run the page off the screen. This is the middle the app
-   uses: content-sized panes, bounded, internal scroll. */
+/* Two columns, equal height, filling the window below the header, each pane scrolling inside
+   itself - the app's arrangement. Content-sized panes (the first cut) left the note pane a
+   short box beside a 940px explorer, which reads as a hole in the page. */
 .ws { display: grid; grid-template-columns: 274px minmax(0, 1fr); gap: 10px;
-  margin: 18px 0 0; align-items: start; }
+  margin: 18px 0 0; align-items: stretch; height: clamp(620px, calc(100vh - 130px), 980px); }
 .ws > * { background: var(--ob-bg-1); border: 1px solid var(--ob-line);
   border-radius: var(--ob-r); color: var(--ob-ink); display: flex; flex-direction: column;
-  min-width: 0; overflow: hidden; max-height: min(82vh, 940px); }
+  min-width: 0; min-height: 0; overflow: hidden; }
 .ws-main { background: var(--ob-bg); }
 .ws-graph { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 @media (max-width: 800px) { .ws { grid-template-columns: minmax(0, 1fr); height: auto; }
@@ -215,8 +214,10 @@ main { font-family: var(--ob-ui); display: flex; flex-direction: column;
   font-size: 12px; padding: 5px 10px; border-radius: 6px; cursor: pointer; }
 .g-tabs button:hover { color: var(--ob-ink); background: var(--ob-bg-2); }
 .g-tabs button.primary { color: var(--ob-ink); background: var(--ob-tint); font-weight: 600; }
+/* Under the canvas the link list takes whatever height the pane has left, so the graph tab
+   fills the window like the app's graph view with its side panel open. */
 .g-list { list-style: none; margin: 0; padding: 4px 0 14px; overflow-y: auto;
-  flex: 0 1 auto; min-height: 120px; max-height: min(34vh, 340px); font-size: 13.5px; }
+  flex: 1 1 auto; min-height: 120px; font-size: 13.5px; }
 .g-list .gv-group { margin: 8px 0 2px; padding: 0 12px; }
 .g-list .gv-group a { display: flex; gap: 8px; align-items: baseline; cursor: pointer;
   color: var(--ob-ink-3); text-decoration: none; font-size: 11px; text-transform: uppercase;
