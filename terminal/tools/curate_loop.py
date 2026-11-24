@@ -1013,6 +1013,20 @@ def probe_delta(ptok_of, render_of, probe, state_dir, model: str, *, retries: in
     return 0, "none"
 
 
+PAGE_PROMPT = """Rewrite this standing answer using ONLY the rows below. Plain words, short sentences, under 900 characters. If the rows do not cover part of the question, say so in one clause at the end — a page that invents is worse than a page that is thin.
+
+Question: {question}
+
+Rows (what the store holds right now):
+{rows}
+
+The current answer, kept for continuity of voice:
+{current}
+
+Answer:
+"""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8005")
@@ -1066,6 +1080,10 @@ def main():
                          "(LLM work on the served model, one chunk at a time, ~1 min per 8 files)")
     ap.add_argument("--graphify-threshold", type=int, default=24, metavar="N",
                     help="with --graphify: only pass when at least N facts are pending (default 24)")
+    ap.add_argument("--pages", type=int, default=0, metavar="N",
+                    help="after the drain, rewrite up to N standing PAGES (item 6): each page "
+                         "carries its question and the rows it was written from, so a generation "
+                         "is spent only on the pages whose rows moved (0 = off)")
     ap.add_argument("--no-law", action="store_true",
                     help="skip the supersession law's vector scrutiny (fact 3820): a new fact "
                          "cos>=0.85 from an active same-scope row normally gets a RESTATED/"
@@ -1651,6 +1669,49 @@ def main():
                       f"in {res.get('seconds')}s ({res.get('mode')}, "
                       f"{res.get('tokens_out')} tok out)", flush=True)
                 g.clear_pending(ids)     # retire what this pass read; mid-drain notes survive
+    # THE PAGE PASS (2026-11-24, item 6): a standing answer is only standing if something rewrites
+    # it. Each page carries the QUESTION and the SOURCE ROWS it was written from, so the pass
+    # re-asks the question against the store and spends a generation ONLY on the pages whose rows
+    # moved — the check is a list compare, not a model call. Pages are the sweep's cheapest rung:
+    # one ask per page that changed, and a page that did not change costs a search.
+    if a.pages:
+        import os as _os
+        from serve.memory import MemoryService as _MS, store_dbname as _sdb
+        # THE STORE'S OWN SOCKET (the law this box taught on 2026-11-24): every embedded cluster
+        # listens on 5432, so an in-process service names its store by (socket, database).
+        _uri = (f"postgresql://postgres@/{_sdb(store_dir)}?host="
+                f"{_os.path.join(store_dir, 'pgdata')}&port=5432")
+        psvc = _MS(store_dir, pg_uri=_uri)
+        idx = psvc.page()
+        rewrote = skipped = 0
+        for p in idx["pages"][:int(a.pages)]:
+            one = psvc.page(name=p["name"])["page"]
+            if not one:
+                continue
+            hits = psvc.search(one["question"] or p["name"], limit=8)
+            ids = [int(h["id"]) for h in hits]
+            if not ids:
+                skipped += 1
+                continue
+            if ids == [int(s) for s in (one.get("source") or [])]:
+                skipped += 1                       # the rows did not move: the answer is standing
+                continue
+            body = PAGE_PROMPT.format(question=one["question"] or p["name"],
+                                      current=(one.get("answer") or "")[:1500],
+                                      rows="\n".join(f"- {(h.get('text') or '')[:300]}"
+                                                     for h in hits[:8]))
+            ans, _pt, ok = ask(body, 900, kind="page")
+            if not ok or not (ans or "").strip():
+                skipped += 1
+                continue
+            r = psvc.page(name=p["name"], answer=scrub(ans.strip()),
+                          question=one.get("question") or "", scope=one.get("scope") or "default",
+                          source=ids)
+            rewrote += 1
+            print(f"page {p['name']}: rev {r['page']['rev']} "
+                  f"{'rewritten' if r.get('changed') else 'same words, new rev'}", flush=True)
+        psvc.close()
+        print(f"pages: {idx['count']} named, {rewrote} rewritten, {skipped} standing", flush=True)
     lines = [f"curate verdict tag={a.tag} channel=off/temp0.8 muted passes={a.passes} "
              f"stored={'off' if a.no_store else 'on'}",
              f"  drained={drained} extract_fails={fails} candidates={len(candidates)} "

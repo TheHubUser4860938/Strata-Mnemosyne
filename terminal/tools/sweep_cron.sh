@@ -57,7 +57,7 @@ if [ "${pressure:-0}" = "1" ] || [ "${pending:-0}" -gt "$PENDING_MAX" ]; then
     # username policy is what lands WITHOUT that guard).
     flock -n -E 9 tools/state/sweep.lock \
         .venv/bin/python tools/curate_loop.py --sweep --batches 2 --idle-window 90 --tag cron \
-        --clerk-batch 8 --graphify --graphify-threshold 48 >> tools/state/cron.log 2>&1
+        --clerk-batch 8 --graphify --graphify-threshold 48 --pages 6 >> tools/state/cron.log 2>&1
 # THE SHELVING QUEUE (2026-11-24, Phase 4). The clerk files every fact the keyword map cannot
 # name, and it used to cost ONE decode per fact. Measured on the label panel over 40
 # harvest-written facts, two identical asks each: the single arm agrees with itself 0.88 of the

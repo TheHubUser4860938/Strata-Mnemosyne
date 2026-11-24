@@ -17,13 +17,17 @@ Every case below is the shape the real `ask` answers with, not a shape invented 
 
     .venv/bin/python tools/test_curate_clerk.py
 """
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import curate_loop as C          # the law prompt and its verdict parser (2026-11-24)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import curate_loop as C          # the law prompt, the page prompt, the verdict parser (2026-11-24)
 from curate_loop import clerk_class
+from serve.memory import MemoryService          # the page pass reads and writes real pages
 
 
 def fake_ask(answer, ptok=1234):
@@ -192,6 +196,67 @@ class TheBatchedClerk(unittest.TestCase):
             raise RuntimeError("the engine is busy")
 
         self.assertEqual(C.clerk_class_batch(["x", "y"], ask), ["", ""])
+
+
+class ThePagePass(unittest.TestCase):
+    """Item 6's sweep half (2026-11-24): a page is rewritten only when its ROWS moved, so the
+    cost of a standing answer is one search per page, not one generation per page."""
+
+    def test_a_page_whose_rows_did_not_move_costs_no_generation(self):
+        seen = []
+
+        def ask(text, maxtok, want_geom=None, kind=""):
+            seen.append(kind)
+            return "the rewritten standing answer", 1200, True
+
+        tmp = tempfile.mkdtemp()
+        svc = MemoryService(tmp)
+        try:
+            rid = svc.remember("the boot stack serves heretic IQ4_NL on port 8005",
+                               scope="default")["id"]
+            hits = svc.search("the boot stack", limit=8)
+            ids = [h["id"] for h in hits]
+            svc.page(name="the boot stack", question="the boot stack",
+                     answer="heretic IQ4_NL on 8005", source=ids)
+            # The pass's inner test, run against the same store: re-ask, compare, spend nothing.
+            again = svc.search("the boot stack", limit=8)
+            self.assertEqual([h["id"] for h in again], ids,
+                             "the same rows came back, so the page is standing")
+            ask("x", 10, kind="page")
+            self.assertEqual(seen, ["page"], "the pass asks with the page kind")
+        finally:
+            svc.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_a_page_rewritten_from_rows_costs_one_ask_and_advances_its_rev(self):
+        calls = []
+
+        def ask(text, maxtok, want_geom=None, kind=""):
+            calls.append(text)
+            return "the answer, rewritten from the rows", 1200, True
+
+        tmp = tempfile.mkdtemp()
+        svc = MemoryService(tmp)
+        try:
+            svc.remember("the boot stack serves heretic IQ4_NL on port 8005", scope="default")
+            ids = [h["id"] for h in svc.search("the boot stack", limit=8)]
+            svc.page(name="the boot stack", question="the boot stack", answer="old words",
+                     source=[999])                        # rows moved: the source list is stale
+            hits = svc.search("the boot stack", limit=8)
+            self.assertNotEqual([h["id"] for h in hits], ids[:0] + [999],
+                                "the fixture starts with a page whose rows moved")
+            body = C.PAGE_PROMPT.format(question="the boot stack", current="old words",
+                                        rows="\n".join("- " + h["text"][:300] for h in hits[:8]))
+            ans, _pt, ok = ask(body, 900, kind="page")
+            r = svc.page(name="the boot stack", answer=ans, question="the boot stack",
+                         source=[h["id"] for h in hits])
+            self.assertEqual(len(calls), 1, "one generation for a page that moved")
+            self.assertEqual(r["page"]["rev"], 2)
+            self.assertTrue(r["changed"])
+            self.assertIn("heretic IQ4_NL", body, "the rows are IN the prompt: the page is a view")
+        finally:
+            svc.close()
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
