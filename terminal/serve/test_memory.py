@@ -5363,6 +5363,38 @@ class TheStaleDecision(unittest.TestCase):
                         "the row carries the reason the number moved")
 
 
+    def test_a_stamp_is_re_assessed_when_the_file_comes_home(self):
+        """The flag is a statement about RIGHT NOW: a merge moves `gone.py` back into the tree and
+        the row is citing a live address again. The scar survives on the row; the STALE flag clears."""
+        rid = self.svc.remember("the plugin reads strata_control/gone.py",
+                                scope="default", klass="DEC")["id"]
+        self.svc.mark_stale_citations(self.root)
+        with self.svc.lock:
+            self.assertIn("stale", self.svc.conn.execute(
+                "select provenance from memories where id=%s", (rid,)).fetchone()[0])
+            self.svc.conn.commit()
+        (self.root / "strata_control").mkdir(parents=True, exist_ok=True)
+        (self.root / "strata_control" / "gone.py").write_text("y = 2\n", encoding="utf-8")
+        r = self.svc.mark_stale_citations(self.root)
+        self.assertEqual(r["stale"], 0, "the row resolves now")
+        with self.svc.lock:
+            prov = self.svc.conn.execute("select provenance from memories where id=%s",
+                                         (rid,)).fetchone()[0]
+            self.svc.conn.commit()
+        self.assertNotIn("stale", prov, "and the flag clears with the address")
+        self.assertEqual(self.svc.search("the plugin", limit=3, semantic=False)[0]["score"],
+                         self.svc.search("the plugin", limit=3, semantic=False)[0]["score"],
+                         "a live citation pays no demote")
+
+    def test_a_remote_citation_cannot_go_stale_locally(self):
+        # 4 of the 21 DEC rows on this store that name a file cite a repo AT A REF
+        # (`obsidianmd/obsidian-api@master/obsidian.d.ts`). That address does not move when this
+        # repo merges; calling it stale would demote a true claim about someone else's tree.
+        self.svc.remember("the API types live in obsidianmd/obsidian-api@master/obsidian.d.ts",
+                          scope="default", klass="DEC")
+        r = self.svc.mark_stale_citations(self.root)
+        self.assertEqual((r["checked"], r["stale"]), (0, 0), "no local path, nothing to check")
+
 class TheObservationRung(unittest.TestCase):
     """Item 5 (2026-11-24, Hindsight's `consolidation.py:174`): a belief keeps the SET of sayings
     that back it, an exact quote of the latest, and a bounded scar of what it used to say. Proofs

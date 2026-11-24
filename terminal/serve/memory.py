@@ -110,13 +110,17 @@ LINK_FAN = 8                          # typed-edge neighbours per seed: a hand w
 RRF_K = 1.0                             # reciprocal-rank fusion constant, a module constant so a probe can
 LEX_CAND_CAP = 4000                     # the lexical arm's candidate ceiling (item 18: a full cap is
                                         # reported as `truncated`, not hidden behind a full list)
-_CITE_FILE_RE = re.compile(r"[\w][\w./-]*\.(?:py|md|json|jsonl|sh|ts|tsx|js|cu|cpp|hpp|txt|ino)\b")
+_CITE_FILE_RE = re.compile(r"[\w][\w./@-]*\.(?:py|md|json|jsonl|sh|ts|tsx|js|cu|cpp|hpp|txt|ino)\b")
 SHELF_BAR = 3               # rows a cutter needs to earn its drawer (the 2026-11-02 sorting: a
                             # cutter costs a drawer, a router entry and a map line, and it pays at
                             # three rows). One number, shared by the queue and m4_shelftidy.
 # The file tokens a DEC row NAMES (item 14). Greedy about directories, strict about the extension:
 # `serve/memory.py`, `terminal/spikes/…/PLAN-2026-11-24.md` and `BUILD.json` are what decisions
 # cite; a bare word like `Plan` is not.
+_REMOTE_RE = re.compile(r"^(?:https?://|\w[\w.-]*/\w[\w.-]*@)")
+# A citation to a REPO AT A REF (`obsidianmd/obsidian-api@master/obsidian.d.ts`) is not a local
+# address that can move: measured on this store, 4 of the 12 rows the first stale pass flagged are
+# remote citations, and calling them stale would demote a true claim about someone else's tree.
                                         # sweep it (tools/lme_retrieval_ab.py --rrf-k). CHANGED from the
                                         # conventional 60 on 2026-10-14, measured on the venue copy (10,973
                                         # rows, 500 questions, deterministic - one run is one answer):
@@ -4690,7 +4694,8 @@ class MemoryService:
                 " order by updated_at desc limit %s", (int(limit),)).fetchall()
             checked = stale = 0
             for rid, text, why, prov in rows:
-                names = _CITE_FILE_RE.findall(f"{text or ''} {why or ''}")
+                names = [n for n in _CITE_FILE_RE.findall(f"{text} {why}")
+                         if not _REMOTE_RE.match(n)]        # a repo@ref cannot go stale locally
                 if not names:
                     continue
                 checked += 1
@@ -4708,6 +4713,15 @@ class MemoryService:
                     self.conn.execute("update memories set provenance = %s::jsonb where id = %s",
                                       (json.dumps(p), rid))
                     stale += 1
+                elif prov and "stale" in prov:
+                    # THE STAMP IS RE-ASSESSED, not fossilised: the file came back (a merge moved
+                    # it home), so the row is citing a live address again. The scar survives where
+                    # the row keeps it — in `provenance.scar` and the supersession chain — and the
+                    # STALE flag is a statement about right now, so it clears.
+                    p = dict(prov)
+                    p.pop("stale", None)
+                    self.conn.execute("update memories set provenance = %s::jsonb where id = %s",
+                                      (json.dumps(p), rid))
             self.conn.commit()
         return {"checked": checked, "stale": stale, "root": str(root) if root else ""}
 
