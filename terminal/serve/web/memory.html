@@ -11,7 +11,10 @@
 <style>
 *{box-sizing:border-box}html{height:auto}body{margin:0;height:auto;display:block;overflow:visible;background:var(--st-bg);color:var(--st-ink);font:15px/1.5 var(--st-font)}
 button,input,textarea,select{font:inherit}button{cursor:pointer;color:inherit;background:var(--st-surface-2);border:1px solid var(--st-line);border-radius:9px;padding:8px 13px}button:hover{border-color:var(--st-accent)}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--st-focus);outline-offset:3px}[hidden]{display:none!important}
-main{display:block;max-width:1200px;margin:auto;padding:28px 32px}h1{margin:0;font-size:29px;letter-spacing:-.7px}.sub,.muted{color:var(--st-ink-muted)}.sub{margin:4px 0 0}.controls{display:flex;gap:8px;flex-wrap:wrap}.primary{background:var(--st-accent);color:var(--st-accent-ink);border-color:transparent}
+main{display:flex;flex-direction:column;max-width:1200px;margin:auto;padding:28px 32px}
+/* One page, read top to bottom: the map, then the ledger under it, then the boot furniture.
+   The order is the reading order, not the markup order. */
+#grwrap{order:2}#t3wrap{order:3}#t2wrap{order:4}main>footer{order:5}main>.cards{order:1}h1{margin:0;font-size:29px;letter-spacing:-.7px}.sub,.muted{color:var(--st-ink-muted)}.sub{margin:4px 0 0}.controls{display:flex;gap:8px;flex-wrap:wrap}.primary{background:var(--st-accent);color:var(--st-accent-ink);border-color:transparent}
 .notice{margin-top:16px;padding:10px 14px;background:var(--st-danger-tint);color:var(--st-danger-text);border-radius:9px}
 .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:24px 0}.card{padding:18px 20px;border:1px solid var(--st-line);border-radius:13px;background:var(--st-surface)}.label{font-size:12px;color:var(--st-ink-muted);text-transform:uppercase;letter-spacing:.8px}.value{font-size:26px;font-weight:500;line-height:1.4;margin-top:3px}.small{font-size:12px;color:var(--st-ink-muted);overflow-wrap:anywhere}
 .panel{border:1px solid var(--st-line);border-radius:14px;background:var(--st-surface);overflow:hidden;margin-top:22px}.panel-bar{padding:14px 18px;border-bottom:1px solid var(--st-line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -83,10 +86,16 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
   <div class="card"><div class="label">Curation</div><div class="value" id="pending">-</div><div class="small" id="pendsub"></div></div>
   <div class="card"><div class="label">Semantic arm</div><div class="value" id="embed">-</div><div class="small" id="embedsub"></div></div>
   <div class="card"><div class="label">At rest</div><div class="value" id="rest">-</div><div class="small" id="restsub"></div></div>
-  <div class="card"><div class="label">View</div><div class="value" style="display:flex;gap:8px;padding-top:4px"><button id="t3btn" class="primary">Text</button><button id="t2btn">Cartridges</button><button id="grbtn" title="the facts as a graph the model drew - communities, god nodes, cases">Graph</button></div><div class="small" id="viewsub">flip: tier-3 recall text, the tier-2 cartridge system, or the knowledge graph</div></div>
+  <!-- One page, three surfaces (2026-11-24, the owner's call): the graph is how the memories are
+       navigated, the ledger is the ground truth under it, the cartridge is boot furniture.
+       The three tabs that used to split them are gone - they were the same store seen thrice. -->
+  <div class="card"><div class="label">Standing cart</div><div class="value" id="c-state">-</div>
+    <div class="small" id="c-sub">the five persona files, K/V-resident from the first token</div>
+    <div class="small" style="margin-top:8px"><button id="tierflip" title="tier-2 carries the five standing files; tier-3 carries the shelved facts as text">Carry facts</button></div></div>
 </div>
 <div id="t3wrap">
 <div class="panel">
+  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Ledger</h2><span class="small">the rows themselves - the graph is the map, this is the ground truth under it</span></div>
   <div class="panel-bar">
     <label class="sr" for="q">Search the store</label>
     <input id="q" placeholder="Search the store - words of the question">
@@ -120,12 +129,12 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
   </div>
 </div>
 </div><!-- /t3wrap -->
-<div id="t2wrap" hidden>
+<div id="t2wrap">
+<div class="panel-bar" style="padding:0 0 6px"><h2 style="margin:0;font-size:17px">At boot</h2>
+  <span class="small">the cartridge is K/V furniture: it loads once, rotates when a persona file moves, and needs nothing from you</span></div>
 <div class="cards">
-  <div class="card"><div class="label">Cartridge</div><div class="value" id="c-state">-</div><div class="small" id="c-sub"></div></div>
   <div class="card"><div class="label">Carts</div><div class="value" id="c-carts">-</div><div class="small" id="c-cartsub"></div></div>
-  <div class="card"><div class="label">Standing text</div><div class="value" id="c-facts">-</div><div class="small" id="c-factsub"></div>
-    <div class="small" style="margin-top:8px"><button id="tierflip" title="tier-2 carries the five standing files; tier-3 carries the shelved facts as text">Switch tier</button></div></div>
+  <div class="card"><div class="label">Standing text</div><div class="value" id="c-facts">-</div><div class="small" id="c-factsub"></div></div>
   <div class="card"><div class="label">Index</div><div class="value" id="c-index">-</div><div class="small" id="c-indexsub"></div></div>
   <div class="card"><div class="label">Re-seed window</div><div class="value" id="c-window">-</div><div class="small" id="c-windowsub"></div></div>
 </div>
@@ -142,7 +151,9 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
   <ul class="facts" id="catlog"><li class="empty">-</li></ul>
 </div>
 </div>
-<div id="grwrap" hidden>
+<div id="grwrap">
+<div class="panel-bar" style="padding:0 0 6px"><h2 style="margin:0;font-size:17px">The graph</h2>
+  <span class="small">how the memories are read now: open a note, walk its links, re-centre</span></div>
 <div class="cards">
   <div class="card"><div class="label">Nodes</div><div class="value" id="g-nodes">-</div><div class="small" id="g-nodessub">one node per fact the graph placed</div></div>
   <div class="card"><div class="label">Edges</div><div class="value" id="g-edges">-</div><div class="small" id="g-edgessub">relations the model read between facts</div></div>
@@ -199,7 +210,7 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
   <ul class="facts" id="g-list"><li class="empty">-</li></ul>
 </div>
 </div>
-<footer>Every operation here is the same <code>/memory</code> API any client uses. The Cartridges view shows the tier-2 standing system, the S3 cart ledger, and the engine's slot vault. The Graph view shows the knowledge graph the served model builds from the facts — <code>/memory {op:"graph"}</code>, stored at <code>&lt;store&gt;/strata-graphify/</code>.</footer>
+<footer>Every operation here is the same <code>/memory</code> API any client uses. One page, three surfaces: the <b>graph</b> is how the memories are navigated, the <b>ledger</b> is the Postgres rows under it, the <b>cart</b> is the tier-2 standing text the engine loads at boot (<code>/memory {op:"cartridge"}</code>) - and the <b>vault</b> at <code>~/vaults/strata</code> is the same rows as markdown, one command to rebuild.</footer>
 </main>
 </body>
 </html>

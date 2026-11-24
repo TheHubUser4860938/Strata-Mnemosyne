@@ -9809,6 +9809,11 @@ def make_handler(svc: Service):
                 # only, so /memory-ui and /api-monitor could be framed by anything - and the Memory
                 # page's Retire button writes to the live ledger on one blind click.
                 self.send_header("Content-Security-Policy", PAGE_CSP)
+                # A refresh is the whole deploy for the UI (2026-11-24, the owner's ask): the
+                # pages carried no validator and no Cache-Control, so a navigation could serve a
+                # day-old page over fresh /web/* files. Revalidate every load; the files are read
+                # from disk per request, so an edit lands on the next refresh with no reboot.
+                self.send_header("Cache-Control", "no-cache")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)

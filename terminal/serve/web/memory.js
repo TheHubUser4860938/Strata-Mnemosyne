@@ -31,8 +31,7 @@ const readable = (t, cls) => {
     : s.replace(/\u017F/g, "s");                        // everything else: the long-s only
 };
 let lastView = { q: "" };
-let STATS = {};          // last stats read, so the tier-2 view can paint without a second call
-let TIER = "t3";
+let STATS = {};          // last stats read, so the cart card can paint without a second call
 
 function factRow(m) {
   const li = document.createElement("li");
@@ -148,7 +147,7 @@ function cards(s) {
   if ($("scopes"))
     $("scopes").innerHTML = Object.keys(s.by_scope || {}).filter(k => k !== "default")
       .map(k => `<option value="${esc(k)}"></option>`).join("");
-  if (TIER === "t2") renderCart();
+  renderCart();                                     // the Standing cart card is on every load now
 }
 
 // ---- the tier-2 view (2026-10-24, owner's ask): the Cartridge card slot became a flip switch -
@@ -248,24 +247,14 @@ async function renderCatlog() {
     for (const m of rows) ul.append(factRow(m));
   } catch (e) { $("catlog").innerHTML = `<li class="empty">Could not read the index.</li>`; }
 }
-function tier(t) {
-  TIER = t;
-  $("t3wrap").hidden = t !== "t3";
-  $("t2wrap").hidden = t !== "t2";
-  $("grwrap").hidden = t !== "gr";
-  $("t3btn").className = t === "t3" ? "primary" : "";
-  $("t2btn").className = t === "t2" ? "primary" : "";
-  $("grbtn").className = t === "gr" ? "primary" : "";
-  // the toggle says which one is showing (audit 2026-11-07: colour was the only signal)
-  $("t3btn").setAttribute("aria-pressed", t === "t3");
-  $("t2btn").setAttribute("aria-pressed", t === "t2");
-  $("grbtn").setAttribute("aria-pressed", t === "gr");
-  if (t === "t2") { renderCart(); renderCatlog(); }
-  if (t === "gr") graphView();
+// One page, three bands (2026-11-24, the owner's call): the Text / Cartridges / Graph tabs were
+// the same store seen three ways, and the graph is how the memories get read now. Nothing switches
+// any more; the only navigation left is "take me to the rows this note is about".
+function gotoLedger(q) {
+  if (q !== undefined && q !== null) { $("q").value = String(q).slice(0, 70); show($("q").value); }
+  const p = $("t3wrap");
+  if (p && p.scrollIntoView) p.scrollIntoView({ behavior: "smooth", block: "start" });
 }
-$("t3btn").onclick = () => tier("t3");
-$("t2btn").onclick = () => tier("t2");
-$("grbtn").onclick = () => tier("gr");
 
 $("search").onclick = () => show($("q").value.trim());
 $("q").onkeydown = e => { if (e.key === "Enter") show($("q").value.trim()); };
@@ -891,7 +880,7 @@ $("g-notelocal").onclick = () => { if (GNOTE) { setMode("local"); localView(GNOT
 $("g-notedbl").onclick = () => {
   // The note's OWN label, not a lookup in the sampled view: a concept in community 211 is not
   // in the page's 40 communities, and the jump used to silently do nothing for exactly those.
-  if (GNOTE_LABEL) { $("q").value = GNOTE_LABEL.slice(0, 70); show(GNOTE_LABEL.slice(0, 70)); tier("t3"); }
+  if (GNOTE_LABEL) gotoLedger(GNOTE_LABEL);
 };
 
 // ---- the mode switch: the whole graph, or the neighbourhood of the note under the cursor
@@ -957,7 +946,7 @@ $("g-jump").onkeydown = ev => {
 };
 document.addEventListener("keydown", ev => {
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "o") {
-    if (!$("grwrap").hidden) { ev.preventDefault(); $("g-jump").focus(); $("g-jump").select(); }
+    ev.preventDefault(); $("g-jump").focus(); $("g-jump").select();
   }
 });
 $("g-jump").addEventListener("blur", () => setTimeout(() => { $("g-jumplist").hidden = true; }, 120));
@@ -1028,7 +1017,7 @@ $("g-canvas").ondblclick = ev => {
   const i = nodeAt(ev.clientX - r.left, ev.clientY - r.top);
   if (i < 0) return;
   const q = d.nodes[i].label;
-  if (q) { $("q").value = q.slice(0, 70); show(q.slice(0, 70)); tier("t3"); }
+  if (q) gotoLedger(q);
 };
 window.addEventListener("resize", () => paint());
 
@@ -1042,4 +1031,8 @@ async function graphPass(merge) {
 }
 $("g-build").onclick = () => graphPass(false);
 $("g-merge").onclick = () => graphPass(true);
+// One page, one boot: the ledger's rows, the graph's map, and the card catalog the sweep writes.
+// (Each band used to render on its own tab click; there are no tabs.)
 show("");
+graphView();
+renderCatlog();
