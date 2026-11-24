@@ -296,3 +296,124 @@ identical). See docs/MEMORY_CORE.md, "The router shipped as production code". Sh
 deferred: the cosine-cut probe showed the cut only pays once something calls it, and that something now
 exists.
 
+---
+
+# The pass of 2026-11-23: three more systems, and the switch question
+
+The owner asked the comparative question directly — agentic-graphrag vs Hindsight vs Obsidian vs what we
+built, and "should we just take from each to better our own system?" — and named the weakness to weigh:
+**the graphing pass and how long it takes.** The verdict and the port arithmetic are in
+**[DECISION-2026-11-23.md](DECISION-2026-11-23.md)**. Three new reports sit beside this file:
+`agentic-graphrag.md`, `hindsight.md`, `obsidian.md`. Same method as the 2026-10-14 pass: primary sources,
+code over README, a `## Unverified` section per file.
+
+| system | file | what it is the best witness for |
+|---|---|---|
+| agentic-graphrag (ontogr) | `agentic-graphrag.md` | a schema the extractor cannot step outside, tiered entity resolution that links instead of merging, and decisions that go stale when their sources move |
+| Hindsight (vectorize-io) | `hindsight.md` | the consolidation rung we lack: observations with proof counts, pages read as a database read, and zero LLM calls on the read path |
+| Obsidian | `obsidian.md` | the file as the identity and the index as a cache — with no ranking, no types, no consolidation, and 10,791 plugins bolted on to cover it |
+
+## Cross-cutting finding 5: the graph is the weakness, and it is a read-path bug wearing a performance hat
+
+Measured on this box, 2026-11-23, all numbers live:
+
+- The last pass: **3,187 s, 1,079,123 tokens in / 323,288 out**, reading 1,183 of 3,819 active facts
+  (**31% coverage**), with 612 rows queued behind it. At the store's 150-234 facts/day that queue refills
+  in ~2.6 days, so a full-store pass at that rate is ~103 min of GPU, every ~2.6 days.
+- The pass is **decode-bound** — 273 output tokens per fact at ~90 tok/s — which the module docstring
+  already said. Chunk size is tuned to the 16,384-token ceiling, so there is no batching win left.
+- **Two thirds of what it builds is thrown away at the seam.** `_graph()` maps node ids to row ids with
+  `rfind("_fact_")` and keeps an edge only when both ends parse: **1,020 of 3,133** edges. 1,327
+  fact→concept and 786 concept→concept edges are dropped, so the concept layer — the reason to build a
+  graph — is a dead end, and the arm is one hop.
+- The cheapest alternative is measured: **a k=8 vector graph over all 3,755 facts costs 0.423 s and
+  0 tokens** and yields 15,020 edges at 100% coverage. 7,535× faster, 4.8× more edges. What the LLM layer
+  uniquely buys is the **1,913 concept nodes** — abstractions no single row carries.
+- 1,608 communities over 2,136 rows = **1.33 rows per community**: the community layer consolidates
+  nothing. Five of the twelve god nodes are export artifacts (`USR — part 1 (25 facts)`, degree 26 =
+  `FACTS_PER_FILE` + 1), and the owner is three nodes (`Eugene`, `Dustin (goes by Eugene) — owner`,
+  `Dustin — the user`) because `_merge_extractions()` is pure concatenation with no entity resolution.
+- The store's own typed edges — 858 rows, **all `kind='about'`** — cast no vote at all.
+
+So the answer to "the graph pass is too slow" is not one faster pass. It is **three layers at three
+prices** (typed links free / vector kNN 0.4 s standing on every write, as Hindsight materializes at insert /
+the LLM concept pass as a slow top coat), plus walking the concept nodes. Annotation on the 2026-10-17
+line above: "communities/hyper-edges/BFS expansion need a graph DB" is now **false** — the graph is built
+in-house (`terminal/strata/graphify/`) into a JSON sidecar beside the store, and a full cosine scan is the
+honest design at this scale.
+
+## Cross-cutting finding 6: the field moved to small dedicated models for the memory judgments
+
+Two of the three systems, independently, and both measured the win:
+
+- **Hindsight** ships `hs-decide-1-flash` (0.8B, Apache-2.0) for the judgments inside recall,
+  consolidation, reflect and pages — "a typed answer instead of text to parse" — gated on
+  **self-consistency** because tuned per-model confidence bars "let a hedging model… settle nothing".
+  Their claim: ~40% fewer consolidation LLM calls at the same pass rate, ~167 ms median against 1-7 s.
+  Plus `hs-rerank-1` (114M, MIT) as the default local reranker, so recall bills zero LLM calls.
+- **agentic-graphrag** makes the same bet with **GLiNER**: a compact encoder that extracts any declared
+  entity types, runs on the machine, reads every chunk, and returns confidence scores — with `hybrid` mode
+  sending only the low-confidence chunks to the LLM, up to a budget.
+
+Strata spends served-model asks on exactly these judgments: the shelf clerk at a 1,400-token budget (whose
+shelf moved between two identical asks **2 of 4** times at temp 0.8), the listwise reranker, and the graph
+pass. Every one queues behind this conversation on one 4090.
+
+## Cross-cutting finding 8: four external systems fuse with RRF at k=60; we ship k=1
+
+agentic-graphrag (`search.py:89-108`, "ranks only, raw scores discarded"), Hindsight
+(`search/fusion.py`), and — from the 2026-10-14 pass — Graphiti and Zep all use the paper's conventional
+k=60. We reset to **k=1 on 2026-10-15** by sweeping our own venue copy (10,973 rows, 500 questions,
+deterministic: top1 0.517 / top3 0.849 against 0.504 / 0.823, ≥ at every width), and the reach probe
+scored identically at 1 and 60, so the property that justified rank fusion survived. Four systems at 60 is
+not evidence that 1 is wrong; it is the strongest outside signal that the constant deserves a **re-measure
+at the current store size** — 3,819 facts and 33,475 chunks, a different corpus shape than the venue copy
+it was swept on, with the doc family now dominating the candidate pool and BM25 stats scoped per family.
+Instrument: `tools/lme_retrieval_ab.py --offline` (~45 s), then the panel. Falsifier: k=60 ties or loses
+at the block's own width, and k=1 stands.
+
+## Cross-cutting finding 9: the maturity spread is the decision's hidden axis
+
+| system | stars | licence | hands on the wheel | version | benchmark evidence |
+|---|---|---|---|---|---|
+| Hindsight | ~62,900 | MIT | ~291 contributors, 78 releases, weekly→several/week | 1.2.3 | LongMemEval-S 500 q, self-judged (GPT-OSS-120B), a public ~100-case eval suite, 221 open issues |
+| agentic-graphrag | 84 | Apache-2.0 | **2 authors**, 181 commits, 0 open issues | **0.0.8** | five "lite" runs, **n=1-2 questions each**, self-judged; 91.13% coverage, 2,323 tests |
+| Obsidian (the pattern) | 53,555 (skills repo) | MIT + free app | 10,791 community plugins | app 1.9-1.12 | none — it is a format, and the ranking comes from QMD (31,480★) beside it |
+
+Read as a risk table: Hindsight is a moving target with a big surface (a schema renamed twice in ten
+months, ~120 migrations); agentic-graphrag is pre-1.0 with "breaking changes expected" in its own
+`AGENTS.md` and a fixed vector placement (changing the embedder means an empty database); the vault is the
+only one of the three that is a format rather than a service, which is why it is the only one that ports
+without a lock-in clause. Our own exposure is the reverse: one Postgres, one file per fact, the vectors
+inside, and a schema we control — the four-knob-and-a-cutter taxonomy is the part with no external
+dependency at all.
+
+## Cross-cutting finding 7: the two cheapest structural wins in the whole directory are shape, not machinery
+
+Ranked by payoff per unit of cost, from the 2026-11-23 pass, both attack failures we have measured and
+never fixed:
+
+1. **Compute the time mark in code, let the model read it** (Hindsight
+   `consolidation/prompts.py:156-162`). Facts arrive out of order, so the consolidator labels candidates
+   `(stated after this fact)` and sets `newer_than_input_facts: true`; the model is told "the most recently
+   stated value is the current one — not the fact processed last". Their ablation: **29/40 → 36-38/40** on
+   the consolidation evals, *with no code checks and no second call*. For us: a boolean against `when`.
+   Temporal is our worst slice (0.465). Zero new models, zero new indexes.
+2. **Three budgets, one per kind of text** (Hindsight `engine/fact_budget.py`): facts, evidence
+   (`source_facts`), and passages (chunks) each under their own cap, with skip-not-evict and a floor of one
+   whole result — "an empty answer reads as 'this bank knows nothing about that', and a fact clipped
+   mid-sentence would be a claim the memory never made". Our complaint, in our own words: the block's
+   budget "is spent on this afternoon's sentences", and only 4% of 2,964 facts are never recalled. Split
+   `turn_block_chars` into three.
+
+## The benchmark note, updated
+
+Hindsight is the first system in this directory whose headline number comes with a public, per-model eval
+suite (`hindsight-system-evals`, ~100 category-labelled judged cases, failures explained, "a single red run
+is a signal to re-run, not proof of a regression"). That is our bench-panel discipline in public. Its
+numbers still need the sentence: **91.4% on LongMemEval-S is Hindsight's stack on OSS-120B with Gemini-3
+Pro as the answer generator, judged by GPT-OSS-120B at temp 0.0 (their own judge); the apples-to-apples
+row is 89.0%; the "independent" reproducers are on the author list; and paper §7.3 ships literal `<add>`
+placeholders for the retrieval token budgets.** The shipped schema has three layers, not the paper's four
+— the opinion network and its `confidence_score` were dropped in a migration.
+
