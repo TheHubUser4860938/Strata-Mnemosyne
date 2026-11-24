@@ -466,6 +466,41 @@ LAW_TH = 0.78   # the FLAG line for the judged arm, measured 2026-10-17 (doc-vs-
 # the law arm embeds docs. The search arm keeps embed_query - queries ARE queries there.
 
 
+def law_prompt(new_fact: str, new_when, old_text: str, old_when) -> str:
+    """The supersession law's vector-arm judge, as a pure function (2026-11-24).
+
+    The judge was shown two facts and no dates, and asked which updates which. That asks the model
+    to invent a comparison the store already knows: every row carries `when` to the minute, and the
+    harvest writes facts whose order of ARRIVAL is not their order of SAYING (a backfill, a manual
+    drain, a 6.92-hour median between said and written). Hindsight's consolidation prompt settled
+    this by computing the comparison in code and handing the model a mark — its ablation is 29/40
+    to 36-38/40 on the consolidation evals, with no extra call and no code checks
+    (`consolidation/prompts.py:156-162`). Same shape here: the dates are rendered, and the law
+    sentence tells the judge what to do with them.
+
+    `when` arrives as an epoch float, an ISO string, or None (a row predating the column, or a
+    fact minted mid-run whose date is now). None renders as "date unknown", which is the honest
+    answer and the one that stops the judge inventing one.
+    """
+    def stamp(v):
+        if v in (None, "", 0, 0.0):
+            return "date unknown"
+        if isinstance(v, (int, float)):
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(v)))
+        return str(v)[:16]
+
+    return (
+        "Two memory facts about the same subject. Decide how the NEW relates to the OLD: "
+        "RESTATED if they say the same thing in different words; CORRECTS if the NEW "
+        "contradicts or updates the OLD (a change of state, place, decision or fact); DIFFERENT "
+        "if they are separate facts that merely share words. The dates are stated for you and "
+        "the ORDER is yours to use: the fact said LATER is the current value, so CORRECTS points "
+        "from the earlier statement to the later one; a fact said EARLIER than the row on screen "
+        "is a restatement of history, not a correction. Answer with one word.\n"
+        f"OLD (said {stamp(old_when)}): {(old_text or '')[:500]}\n"
+        f"NEW (said {stamp(new_when)}): {(new_fact or '')[:500]}")
+
+
 def near_dupe_cos(vec, rows):
     """(best_cos, row) of rows = (id, text, scope, L2-normalized float32 vec) against a query
     vec. Pure numpy, no I/O - the caller embeds and attaches. Empty rows -> (0.0, None)."""
@@ -1027,10 +1062,14 @@ def main():
     law_emb = None
     law_rows = None       # (id, text, scope, L2-normalized vec), fetched once per sweep run
 
-    def law_check(fact, scope):
+    def law_check(fact, scope, when=None):
         """(verdict, old_id, old_text, cos) when a fact-to-store sits LAW_TH+ cosine from an
         active SAME-SCOPE row (corrections live where the old claim lives), else None. Any
-        trouble -> None: the law never loses a fact and never stops a sweep."""
+        trouble -> None: the law never loses a fact and never stops a sweep.
+
+        `when` is when the fact was SAID (the turn's date, not the tick's clock), and it rides
+        into the judge prompt as a mark — see `law_prompt`. A row's own date comes from the
+        matrix, so the two sides are comparable without the model guessing."""
         nonlocal law_emb, law_rows
         try:
             if law_rows is None:
@@ -1049,13 +1088,14 @@ def main():
                     # FACTS ONLY (audit 2026-11-07): the law compares a fact to the facts the box
                     # believes, and the candidate filter below is by SCOPE - so loading 33,382
                     # corpus chunks every tick moved 109 MB of vectors to drop 20 runs later.
-                    raw = con.execute("select m.id, m.text, m.scope, e.vec from memories m "
+                    raw = con.execute("select m.id, m.text, m.scope, e.vec, m.created_at "
+                                      "from memories m "
                                       "join embeddings e on e.id = m.id"
                                       " where m.invalid_at is null and " + _M.DOC_FACT_SQL).fetchall()
                 V = np.stack([np.frombuffer(r[3], dtype=np.float32) for r in raw]) if raw \
                     else np.zeros((0, law_emb.dims), dtype=np.float32)
                 V = V / (np.linalg.norm(V, axis=1, keepdims=True) + 1e-9)
-                law_rows = [(r[0], r[1], r[2], V[i]) for i, r in enumerate(raw)]
+                law_rows = [(r[0], r[1], r[2], V[i], r[4]) for i, r in enumerate(raw)]
                 rec({"kind": "law_matrix", "rows": len(law_rows)})
             cand = [r for r in law_rows if r[2] == scope]
             if not cand:
@@ -1063,13 +1103,8 @@ def main():
             cos, row = near_dupe_cos(law_emb.embed_docs([fact])[0], cand)   # docs, not query:
             if cos < LAW_TH:                                                # see EMBED-SPACE LAW
                 return None
-            ans, _, _ = ask(
-                "Two memory facts about the same subject. Decide how the NEW relates to the "
-                "OLD: RESTATED if they say the same thing in different words; CORRECTS if the "
-                "NEW contradicts or updates the OLD (a change of state, place, decision or "
-                "fact); DIFFERENT if they are separate facts that merely share words. Answer "
-                f"with one word.\nOLD: {(row[1] or '')[:500]}\nNEW: {fact[:500]}", 12,
-                kind="law_judge")
+            ans, _, _ = ask(law_prompt(fact, when, row[1], row[4] if len(row) > 4 else None), 12,
+                            kind="law_judge")
             verdict = law_verdict(ans)
             rec({"kind": "law_flag", "cos": round(cos, 3), "old_id": row[0], "verdict": verdict})
             return verdict, row[0], row[1], cos
@@ -1257,7 +1292,7 @@ def main():
                     # gets a judgment BEFORE it stores - restatements retire the older, corrections
                     # land amended, DIFFERENT verdicts store both. Probe-shaped traffic is exempt (the
                     # 2026-10-12 cascade law: quiz echoes do not correct the world).
-                    law = law_check(c["fact"], c["scope"])
+                    law = law_check(c["fact"], c["scope"], when=c.get("turn_when"))
                     if law and law[0] == "CORRECTS":
                         amended = amend_with_history(ask, c["fact"], law[2])
                         if amended:
@@ -1288,7 +1323,9 @@ def main():
                         import numpy as _np                         # the run: the manual drain of
                         sv = law_emb.embed_docs([fields["text"]])[0]  # 2026-10-17 minted two RTX-4090
                         sv = sv / (_np.linalg.norm(sv) + 1e-9)      # twins 19 s apart that could not
-                        law_rows.append((c["mem_id"], fields["text"], c["scope"], sv))  # see each
+                        law_rows.append((c["mem_id"], fields["text"], c["scope"], sv,
+                                         time.time()))              # see each other. The 5th slot is
+                                                                    # the date the judge reads.
                     except Exception:                               # noqa: BLE001 - freshness is a
                         pass                                        # bonus, never a risk to the store
             stored[cls] = stored.get(cls, 0) + 1

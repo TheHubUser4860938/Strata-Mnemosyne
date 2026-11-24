@@ -22,6 +22,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import curate_loop as C          # the law prompt and its verdict parser (2026-11-24)
 from curate_loop import clerk_class
 
 
@@ -79,5 +80,42 @@ class ClerkCollapsesSelfNested(unittest.TestCase):
 
     def test_a_real_cutter_still_rides(self):
         self.assertEqual(clerk_class("Some fact.", fake_ask("TECH/PYTHO")), "TECH/PYTHO")
+class LawPromptCarriesTheDates(unittest.TestCase):
+    """The supersession law's judge was shown two facts and no dates (2026-11-24).
+
+    Every row carries `when` to the minute, the harvest writes a median of 6.92 h after the
+    saying, and a backfill can store an old turn after a new one — so the order the model sees is
+    not the order things were said. Hindsight's consolidation prompt settled the same problem by
+    computing the comparison in code and handing the model a mark (29/40 to 36-38/40, no extra
+    call). These tests pin the mark: both sides dated, the law sentence naming the tie-break, and
+    an unknown date rendered as unknown rather than invented.
+    """
+
+    def test_both_sides_are_dated(self):
+        p = C.law_prompt("The box serves 0.1.67.", 1795550000.0,
+                         "The box serves 0.1.66.", 1795000000.0)
+        self.assertIn("NEW (said 2026-", p)
+        self.assertIn("OLD (said 2026-", p)
+        self.assertLess(p.index("OLD (said"), p.index("NEW (said"),
+                        "the prompt reads the other way round: NEW must be the side being stored")
+
+    def test_the_law_sentence_uses_the_order(self):
+        p = C.law_prompt("new", 1795550000.0, "old", 1795000000.0)
+        self.assertIn("said LATER is the current value", p)
+
+    def test_an_unknown_date_says_so_instead_of_inventing_one(self):
+        p = C.law_prompt("new", None, "old", "")
+        self.assertIn("OLD (said date unknown)", p)
+        self.assertIn("NEW (said date unknown)", p)
+
+    def test_the_verdict_vocabulary_is_the_one_the_parser_reads(self):
+        """`law_verdict` scans for RESTATED / CORRECTS / DIFFERENT; a prompt that renames them
+        silently sends every judgment to the DIFFERENT default."""
+        p = C.law_prompt("new", 1795550000.0, "old", 1795000000.0)
+        for w in ("RESTATED", "CORRECTS", "DIFFERENT"):
+            self.assertIn(w, p)
+            self.assertEqual(C.law_verdict(w), w)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
