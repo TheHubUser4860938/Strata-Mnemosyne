@@ -53,7 +53,7 @@ class ThinkingEngine:
         think = self.tok.encode("<|message_model|><|content_thinking|>", parse_special=True) + self.tok.encode(self.thought)
         return think + self.tok.encode("<|end_message|>", parse_special=True) + ans
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         out = self._script(list(ids))
         row = {"prompt": len(ids), "sent": 0, "finish": "length"}
         self.passes.append(row)
