@@ -28,6 +28,41 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
 #g-note .nt-conns a:hover{color:var(--st-accent-text)}
 #g-note .nt-tag{font-size:11px;color:var(--st-ink-muted);font-family:var(--st-font-mono)}
 #g-note .nt-conns .chip{margin-right:4px}
+/* The vault's own furniture (2026-11-24): a switcher dropdown, links out vs backlinks, and a
+   local-graph pane. Obsidian's whole feel is labels — a graph you can read the names in. */
+#g-jumplist{position:absolute;top:calc(100% - 4px);left:18px;z-index:30;width:min(460px,calc(100% - 36px));
+  background:var(--st-surface-1);border:1px solid var(--st-line);border-radius:9px;overflow:hidden;
+  box-shadow:0 12px 34px rgba(0,0,0,.45)}
+#g-jumplist a{display:flex;gap:9px;align-items:baseline;padding:7px 12px;cursor:pointer;
+  color:var(--st-ink);text-decoration:none;font-size:13px;border-top:1px solid var(--st-line-soft)}
+#g-jumplist a:first-child{border-top:0}
+#g-jumplist a:hover,#g-jumplist a.sel{background:var(--st-accent-tint)}
+#g-jumplist .jj-lab{flex:1;min-width:0;overflow-wrap:anywhere}
+#g-jumplist .jj-meta{font-family:var(--st-font-mono);font-size:11px;color:var(--st-ink-muted);white-space:nowrap}
+#g-note .nt-sect{margin-top:16px}
+#g-note .nt-sect h4{margin:0;font-size:12px;color:var(--st-ink-muted);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+#g-note .nt-sect .nt-conns{margin-top:4px;border-top:0;padding-top:2px;max-height:280px}
+#g-note .nt-empty{font-size:12px;color:var(--st-ink-muted);padding:4px 0}
+#g-note .nt-rel{font-family:var(--st-font-mono);font-size:11px;color:var(--st-accent-text);
+  background:var(--st-accent-tint);border-radius:5px;padding:1px 5px;margin-right:5px}
+#g-note .nt-dir{font-family:var(--st-font-mono);font-size:11px;color:var(--st-ink-muted);margin-right:5px}
+#g-canvas.local{cursor:default}
+/* The vault sidebar: a list of notes, grouped, one row per note, the open one lit. Obsidian's
+   file explorer is the model — a group is a place you can go, not a filter to reason about. */
+#g-list{max-height:520px;overflow-y:auto}
+#g-list .gv-group{list-style:none;margin:10px 0 2px;padding:0 18px}
+#g-list .gv-group a{display:flex;gap:8px;align-items:baseline;cursor:pointer;color:var(--st-ink-muted);
+  text-decoration:none;font-size:11px;text-transform:uppercase;letter-spacing:.7px;font-weight:600;padding:3px 0}
+#g-list .gv-group a:hover{color:var(--st-accent-text)}
+#g-list .gv-dot{width:9px;height:9px;border-radius:50%;flex:none;transform:translateY(-1px)}
+#g-list .gv-n{font-family:var(--st-font-mono);font-size:10.5px;opacity:.75}
+#g-list .gv-row{display:block;padding:4px 18px;cursor:pointer;color:var(--st-ink);font-size:13px;
+  border-radius:0;overflow-wrap:anywhere;border-left:2px solid transparent}
+#g-list .gv-row:hover{background:var(--st-surface-2)}
+#g-list .gv-row.sel{background:var(--st-accent-tint);border-left-color:var(--st-accent)}
+#g-list .gv-row .gv-rel{font-family:var(--st-font-mono);font-size:11px;color:var(--st-accent-text);margin-right:6px}
+#g-list .gv-row .gv-fact{font-family:var(--st-font-mono);font-size:11px;color:var(--st-ink-muted);margin-left:6px}
+#g-list .gv-empty{padding:8px 18px;color:var(--st-ink-muted);font-size:12.5px}
 .addrow{display:flex;gap:8px;padding:14px 18px;flex-wrap:wrap}.addrow input{width:150px}footer{margin-top:14px;font-size:12px;color:var(--st-ink-muted)}
 @media(max-width:800px){.cards{grid-template-columns:repeat(2,1fr)}main,header{padding-left:16px;padding-right:16px}}
 /* the page's own chips are inline meta pills, not the header's 30px controls (audit 2026-11-07:
@@ -122,18 +157,45 @@ input,textarea{color:inherit;border:1px solid var(--st-line);background:var(--st
     <span class="small" id="g-passnote">serial, one chunk of shelf files at a time, so the box stays yours</span>
   </div>
   <div class="panel-bar" style="border-bottom:1px solid var(--st-line-soft)"><span class="small" id="g-progtxt">no pass running</span></div>
-  <canvas id="g-canvas" style="width:100%;height:460px;display:block"></canvas>
+  <!-- The vault toolbar (2026-11-24, the owner's Obsidian ask): a quick switcher to jump to a
+       note by name, and Global/Local so the hairball becomes the neighbourhood of the note you
+       opened. Ctrl-O focuses the switcher, the way Obsidian's does. -->
+  <div class="panel-bar" style="border-bottom:1px solid var(--st-line-soft);gap:10px;position:relative">
+    <input id="g-jump" type="text" autocomplete="off" spellcheck="false" placeholder="jump to a note…  (Ctrl-O)"
+           style="flex:1;min-width:180px;max-width:420px;background:var(--st-surface-2);color:var(--st-ink);border:1px solid var(--st-line);border-radius:7px;padding:7px 11px;font:inherit;font-size:13px">
+    <div id="g-jumplist" hidden></div>
+    <button id="g-mode" title="show the whole graph, or only the neighbourhood of the open note">Local</button>
+    <span class="small" id="g-depthbox" hidden>depth
+      <select id="g-depth" style="background:var(--st-surface-2);color:var(--st-ink);border:1px solid var(--st-line);border-radius:6px;font:inherit;font-size:12px;padding:2px 4px">
+        <option value="1" selected>1 hop</option><option value="2">2 hops</option><option value="3">3 hops</option>
+      </select></span>
+    <span style="flex:1"></span>
+    <button id="g-back" title="the note you were reading before" disabled>←</button>
+    <button id="g-fwd" title="the note you were reading after" disabled>→</button>
+  </div>
+  <canvas id="g-canvas" style="width:100%;height:600px;display:block"></canvas>
   <div class="small" id="g-cap" style="padding:10px 18px;border-top:1px solid var(--st-line-soft)"></div>
 </div>
 <div class="panel">
   <div class="panel" id="g-notepanel" hidden>
-    <div class="panel-bar"><h2 style="margin:0;font-size:17px">Node</h2>
+    <div class="panel-bar"><h2 style="margin:0;font-size:17px">Note</h2>
       <span class="small" id="g-noteid"></span><span style="flex:1"></span>
+      <button id="g-notelocal" title="centre the graph on this note">Local graph</button>
       <button id="g-notedbl" title="open the fact this node names in the ledger view">Ledger</button>
       <button id="g-noteclose">Close</button></div>
     <div style="padding:14px 18px" id="g-note"></div>
   </div>
-  <div class="panel-bar"><h2 style="margin:0;font-size:17px">Communities</h2><span class="small">biggest first · a community is the graph's own grouping, not a shelf label</span></div>
+  <!-- The vault sidebar (2026-11-24): Obsidian's left pane, not a filter panel. Notes are the
+       whole graph grouped by the shelf it was read from; Outgoing and Linked from are the two
+       link panes a note carries. Every row navigates: it opens the note and re-centres the
+       graph on it. The community checkboxes it replaces were a filter nobody could name. -->
+  <div class="panel-bar" style="gap:8px">
+    <button id="gv-notes" class="primary">Notes</button>
+    <button id="gv-out">Outgoing</button>
+    <button id="gv-back">Linked from</button>
+    <span style="flex:1"></span>
+    <span class="small" id="gv-sub">the whole graph, grouped by shelf</span>
+  </div>
   <ul class="facts" id="g-list"><li class="empty">-</li></ul>
 </div>
 </div>

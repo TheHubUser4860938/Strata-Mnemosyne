@@ -362,8 +362,19 @@ $("theme").onclick = () => {
 // and opacity the way a star chart does. Positions are computed once per graph and cached, so
 // orbiting costs a projection, not a re-simulation.
 let GPOLL = null, GDATA = null, GSTATE = null;
-const GVIS = new Set();                       // visible community ids
+// The canvas shows one shelf at a time, or all of them (2026-11-24: the community checkboxes
+// became a vault sidebar, so the filter is a group header you click, not a set you maintain).
+let GGROUP = null;
+const gActive = c => GGROUP === null || Number(GGROUP) === Number(c);
 let GCAM = { yaw: -0.55, pitch: 0.42, k: 1, x: 0, y: 0 };
+// The vault's navigation state (2026-11-24, the owner's Obsidian ask). Obsidian's graph is not
+// a picture of everything — it is a way to STAND SOMEWHERE: open a note, see its neighbourhood,
+// follow a link, re-centre. `GMODE` picks the view, `GLOCAL` carries the neighbourhood,
+// `GHIST` is the walk with a back and a forward, `GSEL` is the node standing at the centre.
+let GMODE = 'global';
+let GLOCAL = null;
+let GSEL = -1;
+const GHIST = []; let GHPOS = -1;
 const GCOLORS = ["#7aa2f7", "#9ece6a", "#f7768e", "#e0af68", "#7dcfff", "#bb9af7",
                  "#73daca", "#ff9e64", "#2ac3de", "#c0caf5", "#b9f27c", "#f472b6"];
 const gc = c => GCOLORS[Math.abs(Number(c)) % GCOLORS.length];
@@ -417,8 +428,9 @@ async function graphView(rebuild) {
     if (rebuild || !GDATA || GDATA.stamp !== s.built) {
       GDATA = d; GDATA.stamp = s.built;
       layout3(d);
-      GVIS.clear(); (d.communities || []).forEach(c => GVIS.add(c.id));
-      renderCommunities(d);
+      GGROUP = null;
+      renderVault(d);
+      if (GMODE === "local" && GNOTE) { localView(GNOTE); return; }   // the rebuild moved the floor
     }
     paint();
   } catch (e) { note(e.message, true); }
@@ -493,7 +505,130 @@ function project(d, W, H) {
   }
 }
 
+// The view being drawn: the whole graph, or the open note's neighbourhood. Both carry the same
+// fields (nodes / edges / px / py), so the hit test, the hover and the caption read one shape.
+const gview = () => (GMODE === "local" && GLOCAL && GLOCAL.pos) ? GLOCAL : GDATA;
+
 function paint() {
+  if (GMODE === "local" && GLOCAL && GLOCAL.pos) paintLocal();
+  else paint3();
+}
+
+// ---- the local graph: Obsidian's "stand on a note and see what touches it"
+// A 2D force layout over the neighbourhood the backend walked (op:graph action:neighbourhood),
+// the open note pinned at the centre. Labels are the point, not a garnish: a graph you cannot
+// read the names in is a hairball, and the names are why the walk is worth taking.
+function layoutLocal(d) {
+  const N = d.nodes.length, at = {};
+  d.nodes.forEach((n, i) => { at[n.id] = i; });
+  d.E = (d.edges || []).map(e => [at[e[0]], at[e[1]]]).filter(p => p[0] != null && p[1] != null);
+  const hub = d.nodes.findIndex(n => n.hub);
+  const phi = Math.PI * (3 - Math.sqrt(5));
+  const P = d.nodes.map((n, i) => i === hub
+    ? { x: 0, y: 0 }
+    : { x: Math.cos(phi * i) * (0.20 + 0.55 * Math.sqrt(i / Math.max(1, N))),
+        y: Math.sin(phi * i) * (0.20 + 0.55 * Math.sqrt(i / Math.max(1, N))) });
+  for (let it = 0; it < 320; it++) {
+    const cool = 1 - it / 380;
+    for (const [a, b] of d.E) {                       // springs: neighbours want to touch
+      const p = P[a], q = P[b];
+      const dx = q.x - p.x, dy = q.y - p.y, dist = Math.hypot(dx, dy) || 1e-6;
+      const f = (dist - 0.26) * 0.035 * cool;
+      p.x += dx * f; p.y += dy * f; q.x -= dx * f; q.y -= dy * f;
+    }
+    for (let i = 0; i < N; i++) {                     // short-range repulsion, so labels fit
+      const p = P[i];
+      for (let j = i + 1; j < N; j++) {
+        const q = P[j], dx = p.x - q.x, dy = p.y - q.y, dd = dx * dx + dy * dy;
+        if (dd > 0.40 || dd < 1e-9) continue;
+        const f = 0.010 / dd * cool;
+        p.x += dx * f; p.y += dy * f; q.x -= dx * f; q.y -= dy * f;
+      }
+    }
+    if (hub >= 0) { P[hub].x = 0; P[hub].y = 0; }
+  }
+  let span = 1e-6;
+  for (const p of P) span = Math.max(span, Math.abs(p.x), Math.abs(p.y));
+  for (const p of P) { p.x /= span; p.y /= span; }
+  d.pos = P; d.px = new Array(N); d.py = new Array(N); d.ai = at;   // ai: node id → draw index
+  GCAM.k = 1; GCAM.x = 0; GCAM.y = 0;
+}
+
+async function localView(nid) {
+  try {
+    const r = await api("/memory", { op: "graph", action: "neighbourhood", name: String(nid),
+                                     depth: Number($("g-depth").value || 1) });
+    const d = (r.result && r.result.graph) || r.graph || r;
+    if (d.status !== "ok") { note(d.message || "no neighbourhood for that node", true); return; }
+    GLOCAL = d;
+    layoutLocal(d);
+    GSEL = d.nodes.findIndex(n => n.hub);
+    paint();
+  } catch (e) { note(e.message, true); }
+}
+
+function paintLocal() {
+  const d = GLOCAL, cv = $("g-canvas"), X = cv.getContext("2d");
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  X.setTransform(dpr, 0, 0, dpr, 0, 0);
+  X.clearRect(0, 0, W, H);
+  const S = Math.min(W, H) * 0.40 * GCAM.k, cx = W / 2 + GCAM.x, cy = H / 2 + GCAM.y;
+  d.pos.forEach((p, i) => { d.px[i] = cx + p.x * S; d.py[i] = cy + p.y * S; });
+  const labelEvery = d.nodes.length <= 90;            // a neighbourhood is small enough to name
+  X.lineWidth = 1;
+  for (const [a, b, rel, conf] of (d.edges || [])) {
+    const ia = d.ai[a], ib = d.ai[b];
+    if (ia == null || ib == null) continue;
+    const on = ia === GSEL || ib === GSEL;
+    X.strokeStyle = on ? "rgba(125,207,255,.55)" : "rgba(150,164,186,.20)";
+    X.beginPath(); X.moveTo(d.px[ia], d.py[ia]); X.lineTo(d.px[ib], d.py[ib]); X.stroke();
+    if (on && d.nodes.length <= 30 && rel && rel !== "linked") {   // name the edge you're reading
+      const mx = (d.px[ia] + d.px[ib]) / 2, my = (d.py[ia] + d.py[ib]) / 2;
+      X.font = "10px ui-monospace, monospace"; X.fillStyle = "rgba(154,169,191,.9)";
+      X.textAlign = "center"; X.fillText(rel, mx, my - 3); X.textAlign = "left";
+    }
+  }
+  d.nodes.forEach((n, i) => {
+    const sel = i === GSEL, r = sel ? 8 : (2.6 + Math.min(6.4, (n.degree || 0) * 0.8));
+    if (sel) { X.fillStyle = "rgba(125,207,255,.16)"; X.beginPath(); X.arc(d.px[i], d.py[i], r + 9, 0, 6.284); X.fill(); }
+    X.globalAlpha = sel ? 1 : 0.9;
+    X.fillStyle = gc(n.community);
+    X.beginPath(); X.arc(d.px[i], d.py[i], r, 0, 6.284); X.fill();
+    if (sel) { X.globalAlpha = 1; X.strokeStyle = "#e8ecf5"; X.lineWidth = 1.6; X.stroke(); X.lineWidth = 1; }
+  });
+  // Labels, decluttered, hub first: a neighbourhood you cannot read the names in is just a
+  // prettier hairball, and the names are the whole reason to walk a graph.
+  if (labelEvery) {
+    const by = d.nodes.map((n, i) => i).sort((a, b) =>
+      (b === GSEL ? 1 : 0) - (a === GSEL ? 1 : 0) || (d.nodes[b].degree || 0) - (d.nodes[a].degree || 0));
+    const placed = [];
+    for (const i of by) {
+      const sel = i === GSEL, n = d.nodes[i], r = sel ? 8 : (2.6 + Math.min(6.4, (n.degree || 0) * 0.8));
+      const raw = String(n.label || n.id), cap = sel ? 76 : 46;
+      const t = raw.length > cap ? raw.slice(0, cap - 1).trimEnd() + "…" : raw;
+      X.font = (sel ? "600 12.5px " : "11.5px ") + "ui-sans-serif, system-ui, sans-serif";
+      const tx = d.px[i] + r + 5, ty = d.py[i] + 3.5, w = X.measureText(t).width;
+      const box = { x: tx - 3, y: ty - 11, w: w + 6, h: 15 };
+      if (!sel && placed.some(p => !(box.x + box.w < p.x || p.x + p.w < box.x
+                                  || box.y + box.h < p.y || p.y + p.h < box.y))) continue;
+      placed.push(box);
+      X.lineWidth = 3; X.strokeStyle = "rgba(12,14,20,.78)"; X.strokeText(t, tx, ty);
+      X.fillStyle = sel ? "#e8ecf5" : "rgba(197,206,222,.9)";
+      X.fillText(t, tx, ty);
+    }
+  }
+  X.globalAlpha = 1;
+  $("g-cap").innerHTML = "";
+  $("g-cap").textContent = `local graph · ${d.label} · ${d.nodes.length} of ${d.seen} neighbours`
+    + ` at ${d.depth} hop${d.depth === 1 ? "" : "s"} · ${(d.edges || []).length} edges`
+    + ` · drag to pan, wheel to zoom, click a node to walk`;
+}
+
+function paint3() {
   const d = GDATA; if (!d || !d.pos3) return;
   const cv = $("g-canvas"), X = cv.getContext("2d");
   const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
@@ -504,100 +639,179 @@ function paint() {
   X.setTransform(dpr, 0, 0, dpr, 0, 0);
   X.clearRect(0, 0, W, H);
   project(d, W, H);
-  const live = d.nodes.map((n, i) => i).filter(i => GVIS.has(d.nodes[i].community));
+  const live = d.nodes.map((n, i) => i).filter(i => gActive(d.nodes[i].community));
   const order = live.slice().sort((a, b) => d.pz[a] - d.pz[b]);        // far first, near on top
   X.lineWidth = 0.7;
   for (const [s, t] of (d.edges || [])) {
-    if (!GVIS.has(d.nodes[s].community) || !GVIS.has(d.nodes[t].community)) continue;
+    if (!gActive(d.nodes[s].community) || !gActive(d.nodes[t].community)) continue;
     const depth = (d.pz[s] + d.pz[t]) / 2;
     X.strokeStyle = `rgba(150,164,186,${(0.10 + 0.22 * (depth + 1) / 2).toFixed(3)})`;
     X.beginPath(); X.moveTo(d.px[s], d.py[s]); X.lineTo(d.px[t], d.py[t]); X.stroke();
   }
   for (const i of order) {
     const n = d.nodes[i], depth = (d.pz[i] + 1) / 2;                   // 0 far, 1 near
+    const sel = i === GSEL;
     const r = (1.7 + Math.min(5.2, (n.degree || 0) * 0.85)) * (0.62 + 0.62 * depth);
-    X.globalAlpha = 0.42 + 0.58 * depth;
+    X.globalAlpha = sel ? 1 : 0.42 + 0.58 * depth;
     X.fillStyle = gc(n.community);
-    X.beginPath(); X.arc(d.px[i], d.py[i], r, 0, Math.PI * 2); X.fill();
+    X.beginPath(); X.arc(d.px[i], d.py[i], sel ? r + 2.5 : r, 0, Math.PI * 2); X.fill();
+    if (sel) {
+      X.globalAlpha = 1; X.strokeStyle = "#e8ecf5"; X.lineWidth = 1.6; X.stroke(); X.lineWidth = 0.7;
+    }
   }
   X.globalAlpha = 1;
+  // Name the hubs. Obsidian labels its graph and it is the single biggest reason the graph reads
+  // as a map: 1,054 dots are a texture, 14 labelled dots are a place. Decluttered — a label
+  // that lands on one already drawn is skipped, so the words stay readable at any zoom — and
+  // the node you opened is named first, because that is the one you are looking for.
+  const hubs = live.slice().sort((a, b) => (d.nodes[b].degree || 0) - (d.nodes[a].degree || 0));
+  if (GSEL >= 0 && hubs[0] !== GSEL) { const k = hubs.indexOf(GSEL); if (k > 0) hubs.unshift(...hubs.splice(k, 1)); }
+  X.font = "11.5px ui-sans-serif, system-ui, sans-serif";
+  X.lineWidth = 3; X.strokeStyle = "rgba(12,14,20,.78)";
+  const placed = [];
+  for (const i of hubs) {
+    if (placed.length >= 16) break;
+    const raw = String(d.nodes[i].label || d.nodes[i].id);
+    const t = raw.length > 44 ? raw.slice(0, 43).trimEnd() + "…" : raw;
+    const x = d.px[i] + 7, y = d.py[i] + 3.5, w = X.measureText(t).width;
+    const box = { x: x - 3, y: y - 11, w: w + 6, h: 15 };
+    if (placed.some(p => !(box.x + box.w < p.x || p.x + p.w < box.x
+                        || box.y + box.h < p.y || p.y + p.h < box.y))) continue;
+    placed.push(box);
+    X.strokeText(t, x, y);
+    X.fillStyle = i === GSEL ? "#e8ecf5" : "rgba(206,214,230,.86)";
+    X.fillText(t, x, y);
+  }
   const seen = live.length, all = d.nodes.length;
   $("g-cap").textContent = `${seen === all ? all : seen + " of " + all} nodes drawn · ${(d.edges || []).length.toLocaleString()} edges`
-    + ` · drag to orbit, wheel to zoom, click a node for the fact`;
+    + ` · drag to orbit, wheel to zoom, click a node for the note`;
 }
 
-// Communities as a browsable index: every fact in the group, in a scroll box, each one a link
-// into the Text view. The graph is the map; the ledger is the ground truth under it.
-function renderCommunities(d) {
+// The vault sidebar (2026-11-24): three panes, one list. `notes` is the graph itself grouped by
+// the shelf the facts were read from; `out` and `back` are the open note's two link panes, the
+// way Obsidian splits what a note cites from what cites it. Every row navigates.
+let GTAB = "notes";
+let GLAST = null;                                // the note payload the panel last rendered
+
+function shelfOf(n) {
+  // A fact node's id is `<shelf>_fact_<row>`: the shelf IS the folder. A concept is filed under
+  // its community, which is the graph's own grouping and the only honest label it has.
+  const s = String(n.id || "");
+  return s.includes("_fact_") ? s.split("_fact_")[0] : `community ${n.community}`;
+}
+
+function renderList() {
+  if (GTAB === "notes") return renderVault(GDATA);
+  const rows = GTAB === "out" ? (GLAST && GLAST.links || []) : (GLAST && GLAST.backlinks || []);
   const ul = $("g-list");
   ul.innerHTML = "";
-  const head = document.createElement("li");
-  head.className = "fact";
-  head.innerHTML = `<div class="body"><label style="cursor:pointer"><input type="checkbox" id="g-all" checked>
-      all ${d.communities.length} communities · ${(d.nodes || []).length} nodes</label></div>`;
-  head.querySelector("input").onchange = ev => {
-    GVIS.clear();
-    if (ev.target.checked) (d.communities || []).forEach(c => GVIS.add(c.id));
-    ul.querySelectorAll("input[data-comm]").forEach(b => { b.checked = ev.target.checked; });
-    paint();
-  };
-  ul.append(head);
-  const by = {};
-  (d.nodes || []).forEach((n, i) => { (by[n.community] = by[n.community] || []).push([n, i]); });
-  for (const c of d.communities) {
-    const members = (by[c.id] || []).slice().sort((a, b) => b[0].degree - a[0].degree);
+  $("gv-sub").textContent = GLAST ? `${GLAST.label.slice(0, 46)} · ${rows.length}` : "open a note first";
+  if (!GLAST) { ul.innerHTML = `<li class="gv-empty">Open a note: click a node, or jump to one above.</li>`; return; }
+  if (!rows.length) { ul.innerHTML = `<li class="gv-empty">nothing on this side</li>`; return; }
+  for (const c of rows) {
     const li = document.createElement("li");
-    li.className = "fact";
-    const box = document.createElement("div");
-    box.className = "txt";
-    box.style.maxHeight = "150px";
-    members.forEach(([n, i]) => {
-      const row = document.createElement("a");
-      row.href = "#";
-      row.textContent = n.label;
-      row.style.cssText = "display:block;color:inherit;text-decoration:none;cursor:pointer;padding:1px 0";
-      row.title = `community ${n.community} · degree ${n.degree}${n.fact ? " · fact #" + n.fact : ""}`;
-      row.onclick = e => { e.preventDefault(); focusNode(i); };
-      box.append(row);
-    });
-    const body = document.createElement("div");
-    body.className = "body";
-    const title = document.createElement("div");
-    title.className = "meta";
-    title.innerHTML = `<input type="checkbox" data-comm="${c.id}" checked>
-      <span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${gc(c.id)};margin:0 5px"></span>
-      <strong style="font-weight:600">${c.size} node${c.size === 1 ? "" : "s"}</strong>
-      · community ${c.id}${c.label ? " · " + esc(c.label) : ""}`;
-    title.querySelector("input").onchange = ev => {
-      const id = Number(ev.target.dataset.comm);
-      ev.target.checked ? GVIS.add(id) : GVIS.delete(id);
-      paint();
-    };
-    body.append(title, box);
-    li.append(body);
+    li.className = "gv-row";
+    li.innerHTML = `<span class="gv-rel">${esc(c.relation || "linked")}</span>${esc(c.label || c.to)}`
+      + (c.fact ? `<span class="gv-fact">#${esc(c.fact)}</span>` : "");
+    li.title = c.to;
+    li.onclick = () => openNote(c.to);
     ul.append(li);
   }
 }
 
+function renderVault(d) {
+  const ul = $("g-list");
+  if (!d || !d.nodes) { ul.innerHTML = `<li class="gv-empty">no graph yet.</li>`; return; }
+  ul.innerHTML = "";
+  $("gv-sub").textContent = GGROUP === null
+    ? `${d.nodes.length} notes · ${(d.communities || []).length} shelves`
+    : `community ${GGROUP} · click "all" to see the whole graph`;
+  const groups = {};
+  d.nodes.forEach((n, i) => { const k = shelfOf(n); (groups[k] = groups[k] || []).push([n, i]); });
+  const keys = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
+  const head = document.createElement("li");
+  head.className = "gv-group";
+  head.innerHTML = `<a><span class="gv-dot" style="background:var(--st-accent)"></span>all notes
+      <span class="gv-n">${d.nodes.length}</span></a>`;
+  head.querySelector("a").onclick = () => {
+    GGROUP = null;
+    if (GMODE === "local") setMode("global"); else paint();
+    renderList();                                   // the count line names what is on the canvas
+  };
+  ul.append(head);
+  for (const k of keys) {
+    const members = groups[k].slice().sort((a, b) => (b[0].degree || 0) - (a[0].degree || 0));
+    const comm = members[0][0].community;
+    const li = document.createElement("li");
+    li.className = "gv-group";
+    const named = (d.communities || []).find(c => Number(c.id) === Number(comm));
+    li.innerHTML = `<a><span class="gv-dot" style="background:${gc(comm)}"></span>${esc(k)}`
+      + `<span class="gv-n">${members.length}</span></a>`;
+    li.querySelector("a").onclick = () => {   // a group is a place: put it in the middle of the canvas
+      GGROUP = comm;
+      if (GMODE === "local") setMode("global"); else paint();
+      renderList();                               // the count line names what is on the canvas
+    };
+    ul.append(li);
+    for (const [n, i] of members) {
+      const row = document.createElement("li");
+      row.className = "gv-row" + (GDATA && n.id === GNOTE ? " sel" : "");
+      row.innerHTML = esc(n.label || n.id) + (n.fact ? `<span class="gv-fact">#${esc(n.fact)}</span>` : "");
+      row.title = `community ${n.community} · degree ${n.degree}`;
+      row.onclick = () => { GSEL = i; paint(); openNote(n.id); };
+      ul.append(row);
+    }
+  }
+}
+function setTab(t) {
+  GTAB = t;
+  $("gv-notes").className = t === "notes" ? "primary" : "";
+  $("gv-out").className = t === "out" ? "primary" : "";
+  $("gv-back").className = t === "back" ? "primary" : "";
+  renderList();
+}
+$("gv-notes").onclick = () => setTab("notes");
+$("gv-out").onclick = () => setTab("out");
+$("gv-back").onclick = () => setTab("back");
+
 function focusNode(i) {
-  const n = GDATA.nodes[i];
-  $("g-cap").innerHTML = "";
-  $("g-cap").textContent = `${n.label} · community ${n.community} · degree ${n.degree}`
-    + (n.fact ? ` · fact #${n.fact}` : "");
-  inspectNode(n.id);
+  const d = gview(); if (!d || !d.nodes[i]) return;
+  GSEL = i;
+  paint();
+  openNote(d.nodes[i].id);
 }
 
-// ---- the node inspector (2026-11-16, the owner's Obsidian ask): a node is a note, its
-// connections are links, and clicking a link walks the vault. The body is the store's LIVE
-// row (explain joins it from the ledger), not the graph's 200-char label excerpt - the note
-// says what the fact says TODAY. Relation chips and confidence tags ride every link, so a
-// walk shows its own evidence.
+// The one way into a note (2026-11-24): a click on a dot, a click on a wikilink, a pick from
+// the switcher, or the back arrow all come through here, so the walk is ONE history and the
+// graph follows the reading. That is the Obsidian loop — open, read, follow, re-centre.
+async function openNote(nid, push) {
+  if (!nid) return;
+  if (push !== false && GHIST[GHPOS] !== nid) {
+    GHIST.splice(GHPOS + 1); GHIST.push(String(nid)); GHPOS = GHIST.length - 1;
+  }
+  histBtns();
+  await inspectNode(nid);
+  if (GMODE === "local") await localView(nid);
+}
+
+function histBtns() {
+  $("g-back").disabled = GHPOS <= 0;
+  $("g-fwd").disabled = GHPOS >= GHIST.length - 1;
+}
+$("g-back").onclick = () => { if (GHPOS > 0) { GHPOS--; histBtns(); openNote(GHIST[GHPOS], false); } };
+$("g-fwd").onclick = () => { if (GHPOS < GHIST.length - 1) { GHPOS++; histBtns(); openNote(GHIST[GHPOS], false); } };
+
+// ---- the note: what a node IS, read as a page. The body is the store's LIVE row (explain joins
+// it from the ledger), and the links are split the way a vault splits them: what this note cites,
+// and what cites it. The undirected list is the fallback for a graph with no direction on its edges.
 let GNOTE = null;                                    // node id currently open (for highlight)
+let GNOTE_LABEL = "";                                // its label, for the jump into the Text view
 
 async function inspectNode(nid) {
   if (!nid) return;
   const panel = $("g-notepanel"), body = $("g-note");
   panel.hidden = false;
+  GNOTE = String(nid);
   body.innerHTML = `<div class="meta">opening ${esc(nid)}…</div>`;
   let d;
   try {
@@ -609,63 +823,159 @@ async function inspectNode(nid) {
     return;
   }
   GNOTE = d.id;
+  GNOTE_LABEL = d.label || "";
+  const jb = $("g-jump");
+  if (jb && document.activeElement !== jb) jb.value = d.label || "";   // the field names the note you are on
   $("g-noteid").textContent = d.id;
+  body.innerHTML = "";                             // the "opening…" placeholder yields to the note
   const head = document.createElement("div");
   head.className = "nt-head";
   head.textContent = d.label || d.id;
   const meta = document.createElement("div");
   meta.className = "nt-meta";
-  meta.innerHTML = `<span class="chip cls">community ${esc(d.community)}</span>`
+  meta.innerHTML = `<span class="chip cls" id="g-ntcomm" title="show this shelf on the canvas">community ${esc(d.community)}</span>`
     + `<span class="chip">degree ${esc(d.degree)}</span>`
     + (d.fact ? `<span class="chip">fact #${esc(d.fact)}</span>` : "")
+    + (d.shelf ? `<span class="chip">${esc(d.shelf)}</span>` : "")
     + (d.file ? `<span class="chip">${esc(d.file)}</span>` : "")
     + (d.type ? `<span class="chip">${esc(d.type)}</span>` : "");
   body.append(head, meta);
+  $("g-ntcomm").onclick = () => { GGROUP = d.community; setMode("global"); };   // a tag you can click
   if (d.text) {
     const t = document.createElement("div");
     t.className = "nt-body";
     t.textContent = d.text;
     body.append(t);
   }
-  const conns = (d.connections || []);
-  if (conns.length) {
-    const lbl = document.createElement("div");
-    lbl.className = "nt-connlbl";
-    lbl.textContent = `connections (${conns.length})`;
-    const box = document.createElement("div");
-    box.className = "nt-conns";
-    for (const c of conns) {
-      const a = document.createElement("a");
-      a.href = "#";
-      a.innerHTML = `<span class="chip">${esc(c.relation)}</span>${esc(c.label || c.to)}`
-        + (c.confidence ? ` <span class="nt-tag">[${esc(c.confidence)}]</span>` : "");
-      a.title = c.to;
-      a.onclick = e => { e.preventDefault(); inspectNode(c.to); };
-      box.append(a);
-    }
-    body.append(lbl, box);
+  const out = d.links || [], inn = d.backlinks || [];
+  if (out.length || inn.length) {
+    body.append(linkSect(`Links out (${out.length})`, out, "this note cites"));
+    body.append(linkSect(`Linked from (${inn.length})`, inn, "cites this note"));
+  } else if ((d.connections || []).length) {
+    body.append(linkSect(`Connections (${d.connections.length})`, d.connections, "linked"));
+  }
+  GLAST = d;                                       // the sidebar's Outgoing / Linked from panes
+  renderList();
+}
+
+// One section of wikilinks: a relation chip that READS AS A SENTENCE (the relation names the
+// direction — "references → this fact"), so following a link tells you why it is there.
+function linkSect(title, rows, _verb) {
+  const wrap = document.createElement("div");
+  wrap.className = "nt-sect";
+  const h = document.createElement("h4");
+  h.textContent = title;
+  wrap.append(h);
+  if (!rows.length) {
+    const e = document.createElement("div");
+    e.className = "nt-empty"; e.textContent = "nothing on this side";
+    wrap.append(e); return wrap;
+  }
+  const box = document.createElement("div");
+  box.className = "nt-conns";
+  for (const c of rows) {
+    const a = document.createElement("a");
+    a.href = "#";
+    a.innerHTML = `<span class="nt-rel">${esc(c.relation || "linked")}</span>${esc(c.label || c.to)}`
+      + (c.confidence ? ` <span class="nt-tag">[${esc(c.confidence)}]</span>` : "")
+      + (c.fact ? ` <span class="nt-tag">#${esc(c.fact)}</span>` : "");
+    a.title = c.to;
+    a.onclick = e => { e.preventDefault(); openNote(c.to); };
+    box.append(a);
+  }
+  wrap.append(box);
+  return wrap;
+}
+$("g-noteclose").onclick = () => { $("g-notepanel").hidden = true; GNOTE = null; GSEL = -1; paint(); };
+$("g-notelocal").onclick = () => { if (GNOTE) { setMode("local"); localView(GNOTE); } };
+$("g-notedbl").onclick = () => {
+  // The note's OWN label, not a lookup in the sampled view: a concept in community 211 is not
+  // in the page's 40 communities, and the jump used to silently do nothing for exactly those.
+  if (GNOTE_LABEL) { $("q").value = GNOTE_LABEL.slice(0, 70); show(GNOTE_LABEL.slice(0, 70)); tier("t3"); }
+};
+
+// ---- the mode switch: the whole graph, or the neighbourhood of the note under the cursor
+function setMode(m) {
+  GMODE = m;
+  $("g-mode").textContent = m === "local" ? "Global" : "Local";
+  $("g-depthbox").hidden = m !== "local";
+  $("g-canvas").classList.toggle("local", m === "local");
+  if (m === "local" && GNOTE) localView(GNOTE);
+  else paint();
+}
+$("g-mode").onclick = () => setMode(GMODE === "local" ? "global" : "local");
+$("g-depth").onchange = () => { if (GMODE === "local" && GNOTE) localView(GNOTE); };
+
+// ---- the quick switcher: type a few letters, jump to the note. Obsidian's most-used key, and
+// the answer to "I know we wrote something about the cart" that needs no words in common.
+let JQ = null, JSEL = 0;
+async function jumpList(q) {
+  try {
+    const r = await api("/memory", { op: "graph", action: "switcher", q: q || "", limit: 12 });
+    const d = (r.result && r.result.graph) || r.graph || r;
+    JQ = d.hits || []; JSEL = 0;
+    renderJump();
+  } catch (e) { /* a typeahead that fails stays silent; the next keystroke retries */ }
+}
+function renderJump() {
+  const box = $("g-jumplist");
+  if (!JQ || !JQ.length) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  box.innerHTML = "";
+  JQ.forEach((h, i) => {
+    const a = document.createElement("a");
+    a.href = "#";
+    a.className = i === JSEL ? "sel" : "";
+    a.innerHTML = `<span class="jj-lab">${esc(h.label)}</span>`
+      + `<span class="jj-meta">c${esc(h.community)} · ${esc(h.degree)}°${h.fact ? " · #" + esc(h.fact) : ""}</span>`;
+    a.onmousedown = e => { e.preventDefault(); pickJump(h); };
+    box.append(a);
+  });
+}
+function pickJump(h) {
+  if (!h) return;
+  $("g-jumplist").hidden = true;
+  $("g-jump").value = h.label || "";
+  openNote(h.id);
+  if (GMODE === "global" && GDATA) {                 // put the dot in the middle of the map
+    const i = GDATA.nodes.findIndex(n => n.id === h.id);
+    if (i >= 0) { GSEL = i; GDATA.pos3 && GCAM && (GCAM.yaw = -0.55, GCAM.pitch = 0.42); paint(); }
   }
 }
-$("g-noteclose").onclick = () => { $("g-notepanel").hidden = true; GNOTE = null; };
-$("g-notedbl").onclick = () => {
-  const q = (GDATA && GDATA.nodes.find(n => n.id === GNOTE) || {}).label;
-  if (q) { $("q").value = q.slice(0, 70); show($("q").value); tier("t3"); }
+$("g-jump").onfocus = () => jumpList("");
+$("g-jump").oninput = ev => {
+  clearTimeout($("g-jump")._t);
+  const v = ev.target.value;
+  $("g-jump")._t = setTimeout(() => jumpList(v.trim()), 140);
 };
+$("g-jump").onkeydown = ev => {
+  if (!JQ || !JQ.length) { if (ev.key === "Escape") $("g-jump").blur(); return; }
+  if (ev.key === "ArrowDown") { ev.preventDefault(); JSEL = (JSEL + 1) % JQ.length; renderJump(); }
+  else if (ev.key === "ArrowUp") { ev.preventDefault(); JSEL = (JSEL - 1 + JQ.length) % JQ.length; renderJump(); }
+  else if (ev.key === "Enter") { ev.preventDefault(); pickJump(JQ[JSEL]); }
+  else if (ev.key === "Escape") { $("g-jumplist").hidden = true; $("g-jump").blur(); }
+};
+document.addEventListener("keydown", ev => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "o") {
+    if (!$("grwrap").hidden) { ev.preventDefault(); $("g-jump").focus(); $("g-jump").select(); }
+  }
+});
+$("g-jump").addEventListener("blur", () => setTimeout(() => { $("g-jumplist").hidden = true; }, 120));
 
 // hit-test shared by hover, click and double-click: the nearest visible node within 13px.
 function nodeAt(mx, my) {
-  const d = GDATA;
+  const d = gview();
   if (!d || !d.px) return -1;
   let best = 13 * 13, hit = -1;
   for (let i = 0; i < d.nodes.length; i++) {
-    if (!GVIS.has(d.nodes[i].community)) continue;
+    if (GMODE === "global" && !gActive(d.nodes[i].community)) continue;
     const q = (d.px[i] - mx) ** 2 + (d.py[i] - my) ** 2;
     if (q < best) { best = q; hit = i; }
   }
   return hit;
 }
 
-// camera: drag orbits, wheel zooms toward the pointer, resize repaints
+// camera: drag orbits (global) or pans (local), wheel zooms toward the pointer, resize repaints
 $("g-canvas").onwheel = ev => {
   ev.preventDefault();
   const r = ev.target.getBoundingClientRect();
@@ -690,43 +1000,35 @@ $("g-canvas").onpointerup = ev => {
   if (travelled > 5) return;                  // orbiting is not choosing
   const r = ev.target.getBoundingClientRect();
   const i = nodeAt(ev.clientX - r.left, ev.clientY - r.top);
-  if (i >= 0) inspectNode(GDATA.nodes[i].id); // a node is a note: click opens it
+  if (i >= 0) focusNode(i);                   // a node is a note: click opens it
 };
 $("g-canvas").onpointermove = ev => {
   const cv = ev.target;
   if (GDRAG) {
     const dx = ev.clientX - GDRAG[0], dy = ev.clientY - GDRAG[1];
-    if (ev.shiftKey) { GCAM.x = GDRAG[4] + dx; GCAM.y = GDRAG[5] + dy; }
+    if (ev.shiftKey || GMODE === "local") { GCAM.x = GDRAG[4] + dx; GCAM.y = GDRAG[5] + dy; }
     else { GCAM.yaw = GDRAG[2] + dx * 0.006; GCAM.pitch = Math.max(-1.5, Math.min(1.5, GDRAG[3] + dy * 0.006)); }
     paint();
     return;
   }
-  const d = GDATA; if (!d || !d.px) return;
+  const d = gview(); if (!d || !d.px) return;
   const r = cv.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
-  let best = 130, hit = -1;
-  for (let i = 0; i < d.nodes.length; i++) {
-    if (!GVIS.has(d.nodes[i].community)) continue;
-    const q = (d.px[i] - mx) ** 2 + (d.py[i] - my) ** 2;
-    if (q < best) { best = q; hit = i; }
-  }
+  const hit = nodeAt(mx, my);
   const n = hit >= 0 ? d.nodes[hit] : null;
-  cv.style.cursor = n ? "pointer" : "grab";
+  cv.style.cursor = n ? (GMODE === "local" ? "default" : "pointer") : "grab";
   cv.title = n ? `${n.label}\ncommunity ${n.community} · degree ${n.degree}${n.fact ? " · fact #" + n.fact : ""}` : "";
 };
-// Double-click, not single. Orbiting the camera is a drag that ends on a node, and a single
-// click fired the jump through the whole gesture (owner's report, 2026-11-15). Hover previews,
-// single click selects the node into the caption line, and the jump into the Text view needs a
-// deliberate double-click.
+// A single click opens the note; a double-click jumps into the Text view with the label as the
+// query. (Double-click used to open the note — orbiting the camera is a drag that ends on a
+// node, and the jump fired through the whole gesture. The drag guard fixed that, so the click
+// is free to be the Obsidian one.)
 $("g-canvas").ondblclick = ev => {
-  const d = GDATA; if (!d || !d.px) return;
-  const r = ev.target.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
-  let best = 130, hit = -1;
-  for (let i = 0; i < d.nodes.length; i++) {
-    if (!GVIS.has(d.nodes[i].community)) continue;
-    const q = (d.px[i] - mx) ** 2 + (d.py[i] - my) ** 2;
-    if (q < best) { best = q; hit = i; }
-  }
-  if (hit >= 0) focusNode(hit);
+  const d = gview(); if (!d || !d.px) return;
+  const r = ev.target.getBoundingClientRect();
+  const i = nodeAt(ev.clientX - r.left, ev.clientY - r.top);
+  if (i < 0) return;
+  const q = d.nodes[i].label;
+  if (q) { $("q").value = q.slice(0, 70); show(q.slice(0, 70)); tier("t3"); }
 };
 window.addEventListener("resize", () => paint());
 

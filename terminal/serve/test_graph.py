@@ -486,5 +486,122 @@ class LinkVote(unittest.TestCase):
                          "the arm signed a row with the weight off")
 
 
+class TheVaultVerbs(unittest.TestCase):
+    """The Obsidian reading of the graph (2026-11-24, the owner's ask on the Graph tab).
+
+    The nx view is UNDIRECTED, so a relation's subject and object survive only in the raw link
+    list. These three verbs are what the page's walk runs on — a note's links out vs its
+    backlinks, one node's neighbourhood, and a jump by a few letters — and each test is the
+    direction surviving the round trip, which is the part a graph library does not give you.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.mkdtemp(prefix="vault-")
+        cls.store = MemoryService(cls.dir)
+        cls.a = cls.store.remember("The cart rotates when a persona file moves.",
+                                   klass="MEM", scope="default")["id"]
+        cls.b = cls.store.remember("A rotated cart re-seeds the standing prefix.",
+                                   klass="MEM", scope="default")["id"]
+        cls.c = cls.store.remember("The 4090 keeps a fifth of its expert cache hot.",
+                                   klass="HW", scope="default")["id"]
+        cls.na, cls.nb, cls.nc = f"mem_fact_{cls.a}", f"mem_fact_{cls.b}", f"hw_fact_{cls.c}"
+        cls.graph = os.path.join(cls.dir, "strata-graphify", "graph.json")
+        cls._write([{"source": cls.na, "target": cls.nb, "relation": "references",
+                     "confidence": "EXTRACTED"},
+                    {"source": cls.nc, "target": cls.na, "relation": "conceptually_related_to",
+                     "confidence": "INFERRED"}])
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    @classmethod
+    def _write(cls, links, nodes=None):
+        os.makedirs(os.path.dirname(cls.graph), exist_ok=True)
+        nodes = nodes if nodes is not None else [
+            {"id": cls.na, "label": "cart rotation", "community": 3},
+            {"id": cls.nb, "label": "cart re-seed", "community": 3},
+            {"id": cls.nc, "label": "expert cache", "community": 9}]
+        with open(cls.graph, "w", encoding="utf-8") as f:
+            json.dump({"directed": False, "multigraph": False, "nodes": nodes,
+                       "links": links, "hyperedges": []}, f)
+        # A monotone mtime: the caches key on it, and two writes in the same second would
+        # otherwise look like the same graph.
+        cls._seq = getattr(cls, "_seq", 0) + 1
+        t = os.path.getmtime(cls.graph)
+        os.utime(cls.graph, (t + cls._seq, t + cls._seq))
+
+    def setUp(self):
+        # The base graph, per test. The verbs read graph.json through a cache keyed by mtime,
+        # so a test that rewrites the file (the rebuild test) would otherwise leak into every
+        # test unittest runs after it — the suite's order became part of the fixture.
+        self._write([{"source": self.na, "target": self.nb, "relation": "references",
+                      "confidence": "EXTRACTED"},
+                     {"source": self.nc, "target": self.na, "relation": "conceptually_related_to",
+                      "confidence": "INFERRED"}])
+
+    def _g(self):
+        from strata.graphify import StrataGraphify
+        return StrataGraphify(self.dir)
+
+    def test_a_note_has_links_out_and_backlinks_and_they_are_not_the_same_list(self):
+        d = self._g().explain(self.na)
+        self.assertEqual(d["status"], "ok")
+        self.assertEqual([x["to"] for x in d["links"]], [self.nb], "a references b: that is a link out")
+        self.assertEqual([x["to"] for x in d["backlinks"]], [self.nc], "c references a: that is a backlink")
+        self.assertEqual(d["backlinks"][0]["relation"], "conceptually_related_to")
+        self.assertEqual(d["backlinks"][0]["confidence"], "INFERRED",
+                         "the folded edge's confidence rides the line, not the nx view")
+        self.assertEqual(len(d["connections"]), 2, "the undirected list stays for the older caller")
+
+    def test_a_concept_note_names_the_shelf_it_was_read_from(self):
+        # The note's chips: a fact node names its row, so "open in the ledger" has an address.
+        d = self._g().explain(self.na)
+        self.assertEqual(d["fact"], self.a)
+        self.assertEqual(d["shelf"], "mem")
+
+    def test_the_local_graph_is_one_node_centred_with_the_edges_among_its_neighbours(self):
+        d = self._g().neighbourhood(self.na, depth=1)
+        self.assertEqual(d["status"], "ok")
+        self.assertEqual(d["id"], self.na)
+        self.assertEqual({n["id"] for n in d["nodes"]}, {self.na, self.nb, self.nc})
+        self.assertEqual([n["id"] for n in d["nodes"] if n["hub"]], [self.na],
+                         "the note you opened is the centre of its own graph")
+        self.assertEqual(len(d["edges"]), 2)
+        self.assertEqual(d["edges"][0][2], "references",
+                         "an edge carries the relation, so the page can NAME the line")
+
+    def test_depth_two_walks_through_the_hub_a_one_hop_walk_cannot_see(self):
+        # b is linked only to a; at depth 2 it reaches c, which touches a and nothing else.
+        one = self._g().neighbourhood(self.nb, depth=1)
+        two = self._g().neighbourhood(self.nb, depth=2)
+        self.assertNotIn(self.nc, {n["id"] for n in one["nodes"]})
+        self.assertIn(self.nc, {n["id"] for n in two["nodes"]})
+
+    def test_an_unknown_node_says_so_rather_than_drawing_nothing(self):
+        self.assertEqual(self._g().neighbourhood("no_such_node")["status"], "not-found")
+        self.assertEqual(self._g().explain("no_such_node")["status"], "not-found")
+
+    def test_the_switcher_finds_a_note_by_a_few_letters_and_ranks_a_prefix_first(self):
+        g = self._g()
+        hits = g.switcher("cart")["hits"]
+        self.assertEqual({h["id"] for h in hits}, {self.na, self.nb})
+        self.assertEqual(hits[0]["fact"], self.a, "the label starts with the typed word")
+        self.assertEqual(g.switcher("zzzq")["hits"], [], "no match is an honest empty list")
+        hubs = g.switcher("")["hits"]                     # empty query: the graph's hubs
+        self.assertEqual(hubs[0]["id"], self.na, "a is the only degree-2 node")
+        self.assertEqual(hubs[0]["degree"], 2)
+
+    def test_a_rebuilt_graph_is_the_graph_the_page_draws(self):
+        # The raw-link cache is stamped by mtime, like the nx view: a rebuild must be seen,
+        # because the nightly pass rewrites graph.json under the running server.
+        self._write([{"source": self.nb, "target": self.nc, "relation": "supports",
+                      "confidence": "EXTRACTED"}])
+        d = self._g().explain(self.nb)
+        self.assertEqual([x["to"] for x in d["links"]], [self.nc])
+        self.assertEqual(d["backlinks"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

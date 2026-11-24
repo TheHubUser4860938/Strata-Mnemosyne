@@ -83,6 +83,18 @@ _MODEL_CACHE: list = []
 # full drain graph.json is megabytes, so the parse is paid once per rebuild, not once per ask.
 _COV_CACHE: dict = {}
 
+# The RAW link list, keyed the same way. networkx folds it into an undirected graph, so the
+# subject-and-object a relation names ("this fact references that one") survives only here —
+# and the backlinks pane and the local graph's edge labels read it from this cache.
+_RAW_CACHE: dict = {}
+
+
+def _fact_id(nid) -> Optional[int]:
+    """The ledger row a node names, from its id: `<shelf>_fact_<row id>`. One rule, three
+    callers (the page view, the note panel, the local graph), so the parse lives in one place."""
+    parts = str(nid or "").rsplit("_fact_", 1)
+    return int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
+
 
 def served_model(base_url: str | None = None) -> str:
     """The model id the server reports, from /health, then /models. Env wins if set."""
@@ -743,6 +755,14 @@ class StrataGraphify:
         outs = [self._edge_line(G, nid, nb) for nb in G.neighbors(nid)] if G.is_directed() \
             else self._undirected_edges(G, nid)
         out["connections"] = sorted(outs, key=lambda e: (-e["degree"], e["label"]))[:40]
+        # The vault shape (2026-11-24): a note has OUTGOING links and BACKLINKS, and the two
+        # answer different questions — "what does this fact lean on" and "what else cites it".
+        # The undirected `connections` list stays for the older caller; these are the same
+        # edges read from the raw link list, so the relation keeps its subject.
+        links_out, backlinks = self._incident(nid)
+        out["links"] = links_out[:40]
+        out["backlinks"] = backlinks[:40]
+        out["shelf"] = str(nid).split("_fact_")[0] if "_fact_" in str(nid) else ""
         return out
 
     def _undirected_edges(self, G, nid: str) -> list[dict]:
@@ -750,6 +770,134 @@ class StrataGraphify:
                  "relation": self._edge_attrs(G, nid, nb).get("relation") or "linked",
                  "confidence": self._edge_attrs(G, nid, nb).get("confidence") or "",
                  "degree": G.degree(nb)} for nb in G.neighbors(nid)]
+
+    # ---------------------------------------------------------------- direction
+    # The nx view is UNDIRECTED (graph.json says `directed: false`), so a relation that reads
+    # as a sentence — "this fact references that one" — loses its subject and object on the
+    # way in. The raw link list keeps them, and that is where the backlinks pane reads from:
+    # a note's outgoing links are the rows it cites, its backlinks are the rows that cite it.
+    # (2026-11-24, the owner's Obsidian ask: the graph tab explores like a vault.)
+
+    def _raw_links(self) -> list[dict]:
+        """The link list, cached by graph.json mtime (the same law as `_named_ids`)."""
+        key = str(self.graph_path)
+        try:
+            stamp = os.path.getmtime(self.graph_path)
+        except OSError:
+            return []
+        hit = _RAW_CACHE.get(key)
+        if hit and hit[0] == stamp:
+            return hit[1]
+        links = self._read(self.graph_path).get("links") or []
+        _RAW_CACHE[key] = (stamp, links)
+        return links
+
+    @staticmethod
+    def _link_conf(l: dict) -> str:
+        """One raw link's confidence: the kept edge speaks, `also_seen` is the folded rest."""
+        c = l.get("confidence") or l.get("_origin") or ""
+        if not c:
+            for also in l.get("also_seen") or []:
+                if isinstance(also, dict) and (also.get("confidence") or also.get("_origin")):
+                    return str(also.get("confidence") or also.get("_origin"))
+        return str(c)
+
+    def _incident(self, nid: str) -> tuple[list[dict], list[dict]]:
+        """(links out, links in) for one node, labelled by the far end. O(E) per call, which
+        at 3,346 links is a fraction of a millisecond — the honest design at this scale."""
+        G = self._G()
+        out, inn = [], []
+        for l in self._raw_links():
+            s, t = l.get("source"), l.get("target")
+            if s == nid or t == nid:
+                other = t if s == nid else s
+                if other not in G:
+                    continue
+                line = {"to": other,
+                        "label": (G.nodes[other].get("label") or other)[:120],
+                        "relation": l.get("relation") or "linked",
+                        "confidence": self._link_conf(l),
+                        "degree": G.degree(other),
+                        "fact": _fact_id(other)}
+                (out if s == nid else inn).append(line)
+        key = lambda x: (-x["degree"], x["label"].lower())     # noqa: E731 - the hub leads
+        return sorted(out, key=key), sorted(inn, key=key)
+
+    # ---------------------------------------------------------------- the vault verbs
+    def neighbourhood(self, name: str, depth: int = 1, limit: int = 140) -> dict:
+        """One node's LOCAL graph — Obsidian's local graph, the view that makes a hairball
+        explorable: the note you opened at the centre, its links one hop out, and the edges
+        among THOSE nodes only (the triangles are the point: they show a cluster's shape).
+
+        Reads the whole graph, not the 40-community page view, so a hub in community 211 gets
+        its true neighbourhood while the global canvas stays a readable sample.
+        """
+        G = self._G()
+        nid = self._resolve(name)
+        if nid is None:
+            return {"status": "not-found", "query": str(name)[:120]}
+        depth = max(1, min(int(depth), 3))
+        seen = {nid}
+        frontier = {nid}
+        for _ in range(depth):
+            nxt = {nb for n in frontier for nb in G.neighbors(n)} - seen
+            seen |= nxt
+            frontier = nxt
+            if not frontier:
+                break
+        # a hub's neighbourhood is the interesting one and the biggest: keep the best-connected
+        ranked = sorted(seen, key=lambda n: (-G.degree(n), (G.nodes[n].get("label") or "").lower()))
+        keep = ranked[:max(1, int(limit))]
+        at = set(keep)
+        nodes = [{"id": n, "label": (G.nodes[n].get("label") or n)[:200],
+                  "community": G.nodes[n].get("community"), "degree": G.degree(n),
+                  "fact": _fact_id(n), "hub": n == nid} for n in keep]
+        edges, rels = [], {}
+        for l in self._raw_links():
+            s, t = l.get("source"), l.get("target")
+            if s in at and t in at:
+                edges.append([s, t, l.get("relation") or "linked", self._link_conf(l)])
+                rels[f"{s}\u2192{t}"] = l.get("relation") or "linked"
+        return {"status": "ok", "id": nid, "label": (G.nodes[nid].get("label") or nid),
+                "community": G.nodes[nid].get("community"), "degree": G.degree(nid),
+                "fact": _fact_id(nid), "depth": depth, "nodes": nodes, "edges": edges,
+                "seen": len(seen), "built": int(os.path.getmtime(self.graph_path))
+                if self.graph_path.exists() else 0}
+
+    def switcher(self, q: str, limit: int = 12) -> dict:
+        """The quick switcher's list: type a few letters, get the nodes you meant, hubs first.
+
+        One rule, no index: a case-insensitive substring over the label, and when nothing
+        contains the string, the word-overlap score `query` already uses. Labels are short
+        (a fact's first clause), so a scan over 4,367 of them is sub-millisecond and an
+        index would be more machinery than math — the store's own scale law.
+        """
+        G = self._G()
+        s = str(q or "").strip().lower()
+        if not s:
+            ranked = sorted(G.nodes, key=lambda n: -G.degree(n))[:int(limit)]
+            return {"status": "ok", "q": s, "hits": [self._switch_hit(G, n) for n in ranked]}
+        toks = set(WORDS.findall(s))
+        scored = []
+        for n, attrs in G.nodes(data=True):
+            lab = (attrs.get("label") or n)
+            low = lab.lower()
+            if s in low:
+                score = 300 - low.index(s)                # a prefix beats a mid-string hit
+            else:
+                overlap = len(toks & set(WORDS.findall(low)))
+                if not overlap:
+                    continue
+                score = overlap * 10
+            scored.append((score + min(20, G.degree(n)), lab, n))
+        scored.sort(reverse=True)
+        return {"status": "ok", "q": s, "hits": [self._switch_hit(G, n)
+                                                 for _s, _l, n in scored[:int(limit)]]}
+
+    def _switch_hit(self, G, nid: str) -> dict:
+        return {"id": nid, "label": (G.nodes[nid].get("label") or nid)[:160],
+                "community": G.nodes[nid].get("community"), "degree": G.degree(nid),
+                "fact": _fact_id(nid)}
 
     def path(self, a: str, b: str) -> dict:
         """The shortest walk between two nodes, every hop tagged with its relation and

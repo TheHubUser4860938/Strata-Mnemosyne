@@ -10630,6 +10630,13 @@ def make_handler(svc: Service):
                     r = {"graph": gr.read_view(int(req.get("max_communities") or 40))}
                 elif action == "explain":     # one node: label, community, degree, every edge
                     r = {"graph": gr.explain(str(req.get("name") or req.get("id") or ""))}
+                elif action == "neighbourhood":   # the local graph: one node, its links, depth
+                    r = {"graph": gr.neighbourhood(str(req.get("name") or req.get("id") or ""),
+                                                    depth=int(req.get("depth") or 1),
+                                                    limit=int(req.get("limit") or 140))}
+                elif action == "switcher":        # the quick switcher: a few letters, the nodes
+                    r = {"graph": gr.switcher(str(req.get("q") or req.get("query") or ""),
+                                              limit=int(req.get("limit") or 12))}
                 elif action == "path":        # two nodes in, the walk out; weakest hop rules
                     r = {"graph": gr.path(str(req.get("a") or req.get("from") or ""),
                                           str(req.get("b") or req.get("to") or ""))}
