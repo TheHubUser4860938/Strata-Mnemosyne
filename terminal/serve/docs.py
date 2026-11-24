@@ -57,7 +57,25 @@ _DOCS_DDL = """create table if not exists docs(
      chunks integer not null default 0,
      indexed_at timestamptz,
      root text not null default '',
+     mode text not null default 'paragraphs',
+     cap integer not null default 0,
+     chunker_hash text not null default '',
      primary key (corpus, path))"""
+
+#: THE CHUNKER'S IDENTITY (2026-11-24, Phase 6). Bump it when the PACKING rules change — the
+#: hyphen join, the heading that opens a row, the section cut — so every row made by the old
+#: rules is detectably the old rules. `mode` and `cap` say what was asked; this says what the
+#: code did. agentic-graphrag's re-ingest works this way (a fingerprint per unit, an idempotent
+#: re-read), and the cost it removes is ours: the founding corpus re-chunks in 229 s and
+#: re-embeds in ~4.5 h, and until now "did the cutters change?" was a question `--force` answered
+#: by re-doing everything.
+CHUNKER_VERSION = "1"
+
+
+def chunker_fingerprint(mode: str, cap: int) -> str:
+    """The one string that says "these rows came from these rules". Cheap by design: a row's
+    staleness is a comparison, not a re-read."""
+    return f"{CHUNKER_VERSION}:{mode}:{int(cap)}"
 
 #: the reading stage's two budgets (2026-11-02). A chunk row is up to ROW_MAX
 #: characters; the tier-3 BLOCK shows the head of one, capped here, and the tool
@@ -300,6 +318,17 @@ class Docs:
             # read() reports instead of guessing a folder.
             self.svc.conn.execute("alter table docs add column if not exists"
                                   " root text not null default ''")
+            # THE CUTTER'S IDENTITY (2026-11-24, Phase 6): the same ADD COLUMN idiom. A store
+            # indexed before this build has the rows and not the columns; the defaults say
+            # "paragraphs, version 0", which is what those rows ARE, so the first sweep after the
+            # migration carries an EMPTY fingerprint, so the first sweep re-chunks the corpus once and then
+            # goes quiet — the scar stays visible, and the repair is one statement per file.
+            self.svc.conn.execute("alter table docs add column if not exists"
+                                  " mode text not null default 'paragraphs'")
+            self.svc.conn.execute("alter table docs add column if not exists"
+                                  " cap integer not null default 0")
+            self.svc.conn.execute("alter table docs add column if not exists"
+                                  " chunker_hash text not null default ''")
             # the corpus-keyed index (audit F15, 2026-11-03) - same statement the store's
             # _PG_DDL runs, so the attach lane and the server leave the ledger identically indexed.
             self.svc.conn.execute(
@@ -368,18 +397,27 @@ class Docs:
                 st = p.stat()
                 with self.svc.lock:                 # every statement on this connection, by law
                     row = self.svc.conn.execute(
-                        "select size, mtime, sha256 from docs where corpus=%s and path=%s",
+                        "select size, mtime, sha256, mode, cap, chunker_hash"
+                        " from docs where corpus=%s and path=%s",
                         (corpus, rel)).fetchone()
-                # FORCE (2026-11-02): the chunker MODE is not in the stat key, so a
-                # paragraphs -> sections re-index of an untouched folder is a no-op
-                # sweep. A mode/cap sweep says so out loud.
+                # THE STAT KEY CARRIES THE CUTTER (2026-11-24, Phase 6): size, mtime and sha256 say
+                # the FILE is the same; mode, cap and the chunker version say the ROWS are. A
+                # paragraphs -> sections sweep re-chunks exactly the files whose rules differ, with
+                # no --force, and `--force` goes back to being what it always meant: rebuild
+                # everything. An old store's rows read as the default mode and version 0, so the
+                # first sweep after the migration re-chunks the corpus ONCE and then goes quiet.
+                want_fp = chunker_fingerprint(mode, cap)
                 digest = None
                 if row is not None and not force and int(row[0]) == st.st_size \
-                        and int(row[1]) == _mtime_us(st):
+                        and int(row[1]) == _mtime_us(st) \
+                        and (row[3] or "paragraphs") == mode and int(row[4] or 0) == int(cap) \
+                        and (row[5] or "") == want_fp:
                     n_unchanged += 1
                     continue                            # the morning pass: stat, keep, move on
                 digest = _sha256(p)                     # the authority: cheap gate moved -> hash
-                if row is not None and not force and row[2] == digest:
+                if row is not None and not force and row[2] == digest \
+                        and (row[3] or "paragraphs") == mode and int(row[4] or 0) == int(cap) \
+                        and (row[5] or "") == want_fp:
                     with self.svc.lock:                 # touched, not changed: the stamp rides
                         self.svc.conn.execute(
                             "update docs set mtime=%s where corpus=%s and path=%s",
@@ -428,17 +466,18 @@ class Docs:
                 with self.svc.lock:
                     self.svc.conn.execute(
                         "insert into docs(path, corpus, scope, size, mtime, sha256, chunks,"
-                        " indexed_at, root) values(%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                        " indexed_at, root, mode, cap, chunker_hash) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
                         " on conflict (corpus, path) do update set size=excluded.size,"
                         " mtime=excluded.mtime, sha256=excluded.sha256, chunks=excluded.chunks,"
                         " scope=excluded.scope, indexed_at=excluded.indexed_at,"
-                        " root=excluded.root",
+                        " root=excluded.root, mode=excluded.mode, cap=excluded.cap,"
+                        " chunker_hash=excluded.chunker_hash",
                         # scope=excluded.scope is belt-and-braces, not the load-bearing part: the
                         # guard above means a stored scope cannot drift, and the blank-fill after
                         # the walk repairs the rows the first build left empty (so the upsert arm
                         # has no test of its own - say so rather than imply one)
                         (rel, corpus, scope, st.st_size, _mtime_us(st), doc_sha, len(chunks),
-                         self.svc._dt(time.time()), str(root)))
+                         self.svc._dt(time.time()), str(root), mode, int(cap), want_fp))
                     self.svc.conn.commit()
                 n_files += 1
                 n_chunks += len(chunks)
@@ -594,6 +633,26 @@ class Docs:
         # corpus, so after a root move the next read cut the passage out of the OLD folder -
         # a same-named file on the new mount returned plausible, wrong text with ok:true.
         self._readers.pop(corpus, None)
+        return int(n)
+
+    def stamp_mode(self, corpus: str, mode: str, cap: int) -> int:
+        """Say which rules made a corpus's rows, WITHOUT re-chunking (2026-11-24, Phase 6).
+
+        The fingerprint columns arrived after the founding corpus was cut, so every one of its
+        33,475 rows reads as `paragraphs`/0/empty and the first sweep after the migration re-cuts
+        the shelf — 229 s of chunking and a ~4.5 h re-embed of rows whose TEXT does not change.
+        One UPDATE buys that back: the stamp is a CLAIM about the ledger, and the claim is
+        checkable, because `sections` rows carry a `section` in their provenance and paragraphs
+        rows do not. A wrong stamp costs one extra pass, not the corpus.
+        """
+        self._ensure()
+        if mode not in ("paragraphs", "fixed", "sections"):
+            raise ValueError(f"mode: one of \"paragraphs\", \"fixed\", \"sections\" (got {mode!r})")
+        with self.svc.lock:
+            n = self.svc.conn.execute(
+                "update docs set mode=%s, cap=%s, chunker_hash=%s where corpus=%s",
+                (mode, int(cap), chunker_fingerprint(mode, cap), corpus)).rowcount
+            self.svc.conn.commit()
         return int(n)
 
     def set_class(self, corpus: str, klass: str, path: str | None = None) -> int:

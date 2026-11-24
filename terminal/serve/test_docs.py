@@ -19,7 +19,8 @@ import unittest
 from pathlib import Path
 
 from serve.frontend import ChatTemplate
-from serve.docs import Docs, pack_chunks
+from serve import docs as D                      # the module, so the version test can bump it
+from serve.docs import Docs, pack_chunks, chunker_fingerprint as _fp
 from serve.memory import norm_text
 from serve.server import MockEngine, Service, serve, ByteTokenizer
 from serve.test_memory import MemoryService
@@ -219,6 +220,63 @@ class DocIndexStore(unittest.TestCase):
         self.assertGreater(r["chunks"], 0)
         rows = self._rows("doc-founding")
         self.assertTrue(all(len(x[1]) <= 1500 for x in rows))
+
+    # THE CUTTER'S IDENTITY (2026-11-24, Phase 6). The stat key used to carry size, mtime and
+    # sha256 only, so a paragraphs -> sections re-index of an untouched folder was a no-op sweep
+    # and `--force` answered "did the cutters change?" by re-doing all 141 files. The ledger now
+    # keeps mode, cap and the chunker version, so the rules are part of "unchanged".
+
+    def test_a_mode_change_rechunks_without_force_and_a_same_mode_sweep_stays_quiet(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        ids_before = {r[0] for r in self._rows("doc-founding")}
+        sweep = self.mem.docs.index(self.docs_dir, corpus="founding")
+        self.assertEqual(sweep["files"], 0, "the same rules on the same files: nothing to do")
+        moved = self.mem.docs.index(self.docs_dir, corpus="founding", mode="sections")
+        self.assertEqual(moved["files"], 3, "the cutters changed, so every file is re-cut")
+        self.assertNotEqual({r[0] for r in self._rows("doc-founding")}, ids_before,
+                            "sections rows are not the paragraphs rows")
+        again = self.mem.docs.index(self.docs_dir, corpus="founding", mode="sections")
+        self.assertEqual(again["files"], 0, "and the next sweep knows it")
+
+    def test_the_ledger_names_the_rules_that_made_the_rows(self):
+        self.mem.docs.index(self.docs_dir, corpus="founding", mode="sections", cap=1200)
+        with self.mem.lock:
+            row = self.mem.conn.execute(
+                "select mode, cap, chunker_hash from docs limit 1").fetchone()
+            self.mem.conn.commit()
+        self.assertEqual(row[0], "sections")
+        self.assertEqual(int(row[1]), 1200)
+        self.assertEqual(row[2], _fp("sections", 1200),
+                         "the fingerprint is the one the code computes, not one typed by hand")
+
+    def test_the_stamp_says_which_rules_made_the_rows_and_costs_no_rechunk(self):
+        """Phase 6's repair for an existing corpus: the fingerprint columns arrived late, so an
+        unstamped shelf re-chunks once on the next sweep — 229 s and a ~4.5 h re-embed of rows
+        whose text does not change. One UPDATE buys that back, and the sweep must stay quiet."""
+        first = self.mem.docs.index(self.docs_dir, corpus="founding", mode="sections", cap=400)
+        self.assertGreater(first["chunks"], 0)
+        ids = {r[0] for r in self._rows("doc-founding")}
+        n = self.mem.docs.stamp_mode("founding", "sections", 400)
+        self.assertEqual(n, 3, "one ledger row per book")
+        sweep = self.mem.docs.index(self.docs_dir, corpus="founding", mode="sections", cap=400)
+        self.assertEqual(sweep["files"], 0, "the stamp is what the sweep compares")
+        self.assertEqual({r[0] for r in self._rows("doc-founding")}, ids, "the vectors ride on")
+        self.assertEqual(self.mem.docs.corpora()[0]["corpus"], "founding")
+        self.assertRaises(ValueError, self.mem.docs.stamp_mode, "founding", "stanza", 400)
+
+    def test_a_chunker_version_bump_queues_the_corpus_once_then_goes_quiet(self):
+        """The version is the half `mode` cannot carry: the packing rules change (the hyphen join,
+        the heading that opens a row) with the mode fixed. Bumping it must cost exactly one pass."""
+        self.mem.docs.index(self.docs_dir, corpus="founding")
+        old = D.CHUNKER_VERSION
+        try:
+            D.CHUNKER_VERSION = old + "-test"
+            r = self.mem.docs.index(self.docs_dir, corpus="founding")
+            self.assertEqual(r["files"], 3, "new rules, so the rows are old")
+            self.assertEqual(self.mem.docs.index(self.docs_dir, corpus="founding")["files"], 0,
+                             "and the pass is paid once")
+        finally:
+            D.CHUNKER_VERSION = old
 
     def test_replace_folds_the_retired_rows_out_of_the_token_table(self):
         """Audit F1: the per-file replace must tell the store's cached token table WHICH rows
@@ -528,13 +586,18 @@ class DocsOverHttp(unittest.TestCase):
         self.assertEqual(r["result"]["docs"], r["docs"], "one answer, two handles")
 
     def test_the_wire_can_force_a_re_chunk(self):
-        """The mode and cap live OUTSIDE the ledger's stat key, so a chunk-mode sweep over an
-        untouched folder was a silent no-op on the wire while the CLI's --force did the work."""
+        """The wire reaches the same knob the CLI's --force does. Since Phase 6 the MODE is part of
+        the stat key, so a mode sweep is no longer the silent no-op this test was written against —
+        and --force is back to meaning "rebuild everything", which is the arm that stays."""
         self._post({"op": "docs", "action": "index", "folder": str(self.docs_dir),
                     "corpus": "forced", "mode": "paragraphs"})
         _st, quiet = self._post({"op": "docs", "action": "index", "folder": str(self.docs_dir),
+                                 "corpus": "forced", "mode": "paragraphs"})
+        self.assertEqual(quiet["docs"]["indexed"]["files"], 0, "the same rules: a stat sweep")
+        _st, moved = self._post({"op": "docs", "action": "index", "folder": str(self.docs_dir),
                                  "corpus": "forced", "mode": "sections"})
-        self.assertEqual(quiet["docs"]["indexed"]["files"], 0, "the stat sweep says nothing moved")
+        self.assertEqual(moved["docs"]["indexed"]["files"], 1,
+                         "the rules changed on the wire, so the rows are old (Phase 6)")
         _st, forced = self._post({"op": "docs", "action": "index", "folder": str(self.docs_dir),
                                   "corpus": "forced", "mode": "sections", "force": True})
         self.assertEqual(forced["docs"]["indexed"]["files"], 1, "--force re-chunks on the wire")
@@ -638,8 +701,9 @@ class Sections(DocIndexStore):
         r1 = self.mem.docs.index(self.docs_dir, corpus="founding", mode="paragraphs", cap=400)
         same = self.mem.docs.index(self.docs_dir, corpus="founding",
                                    mode="sections", cap=400)
-        self.assertEqual((same["files"], same["unchanged"]), (0, 3),
-                         "a mode change on an untouched folder is a stat sweep - until --force")
+        self.assertEqual((same["files"], same["unchanged"]), (3, 0),
+                         "a mode change on an untouched folder re-cuts it: the rules are part of "
+                         "the stat key since Phase 6, which is what the docstring always promised")
         r2 = self.mem.docs.index(self.docs_dir, corpus="founding", mode="sections", cap=400,
                                  force=True)
         self.assertEqual(r1["files"], r2["files"], "force re-chunks the same books")

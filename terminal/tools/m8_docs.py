@@ -101,9 +101,14 @@ def main() -> int:
     ap.add_argument("--set-root", nargs=2, metavar=("CORPUS", "FOLDER"),
                     help="stamp the corpus's folder in the ledger without "
                          "re-chunking (a store indexed before the root column)")
+    ap.add_argument("--stamp-mode", nargs=3, metavar=("CORPUS", "MODE", "CAP"),
+                    help="say which rules made a corpus's rows, without re-chunking "
+                         "(the fingerprint columns arrived after the first builds; an "
+                         "unstamped corpus re-chunks once on the next sweep)")
     ap.add_argument("--force", action="store_true",
                     help="re-chunk every file even when the stat sweep says it is "
-                         "unchanged - the mode and cap knobs live outside the ledger key")
+                         "unchanged (since Phase 6 a mode or cap change is IN the key; "
+                         "this is for rebuilding what the key says is fine)")
     ap.add_argument("--embed", action="store_true", help="embed each chunk at write time (slow arm)")
     ap.add_argument("--model", default=str(data_dir(ROOT) / "embeddings/embeddinggemma-2"),
                     help="embedder dir (default: the box's live model)")
@@ -114,7 +119,7 @@ def main() -> int:
     a = ap.parse_args()
 
     need_embed = a.embed and not (a.remove or a.list is not None or a.set_root
-                                  or a.cut is not None)
+                                  or a.stamp_mode or a.cut is not None)
     svc = build(a.dir, a.model if need_embed else None, a.threads)
     from serve.docs import Docs
     svc.docs = Docs(svc)
@@ -150,6 +155,15 @@ def main() -> int:
             print(json.dumps({"stamped": n, "corpus": corpus, "root": str(folder)}))
             print(f"m8_docs: {n} ledger rows for corpus {corpus!r} now point at {folder}"
                   f" - no re-chunking", file=sys.stderr)
+            return 0
+        if a.stamp_mode:
+            corpus, mode, cap = a.stamp_mode
+            n = svc.docs.stamp_mode(corpus, mode, int(cap))
+            from serve.docs import chunker_fingerprint     # the same function the sweep compares
+            print(json.dumps({"stamped": n, "corpus": corpus, "mode": mode, "cap": int(cap),
+                              "chunker_hash": chunker_fingerprint(mode, int(cap))}))
+            print(f"m8_docs: {n} ledger rows for corpus {corpus!r} stamped {mode}/{cap}"
+                  f" - no re-chunking, vectors intact", file=sys.stderr)
             return 0
         if a.list is not None:
             print(json.dumps({"files": svc.docs.list(a.list or None),
