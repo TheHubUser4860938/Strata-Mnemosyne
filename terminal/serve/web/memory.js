@@ -673,8 +673,10 @@ function paint3() {
     X.fillText(t, x, y);
   }
   const seen = live.length, all = d.nodes.length;
+  // Name the filter in the caption: a map showing 43 of 1,054 dots looks broken until it says why.
+  const filt = GGROUP === null ? "" : ` · shelf ${esc(GGROUP)} only`;
   $("g-cap").textContent = `${seen === all ? all : seen + " of " + all} nodes drawn · ${(d.edges || []).length.toLocaleString()} edges`
-    + ` · drag to orbit, wheel to zoom, click a node for the note`;
+    + filt + ` · drag to orbit, wheel to zoom, click a node for the note`;
 }
 
 // The pane under the canvas is the app's link stack: Notes (the shelf on the canvas), Outgoing,
@@ -871,7 +873,12 @@ function showView(v) {
   $("g-view").hidden = v !== "graph";
   $("ws-actions").hidden = v !== "note";      // Local graph and Ledger are a note's actions
   renderTabs();
-  if (v === "graph") paint();
+  if (v === "graph") {
+    // Opening the map puts the camera back at the front door. A pan from ten minutes ago is
+    // indistinguishable from a broken tab: the dots are there, just off the edge.
+    GCAM.k = 1; GCAM.x = 0; GCAM.y = 0;
+    paint();
+  }
 }
 
 function labelOf(id) {
