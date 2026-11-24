@@ -57,7 +57,15 @@ if [ "${pressure:-0}" = "1" ] || [ "${pending:-0}" -gt "$PENDING_MAX" ]; then
     # username policy is what lands WITHOUT that guard).
     flock -n -E 9 tools/state/sweep.lock \
         .venv/bin/python tools/curate_loop.py --sweep --batches 2 --idle-window 90 --tag cron \
-        --graphify --graphify-threshold 48 >> tools/state/cron.log 2>&1
+        --clerk-batch 8 --graphify --graphify-threshold 48 >> tools/state/cron.log 2>&1
+# THE SHELVING QUEUE (2026-11-24, Phase 4). The clerk files every fact the keyword map cannot
+# name, and it used to cost ONE decode per fact. Measured on the label panel over 40
+# harvest-written facts, two identical asks each: the single arm agrees with itself 0.88 of the
+# time in 80 calls and leaves 20% wild; the batch-of-8 arm agrees 0.68 in 10 calls and leaves 7%
+# wild. Eight times cheaper, and it FILES more — a model handed a list commits where a model
+# handed one fact shrugs. The harvest asks once per fact, so self-agreement is a proxy for label
+# quality, not the row's own good: the queue ships at 8, and the venue day prices the shelf
+# against recall. tools/m4_labelpanel.py --batch 8 is the instrument.
 # THE GRAPH DRAIN (2026-11-24): the harvest has noted new fact ids into
 # <store>/strata-graphify/pending.json since 2026-11-15, and NOTHING on the timer read them —
 # 612 rows sat queued on 2026-11-23 behind a 53-minute manual pass that covered 1,183 of 3,819

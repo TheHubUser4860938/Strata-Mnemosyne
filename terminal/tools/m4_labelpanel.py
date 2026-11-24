@@ -87,6 +87,9 @@ def main():
     ap.add_argument("--seed", type=int, default=7, help="the sample is reproducible")
     ap.add_argument("--pool", type=int, default=400,
                     help="rows to pull through the door before sampling")
+    ap.add_argument("--batch", type=int, default=1,
+                    help="facts per clerk call (>1 measures the batched arm: 2 calls per group, "
+                         "not 2 per fact)")
     a = ap.parse_args()
 
     model = json.load(urllib.request.urlopen(URL + "/health", timeout=30)).get("model", "strata")
@@ -116,6 +119,57 @@ def main():
     agree = named = cutter = 0
     shelves = Counter()
     detail = []
+    if a.batch > 1:
+        # ONE CALL PER GROUP, twice. The second pass shuffles the groups so a fact that rides
+        # position 1 of a batch of eight is not compared against itself in the same seat: that is
+        # the difference between measuring the clerk and measuring the prompt's layout.
+        from curate_loop import clerk_class_batch
+        import random
+        rng = random.Random(a.seed)
+
+        def runs():
+            groups = [sample[i:i + a.batch] for i in range(0, len(sample), a.batch)]
+            out: dict[int, str] = {}
+            for g in groups:
+                got = clerk_class_batch([f[1] for f in g], ask)   # 16 tokens per fact: the answer is a code
+                for (rid, _t, _k, _s), code in zip(g, got):
+                    out[rid] = code
+            return out
+
+        first = runs()
+        shuffled = list(sample)
+        rng.shuffle(shuffled)
+        sample = shuffled
+        groups = [sample[i:i + a.batch] for i in range(0, len(sample), a.batch)]
+        second: dict[int, str] = {}
+        for g in groups:
+            got = clerk_class_batch([f[1] for f in g], ask)   # 16 tokens per fact: the answer is a code
+            for (rid, _t, _k, _s), code in zip(g, got):
+                second[rid] = code
+        calls = 2 * len(groups)
+        print(f"batched arm: {len(sample)} facts in groups of {a.batch} — {calls} calls, "
+              f"not {2 * len(sample)}\n")
+        for rid, text, _k, _s in sample:
+            one, two = first.get(rid, ""), second.get(rid, "")
+            same = (one or "") == (two or "")
+            agree += same
+            named += bool(one)
+            cutter += bool(one and one not in have)
+            shelves[one or "WILD"] += 1
+            detail.append({"id": rid, "first": one, "second": two, "same": same,
+                           "fact": text[:120]})
+            print(f"  {'=' if same else '≠'}  {(one or 'WILD'):<16} {(two or 'WILD'):<16} {text[:66]}")
+        n = len(sample)
+        print(f"\nAGREEMENT {agree}/{n} = {agree/n:.2f}   WILD {n-named}/{n} = {(n-named)/n:.2f}"
+              f"   new-cutter {cutter}/{n} = {cutter/n:.2f}   calls {calls}")
+        print("where it files: " + ", ".join(f"{k}×{v}" for k, v in shelves.most_common(10)))
+        out = Path(os.environ.get("STRATA_BENCH", "/home/eugene/Strata-data/bench")) / "p1"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / f"labelpanel-b{a.batch}-{date.today().isoformat()}.jsonl").write_text(
+            "\n".join(json.dumps(d) for d in detail) + "\n", encoding="utf-8")
+        print(f"rows → {out}/labelpanel-b{a.batch}-{date.today().isoformat()}.jsonl")
+        return
+
     for rid, text, _klass, _src in sample:      # 4-tuple: the source names the frame
         one = clerk_class(text, ask, budget=a.budget)     # the shipped call, budget swept
         two = clerk_class(text, ask, budget=a.budget)     # the same question again

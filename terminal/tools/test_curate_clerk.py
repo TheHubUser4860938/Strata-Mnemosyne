@@ -146,5 +146,53 @@ class TheShelfVerbIsCold(unittest.TestCase):
                              f"{other} keeps the harvest's own temperature")
 
 
+class TheBatchedClerk(unittest.TestCase):
+    """Phase 4's queue (2026-11-24): N facts, ONE call. The parse is the risk, so the tests are
+    the parse — a fake `ask` hands back scripted replies and the arm is judged on what it files."""
+
+    def test_a_numbered_batch_files_every_fact_it_can_read(self):
+        seen = {}
+
+        def ask(text, maxtok, want_geom=None, kind=""):
+            seen["kind"] = kind
+            seen["maxtok"] = maxtok
+            seen["text"] = text
+            return "1: OPS\n2: USR/PREF\n3: WILD\n4: DOC/FOUNDING", 900, True
+
+        out = C.clerk_class_batch(["the box runs a 4090", "the owner prefers short sentences",
+                                   "a banana is a fruit", "madison writes federalist 10"], ask)
+        self.assertEqual(out, ["OPS", "USR/PREF", "", "DOC/FOUNDING"],
+                         "WILD is the shrug and it parses to the empty string")
+        self.assertEqual(seen["kind"], "shelf", "the batch runs at the shelf verb's temperature")
+        self.assertIn("4. madison", seen["text"], "the facts ride numbered, in order")
+        self.assertGreaterEqual(seen["maxtok"], 16 * 4, "the budget scales with the batch")
+
+    def test_a_missing_line_leaves_that_fact_wild_and_the_others_filed(self):
+        def ask(text, maxtok, want_geom=None, kind=""):
+            return "1: TECH\n3: MEM", 200, True
+
+        self.assertEqual(C.clerk_class_batch(["a", "b", "c", "d"], ask), ["TECH", "", "MEM", ""],
+                         "a half-parsed batch is legal: wild rides every ask, a wrong shelf hides")
+
+    def test_prose_and_a_second_answer_for_one_row_do_not_move_it(self):
+        def ask(text, maxtok, want_geom=None, kind=""):
+            return "1: OPS\n  (the machine, not the number)\n1: TECH", 200, True
+
+        self.assertEqual(C.clerk_class_batch(["the 4090 has 24 GB"], ask), ["OPS"],
+                         "the first line for a row wins; a bare sentence is not an answer")
+
+    def test_a_code_whose_top_is_not_on_the_menu_is_ignored(self):
+        def ask(text, maxtok, want_geom=None, kind=""):
+            return "1: ZZZ/QUUX\n2: HW", 200, True
+
+        self.assertEqual(C.clerk_class_batch(["x", "y"], ask), ["", "HW"])
+
+    def test_a_transport_failure_is_a_shrug_not_a_crash(self):
+        def ask(text, maxtok, want_geom=None, kind=""):
+            raise RuntimeError("the engine is busy")
+
+        self.assertEqual(C.clerk_class_batch(["x", "y"], ask), ["", ""])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -857,6 +857,59 @@ def clerk_class(fact: str, ask, budget: int = 64) -> str:
     return code
 
 
+SHELF_MANY = """File each of these facts on a shelf. A shelf code is `TOP` or `TOP/CUTTER`.
+
+Shelves:
+{menu}
+
+Prefer an existing top. Reply with ONE line per fact and nothing else: the fact's number, a
+colon, the shelf code, or WILD if the fact is miscellaneous.
+
+{facts}
+"""
+SHELF_LINE = re.compile(r"^\s*(\d+)\s*[:.)]\s*([A-Z][A-Z0-9]{1,7}(?:/[A-Z0-9]{2,8})?"
+                        r"(?:\.[A-Za-z0-9]+)*)\s*$", re.M)
+
+
+def clerk_class_batch(facts: list[str], ask, budget_per: int = 16, floor: int = 48) -> list[str]:
+    """N facts, ONE served-model call (2026-11-24, Phase 4's queue).
+
+    The harvest files every fact the keyword map cannot name with its own decode: at the measured
+    273 output tokens per fact on the graph pass, and ~10 on this one, a 60-fact window is 60
+    round trips. The batch is one call for the whole window, which is how agentic-graphrag's
+    extractor works (a queue in, a schema-shaped list out) and how our own shelftidy TOPS call
+    already works.
+
+    The parse is strict by design: a line must be `number: CODE` and nothing else, and an index
+    the reply does not name comes back '' (wild). A half-parsed batch is a legal answer —
+    a wrong shelf HIDES a fact from every filtered request, a wild shelf only waits — so the
+    arm never invents a drawer for a line it could not read.
+    """
+    if ask is None or not facts:
+        return [""] * len(facts)
+    body = SHELF_MANY.format(menu=SHELF_MENU, facts="\n".join(
+        f"{i + 1}. {(f or '')[:300]}" for i, f in enumerate(facts)))
+    budget = max(floor, budget_per * len(facts))
+    try:
+        ans = ask(body, budget, kind="shelf")[0]
+    except Exception:                                   # a sweep must not stall on a label
+        return [""] * len(facts)
+    out: list[str] = []
+    got = {}
+    for num, code in SHELF_LINE.findall(ans or ""):
+        base = code.split("/")[0]
+        if base in SHELF_TOPS:
+            i = int(num) - 1
+            if 0 <= i < len(facts) and i not in got:    # the first answer for a row wins
+                got[i] = code
+    for i in range(len(facts)):
+        code = got.get(i, "")
+        if "/" in code and code.split("/", 1)[0] == code.split("/", 1)[1]:
+            code = code.split("/")[0]
+        out.append(code)
+    return out
+
+
 def fact_class(fact: str, scope: str, lane: str = "fact") -> str:
     """The shelf mark for a stored fact (PHASE 4.5). Order is deliberate:
     0. the LANES (2026-10-23, item 4) shelf first when they fire: a taboo is a RULE, so it
@@ -984,6 +1037,9 @@ def main():
                          "not quiet-at-the-instant (2026-10-16: the instant version fired into "
                          "every conversational gap and cost the real turns their KV reuse)")
     ap.add_argument("--batches", type=int, default=0, help="--sweep: stop after N batches (0 = forever)")
+    ap.add_argument("--clerk-batch", type=int, default=1,
+                    help="--sweep: file N wild facts per clerk call (1 = one call per fact, "
+                         "the historic shape; 8 measured 10 calls for 40 facts against 80)")
     ap.add_argument("--queue", action="store_true",
                     help="--sweep: coalesce drain requests into ONE slot per key (newest snapshot "
                          "wins) and gate on a settle window instead of the full --idle-window, with "
@@ -1192,6 +1248,24 @@ def main():
                                 [(int(i),) for i in ids])
 
     def score_batch(cands):
+        # THE SHELVING QUEUE (2026-11-24, Phase 4). The keyword map is free; the clerk is a decode,
+        # and the old shape spent ONE call per fact the map could not name. `fact_class` is a pure
+        # keyword argmax, so the pre-pass costs nothing and the window's wild facts go out in
+        # groups of `--clerk-batch` in one call each. Measured on the label panel over 40
+        # harvest-written facts: the single arm agrees with itself 0.88 of the time in 80 calls,
+        # the batch-of-8 arm 0.68 in 10 calls, and the batch FILES more (WILD 0.07 against 0.20) —
+        # a model handed a list commits where a model handed one fact shrugs. Batch 1 is today's
+        # shape exactly, and a fact the batch leaves wild is not re-asked: wild rides every ask.
+        plan: dict = {}
+        if a.clerk_batch > 1 and ask is not None:
+            need = [c for c in cands
+                    if not fact_class(c["fact"], c["scope"], c.get("lane", "fact"))]
+            for i in range(0, len(need), a.clerk_batch):
+                grp = need[i:i + a.clerk_batch]
+                got = clerk_class_batch([c["fact"] for c in grp], ask)
+                for c, code in zip(grp, got):
+                    if code:
+                        plan[c["turn_id"]] = code
         scored_here = unscored_here = 0
         for c in cands:
             text = f"{COLD_PREAMBLE}\n{c['probe']}"
@@ -1249,7 +1323,11 @@ def main():
                           "source": f"curation-{datetime.date.today().isoformat()}",
                           "class": fact_class(c["fact"], c["scope"], c.get("lane", "fact"))
                                    # 2026-11-02: keywords first (free), then the clerk for
-                                   # what they cannot name - one model call per wild fact
+                                   # what they cannot name - one model call per wild fact.
+                                   # 2026-11-24 (Phase 4): with --clerk-batch the queue has
+                                   # already answered for this window, so the plan is read
+                                   # first and the solo call is the fallback.
+                                   or plan.get(c["turn_id"])
                                    or clerk_class(c["fact"], ask),
                           # PHASE 4.5: shelf at store time; the lanes (item 4, 2026-10-23) shelve first
                           "provenance": {"turn_id": c["turn_id"], "probe": c["probe"], "gold": c["gold"],
