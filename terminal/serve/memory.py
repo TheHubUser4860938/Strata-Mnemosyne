@@ -99,6 +99,13 @@ AGG_RE = re.compile(r"\b(how many|how much|all the|every|in total|altogether|lis
                     r"|count (the|my|all))\b", re.I)   # counting shapes: the tail shows more rows
 MAX_QUERY_WORDS = 12                    # a MATCH over more words than these stops being a query and becomes noise
 AGE_SCALE_DAYS = 90.0                   # recency half-life-ish: exp(-age_days / this) feeds the ranking blend
+CONCEPT_FAN = int(os.environ.get("STRATA_CONCEPT_FAN", "12"))  # mediated neighbours per row: a
+                                        # concept touching the whole store is a table of contents,
+                                        # not a bridge. Swept by probe, not guessed: 0 is the
+                                        # direct-edge behaviour of the release before the walk.
+LINK_FAN = 8                          # typed-edge neighbours per seed: a hand wrote these, so
+                                        # they vote FIRST inside a seed's neighbourhood, ahead of
+                                        # the graph's inferred edges and the vectors' neighbours
 RRF_K = 1.0                             # reciprocal-rank fusion constant, a module constant so a probe can
                                         # sweep it (tools/lme_retrieval_ab.py --rrf-k). CHANGED from the
                                         # conventional 60 on 2026-10-14, measured on the venue copy (10,973
@@ -706,7 +713,9 @@ def tool_result(mem: "MemoryService", arguments, scope: str = "default",
         filed = {r[0]: r[2] for r in got}
         pinned = {r[0]: bool(r[3]) for r in got}
         why = {r[0]: r[4] for r in got}
-        links = mem.links_of(ids)      # bounded direct relations, both directions (see links_of)
+        links = mem.links_of(ids, scopes=[USER_SCOPE, scope])   # bounded direct relations, both
+                                        # directions, inside the scopes THIS ask can read (see
+                                        # links_of: the search filtered, the links did not)
     facts = []
     # THE READING ARM IS NOT A FLOOD (2026-11-22, the optimization pass): the tool arm returns a
     # DOC row WHOLE by design (the block shows a 1,200-char head; the tool is where the model goes
@@ -2260,26 +2269,39 @@ class MemoryService:
         return {"linked": True, "from": a, "to": b, "kind": kind}
 
     @_heals
-    def links_of(self, ids) -> dict[int, list[dict]]:
+    def links_of(self, ids, scopes=None) -> dict[int, list[dict]]:
         """Direct relations of these rows, BOTH directions, BOUNDED. Mind's lifecycle states the law
         this copies and the reason for it: "bounded to direct relations and metadata, so it is safe
         to use for orientation. It does not recursively traverse the graph." The bound is not
         caution for its own sake - the tool result rides the model's context, and P11 measured what
-        injected bytes cost per ask."""
+        injected bytes cost per ask.
+
+        `scopes` is the same pair the search drew its candidates from (2026-11-24). A hit list is
+        scope-filtered and its links were not, so a `user` fact could reach a project conversation
+        through an edge: 14 active links cross scopes on this store, measured the same day. The
+        graph arm already applied the law to its neighbour read; this is the read the MODEL sees.
+        """
         want = [int(i) for i in ids]
         if not want:
             return {}
         out: dict[int, list[dict]] = {i: [] for i in want}
+        q = ("select l.a_id, l.b_id, l.kind, coalesce(ma.text, ''), coalesce(mb.text, ''),"
+             " ma.scope, mb.scope"
+             " from links l left join memories ma on ma.id = l.a_id"
+             " left join memories mb on mb.id = l.b_id"
+             " where l.a_id = any(%s) or l.b_id = any(%s)")
+        args: list = [want, want]
+        if scopes:
+            q += " and (ma.scope = any(%s) or mb.scope = any(%s))"
+            args += [list(scopes), list(scopes)]
         with self.lock, _rollback_on_error(self.conn):
-            rows = self.conn.execute(
-                "select l.a_id, l.b_id, l.kind, coalesce(ma.text, ''), coalesce(mb.text, '')"
-                " from links l left join memories ma on ma.id = l.a_id"
-                " left join memories mb on mb.id = l.b_id"
-                " where l.a_id = any(%s) or l.b_id = any(%s)"
-                " order by l.a_id, l.b_id", (want, want)).fetchall()
+            rows = self.conn.execute(q + " order by l.a_id, l.b_id", args).fetchall()
             self.conn.commit()
-        for a, b, kind, ta, tb in rows:
-            for me, other, direction, text in ((a, b, "outgoing", tb), (b, a, "incoming", ta)):
+        for a, b, kind, ta, tb, sa, sb in rows:
+            for me, other, direction, text, o_scope in ((a, b, "outgoing", tb, sb),
+                                                        (b, a, "incoming", ta, sa)):
+                if scopes and o_scope not in scopes:
+                    continue      # the EDGE may cross drawers; the row it names must be readable
                 seen = out.get(int(me))
                 if seen is not None and text and len(seen) < LINKS_PER_ROW:
                     seen.append({"id": int(other), "kind": kind, "direction": direction,
@@ -3434,6 +3456,19 @@ class MemoryService:
         (`<shelf>_fact_<id>`). So an edge between two nodes is a relationship between two
         rows, and a hyperedge is a whole case with several rows in it. This turns both into
         id→ids and nothing else: the arm votes on rows, the graph stays a file.
+
+        The adjacency is an ORDERED list, because the arm prices position (`rank = seed
+        position + position inside the neighbourhood`), so the order this returns IS the price:
+
+          1. a direct fact-to-fact edge, and the members of a hyperedge (one case, several rows
+             — the strongest claim in the file that these rows belong together);
+          2. a row reached THROUGH a concept (a — concept — b). The concept nodes are half the
+             graph (1,913 of 4,239 nodes on this store, measured 2026-11-23) and the reason to
+             build one: two rows that name the same subject and share no words. Parsing them away
+             cost 2,113 of 3,133 edges and made the arm one hop. Concepts are visited tightest
+             first, so a bridge shared by two rows outsells a hub shared by thirty;
+          3. at most CONCEPT_FAN mediated neighbours per row: a hub concept is a table of
+             contents, and eight seeds times a hub would spend the block on one subject.
         """
         path = os.path.join(self.directory, "strata-graphify", "graph.json")
         try:
@@ -3442,7 +3477,11 @@ class MemoryService:
             return {}
         if self._graph_cache and self._graph_cache[0] == stamp:
             return self._graph_cache[1]
-        adj: dict[int, set[int]] = {}
+        # rows -> {row: None} keeps insertion order and dedups in one structure (dicts are
+        # ordered; a set cannot carry the price).
+        near: dict[int, dict[int, None]] = {}
+        # concept node id -> the rows it touches, in file order
+        concept: dict[str, list[int]] = {}
 
         def fid(node):
             s = str(node.get("id") if isinstance(node, dict) else node)
@@ -3454,17 +3493,99 @@ class MemoryService:
                 g = json.load(fh)
         except (OSError, ValueError):
             return {}
+
+        def link(a: int, b: int) -> None:
+            if a != b:
+                near.setdefault(a, {})[b] = None
+                near.setdefault(b, {})[a] = None
+
         for e in g.get("links") or []:
-            a, b = fid(e.get("source")), fid(e.get("target"))
-            if a and b and a != b:
-                adj.setdefault(a, set()).add(b)
-                adj.setdefault(b, set()).add(a)
+            s, t = e.get("source"), e.get("target")
+            a, b = fid(s), fid(t)
+            if a is not None and b is not None:
+                link(a, b)                                  # 1. a direct edge
+            elif a is not None:                             # 2. a row hanging off a concept
+                concept.setdefault(str(t), []).append(a)
+            elif b is not None:
+                concept.setdefault(str(s), []).append(b)
         for h in g.get("hyperedges") or []:
             members = [m for m in (fid(x) for x in (h.get("members") or h.get("nodes") or [])) if m]
-            for m in members:
-                adj.setdefault(m, set()).update(o for o in members if o != m)
+            for m in members:                               # 1. a case is a clique, priced first
+                for o in members:
+                    if o != m:
+                        near.setdefault(m, {})[o] = None
+
+        # Concepts ranked by size, tightest first: the file's own rarity, not a model's opinion.
+        # One merge pass over every row the graph touches — a row reached only through concepts is
+        # an anchor too, and inheriting just its tightest concept (the first cut) made a row that
+        # shares two subjects see only one of them.
+        sizes = {cid: len(rows) for cid, rows in concept.items()}
+        by_rarity = sorted(concept, key=lambda c: (sizes[c], c))
+        anchors = set(near) | {r for rows in concept.values() for r in rows}
+        adj: dict[int, list[int]] = {}
+        for rid in sorted(anchors):
+            base = near.get(rid, {})
+            order, seen = [], set(base)
+            for o in base:
+                order.append(o)                        # 1. direct edges and same-case rows first
+            for cid in by_rarity:
+                rows = concept[cid]
+                if rid not in rows:
+                    continue
+                for o in rows:                         # 2. through the concept, tightest first
+                    if o != rid and o not in seen:
+                        seen.add(o)
+                        order.append(o)
+                    if len(order) - len(base) >= CONCEPT_FAN:
+                        break
+                if len(order) - len(base) >= CONCEPT_FAN:
+                    break
+            adj[rid] = order
         self._graph_cache = (stamp, adj)
         return adj
+
+    @_heals
+    def _link_neighbours(self, ids, scopes=None) -> dict[int, list[int]]:
+        """The store's OWN typed edges as an edge source for the graph arm: seed id → the rows it
+        is linked to, both directions, ordered so a hand-written claim votes before an inferred one.
+
+        The `links` table has carried a typed relation between two rows since 2026-10-29, and the
+        arm read two of its three edge sources: 858 link rows on this store (measured 2026-11-24),
+        all `kind='about'`, all invisible to the ranking. A link is the cheapest signal in the
+        building — no model, no file, no rebuild — and the most trustworthy, because a hand or the
+        clerk chose it.
+
+        `scopes` is the graph arm's own law, applied to the read: a shelf is a filing drawer and a
+        link crossing drawers is the point of the arm, but a tenant's neighbours stay inside the
+        scopes the ask can see. 14 active links crossed scopes on this store, so the filter is not
+        theoretical.
+        """
+        want = [int(i) for i in ids]
+        if not want:
+            return {}
+        rows = self.conn.execute(
+            "select l.a_id, l.b_id, l.kind,"
+            " sa.text is not null and sa.invalid_at is null, sa.scope,"
+            " sb.text is not null and sb.invalid_at is null, sb.scope"
+            " from links l"
+            " join memories sa on sa.id = l.a_id"
+            " join memories sb on sb.id = l.b_id"
+            " where l.a_id = any(%s) or l.b_id = any(%s)"
+            " order by case when l.kind = 'about' then 1 else 0 end, l.created_at desc",
+            (want, want)).fetchall()
+        self.conn.commit()
+        out: dict[int, list[int]] = {}
+        for a_id, b_id, _kind, a_ok, a_scope, b_ok, b_scope in rows:
+            for me, other, active, scope in ((a_id, b_id, b_ok, b_scope),
+                                             (b_id, a_id, a_ok, a_scope)):
+                if not active:
+                    continue                      # a retired row cannot vouch for anything
+                if scopes and scope not in scopes:
+                    continue
+                seen = out.setdefault(int(me), [])
+                if int(other) not in seen and len(seen) < LINK_FAN:
+                    seen.append(int(other))
+        return out
 
     @_heals
     def _sim_neighbours(self, ids) -> dict:
@@ -3527,15 +3648,24 @@ class MemoryService:
         and, when `graph_sim_k` > 0, the store's own vectors (top-k cosine neighbours, no
         model call). Seeds are the top `graph_seeds` fused rows: the graph is a map of the
         case, so the neighbour of a good answer is the rest of that answer.
+
+        THREE sources since 2026-11-24, one price ladder: the typed `links` table votes FIRST
+        inside each seed's neighbourhood (a hand or the clerk chose that relation, and 858 rows of
+        it sat invisible to the ranking), then the graph's edges, then the vectors' neighbours.
         """
         adj = self._graph()
         if not cands:
             return cands
         seeds = cands[:max(1, self.graph_seeds)]
-        # Seed-local: the vectors are read for the seeds alone (17 ms here, 93 s for the
+        # Scope filter first, then the read: the link layer returns neighbours the ask can see,
+        # so no invisible row consumes a slot in the neighbourhood (the same law as the SELECT
+        # below and agentic-graphrag's bounded read).
+        scopes_list = list(scopes) if scopes else None
+        typed = self._link_neighbours([s["id"] for s in seeds], scopes=scopes_list)
+        # The vectors are read for the seeds alone (17 ms here, 93 s for the
         # whole-store matrix), so an ask that never reaches the arm pays nothing.
         sim = self._sim_neighbours([s["id"] for s in seeds])
-        if not adj and not sim:
+        if not adj and not sim and not typed:
             return cands
         # A vote is priced by who cast it: rank = seed position + position inside that seed's
         # neighbourhood, so a neighbour of the top hit outranks a neighbour of the eighth.
@@ -3543,7 +3673,12 @@ class MemoryService:
         # neighbours - concept links first, vector links second, one arm, two edge sources.
         vote: dict[int, int] = {}
         for si, s in enumerate(seeds, 1):
-            nbrs = sorted(adj.get(s["id"], ()))
+            # The neighbourhood is a LADDER, and the arm prices position: the row a hand linked
+            # first, then the graph's own edges (direct and same-case, then the tightest shared
+            # concept — see _graph), then the vectors' neighbours below. Sorting by row id threw
+            # that order away, so the vote paid for whichever neighbour had the lowest number.
+            typed_nbrs = typed.get(s["id"], ())
+            nbrs = list(typed_nbrs) + [n for n in adj.get(s["id"], ()) if n not in typed_nbrs]
             for ni, nb in enumerate(nbrs, 1):
                 rank = si + ni
                 if nb not in vote or rank < vote[nb]:

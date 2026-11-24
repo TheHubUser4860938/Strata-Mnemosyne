@@ -4036,6 +4036,21 @@ class TierThreeIdeals(unittest.TestCase):
         self.assertIn("4a2c8fef", got[b["id"]][0]["text"], "a link names its far end, or it is a number")
         self.assertIn("never once fired", got[a["id"]][0]["text"], "and so does the other side's view of it")
 
+    def test_a_link_from_another_drawer_is_not_shown_to_an_ask_that_cannot_read_it(self):
+        """The search is scope-filtered and the link read was not (2026-11-24): a project ask got
+        the WORDS of a `user` fact through an edge, which is the one leak the shelf model is
+        supposed to prevent. 14 active links cross scopes on this store, measured. The edge may
+        cross; the row it names must be readable by the ask."""
+        u = self.mem.remember("the owner prefers plain words and short sentences", scope="user")
+        d = self.mem.remember("the venue box keeps its own store and its own numbers",
+                              scope="default")
+        self.mem.link(u["id"], d["id"], "about")
+        pair = self.mem.links_of([d["id"]], scopes=["user", "default"])[d["id"]]
+        self.assertTrue(pair, "the scope pair lost the neighbour it should see")
+        self.assertIn("plain words", pair[0]["text"])
+        alone = self.mem.links_of([d["id"]], scopes=["default"])[d["id"]]
+        self.assertEqual(alone, [], "a user-scope fact rode a project ask's tool result")
+
     def test_relabeling_a_pair_replaces_the_kind_instead_of_stacking_a_second_one(self):
         a = self.mem.remember("row 6585 restates the cart truth one way", scope="default")
         b = self.mem.remember("row 6932 restates the same cart the other way", scope="default")

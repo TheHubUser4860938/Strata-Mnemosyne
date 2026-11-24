@@ -212,10 +212,18 @@ class SimLayer(unittest.TestCase):
 
     def setUp(self):
         """The three rows and the stub embedder are built once per class, so each test starts
-        from the same slate: no LLM graph file, no cached adjacency of either source."""
+        from the same slate: no LLM graph file, no cached adjacency of either source.
+
+        The slate now has a third source to clear: `remember()` links semantic near-dupes with an
+        `about` edge, and since 2026-11-24 the typed table is an edge SOURCE for this arm, so the
+        stub rows are linked to each other (cosine 0.97) and would vote in the k=0 arm. This class
+        measures the VECTORS; `LinkVote` measures the links.
+        """
         p = os.path.join(self.dir, "strata-graphify", "graph.json")
         if os.path.exists(p):
             os.remove(p)
+        self.store.conn.execute("delete from links")
+        self.store.conn.commit()
         self.store._graph_cache = None
         self.store._sim_cache = None
         self.store.graph_weight = 0.0
@@ -273,6 +281,209 @@ class SimLayer(unittest.TestCase):
         self.assertIn(d["id"], adj2, "a row written after the cache filled is invisible to it")
         self.assertTrue(adj2[d["id"]], "the new row has no neighbourhood at k=2")
         self.assertIn(self.a, adj2, "a read after the write lost a row it had already seen")
+
+
+class ConceptWalk(unittest.TestCase):
+    """The graph's concept nodes are bridges, not dead ends (2026-11-24).
+
+    The built graph carries two kinds of node: a row (id `<shelf>_fact_<n>`) and a concept the
+    extraction pass lifted out of the fact text. `fid()` parses a row id and returns None for a
+    concept, so the shipped adjacency kept only fact-to-fact edges — 1,020 of the store graph's
+    3,133 edges (measured 2026-11-23). A fact that reaches another fact THROUGH a concept — the
+    classic multi-hop case, two rows that name the same subject — was invisible to the arm.
+
+    These tests pin the fix: a shared concept is an edge, a direct edge is priced ahead of a
+    mediated one, a tight concept is priced ahead of a hub, and a hub cannot flood the block.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.mkdtemp(prefix="concepts-")
+        cls.store = MemoryService(cls.dir)
+        ids = {}
+        for name, text in (
+                ("a", "The dflash2 drafter accepts six proposals per step on the heretic pack."),
+                ("b", "DFlash2 acceptance on the tuned pack reads 0.803 at confidence 0.7."),
+                ("c", "The Radeon 780M plays Starfield at 1080p medium near 60 fps."),
+                ("d", "Spec 8 costs no VRAM because the eight-token window is already captured.")):
+            ids[name] = cls.store.remember(text, klass="OPS", scope="default")["id"]
+        cls.a, cls.b, cls.c, cls.d = (ids["a"], ids["b"], ids["c"], ids["d"])
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def _graph_file(self, nodes, links):
+        os.makedirs(os.path.join(self.dir, "strata-graphify"), exist_ok=True)
+        with open(os.path.join(self.dir, "strata-graphify", "graph.json"), "w") as f:
+            json.dump({"nodes": nodes, "links": links, "hyperedges": []}, f)
+        self.store._graph_cache = None
+
+    def test_a_shared_concept_reaches_the_sibling_row(self):
+        """a — concept — b, no direct edge: the arm must see b as a neighbour of a."""
+        self._graph_file(
+            [{"id": f"ops_fact_{i}"} for i in (self.a, self.b)]
+            + [{"id": "ops_concept_drafter", "label": "DFlash2 drafter"}],
+            [{"source": f"ops_fact_{self.a}", "target": "ops_concept_drafter"},
+             {"source": "ops_concept_drafter", "target": f"ops_fact_{self.b}"}])
+        adj = self.store._graph()
+        self.assertIn(self.b, list(adj.get(self.a, ())),
+                      "a fact linked through a concept is not a neighbour")
+        self.assertIn(self.a, list(adj.get(self.b, ())), "the bridge is not symmetric")
+
+    def test_a_direct_edge_is_priced_ahead_of_a_mediated_one(self):
+        """A row the extraction pass joined directly is better evidence than a row that merely
+        shares a concept, so it must come first in the neighbourhood's order — the vote prices
+        position, so order IS the price."""
+        self._graph_file(
+            [{"id": f"ops_fact_{i}"} for i in (self.a, self.b, self.c)]
+            + [{"id": "ops_concept_x", "label": "a shared subject"}],
+            [{"source": f"ops_fact_{self.a}", "target": f"ops_fact_{self.b}"},
+             {"source": f"ops_fact_{self.a}", "target": "ops_concept_x"},
+             {"source": "ops_concept_x", "target": f"ops_fact_{self.c}"}])
+        nbrs = list(self.store._graph().get(self.a, ()))
+        self.assertLess(nbrs.index(self.b), nbrs.index(self.c),
+                        "a mediated neighbour undercut a direct one")
+
+    def test_a_tight_concept_outranks_a_wide_one(self):
+        """Two bridges from a: one concept shared with ONE row, one shared with many. The tight
+        concept is the better claim that the rows are one case, so it votes first."""
+        wide = [{"id": f"ops_fact_{self.a}"}, {"id": "ops_concept_wide"}]
+        links = [{"source": f"ops_fact_{self.a}", "target": "ops_concept_wide"},
+                 {"source": "ops_concept_wide", "target": f"ops_fact_{self.c}"}]
+        for i in range(8):                       # the wide concept's other members
+            hub = self.store.remember(f"Hub member {i}: an unrelated fact about frame pacing.",
+                                      klass="OPS", scope="default")["id"]
+            wide.append({"id": f"ops_fact_{hub}"})
+            links.append({"source": "ops_concept_wide", "target": f"ops_fact_{hub}"})
+        wide += [{"id": "ops_concept_tight"}, {"id": f"ops_fact_{self.b}"}]
+        links += [{"source": f"ops_fact_{self.a}", "target": "ops_concept_tight"},
+                  {"source": "ops_concept_tight", "target": f"ops_fact_{self.b}"}]
+        self._graph_file(wide, links)
+        nbrs = list(self.store._graph().get(self.a, ()))
+        self.assertLess(nbrs.index(self.b), nbrs.index(self.c),
+                        "a hub concept outvoted a tight one")
+
+    def test_a_hub_concept_does_not_flood_the_neighbourhood(self):
+        """A concept touching the whole store is a table of contents, not a bridge: the arm has
+        eight seeds and a block of 96 notes, so a hub must be capped."""
+        from serve.memory import CONCEPT_FAN
+        n = CONCEPT_FAN + 25
+        nodes = [{"id": "ops_concept_hub"}, {"id": f"ops_fact_{self.a}"}]
+        links = []
+        for i in range(n):
+            rid = self.store.remember(f"Filler fact {i} about expert cache slots.",
+                                      klass="OPS", scope="default")["id"]
+            nodes.append({"id": f"ops_fact_{rid}"})
+            links.append({"source": "ops_concept_hub", "target": f"ops_fact_{rid}"})
+        links.append({"source": "ops_fact_{self.a}", "target": "ops_concept_hub"})
+        self._graph_file(nodes, links)
+        got = list(self.store._graph().get(self.a, ()))
+        self.assertLessEqual(len(got), CONCEPT_FAN,
+                             f"a hub concept contributed {len(got)} neighbours")
+
+    def test_the_bridge_moves_a_probe_the_direct_edge_cannot(self):
+        """The product claim, end to end: a query phrased on row b's words must pull row a up
+        when the only link between them is a concept, and not when the arm is off."""
+        self._graph_file(
+            [{"id": f"ops_fact_{i}"} for i in (self.a, self.b, self.c)]
+            + [{"id": "ops_concept_drafter", "label": "DFlash2 drafter"}],
+            [{"source": f"ops_fact_{self.a}", "target": "ops_concept_drafter"},
+             {"source": "ops_concept_drafter", "target": f"ops_fact_{self.b}"}])
+        q = "accepts six proposals per step on the heretic pack"
+        self.store.graph_weight = 0.0
+        off = {h["id"]: h for h in self.store.search(q, limit=8)}
+        self.store.graph_weight = 0.6
+        on = {h["id"]: h for h in self.store.search(q, limit=8)}
+        self.assertNotIn("graph_rank", off.get(self.a, {}),
+                         "the arm signed a row with the weight off")
+        self.assertTrue(on.get(self.a, {}).get("graph_rank"),
+                        "the concept bridge cast no vote")
+
+
+class LinkVote(unittest.TestCase):
+    """The typed edge is an edge source too (2026-11-24).
+
+    The store has carried three kinds of connection: the built graph's edges, the vectors' nearest
+    neighbours, and the `links` table — a typed, human- and clerk-authored relation between two
+    rows (`about` / `contradicts` / `supports`), 858 rows on this box, free to read and already in
+    Postgres. Only the first two voted. These tests pin the third: a link the owner wrote is the
+    best evidence in the building that two rows belong to one question, so it votes, and it is
+    priced ahead of a link the model inferred.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.mkdtemp(prefix="linkvote-")
+        cls.store = MemoryService(cls.dir)
+        cls.a = cls.store.remember("The clerk drains two batches of sixty turns per tick behind "
+                                   "240 seconds of engine silence.", klass="OPS", scope="default")["id"]
+        cls.b = cls.store.remember("Curation runs on a systemd timer, not a crontab, on this box.",
+                                   klass="OPS", scope="default")["id"]
+        cls.c = cls.store.remember("The Radeon 780M plays Starfield at 1080p medium near 60 fps.",
+                                   klass="HW", scope="default")["id"]
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def _graph_file(self, links):
+        os.makedirs(os.path.join(self.dir, "strata-graphify"), exist_ok=True)
+        with open(os.path.join(self.dir, "strata-graphify", "graph.json"), "w") as f:
+            json.dump({"nodes": [{"id": f"ops_fact_{i}"} for i in (self.a, self.b, self.c)],
+                       "links": links, "hyperedges": []}, f)
+        self.store._graph_cache = None
+
+    def _search(self, w: float, query: str = "clerk drains batches turns tick", limit: int = 8):
+        """The arm's one switch, set the way the shipped tests set it — an attribute, not a kwarg:
+        `search()` reads `self.graph_weight`. The store has no embedder, so the lexical arm is the
+        whole of the other two, and the query shares words with `a` (the seed) and not with `b`."""
+        self.store.graph_weight = w
+        return {h["id"]: h for h in self.store.search(query, limit=limit)}
+
+    def test_a_typed_link_votes_with_no_graph_file(self):
+        """The layer is an edge SOURCE: with no graph on disk, a row the owner linked to a seed
+        still rises, because the link is in the store and the graph is a file."""
+        if os.path.isdir(os.path.join(self.dir, "strata-graphify")):
+            shutil.rmtree(os.path.join(self.dir, "strata-graphify"))
+        self.store._graph_cache = None
+        self.store.link(self.a, self.b, kind="about")
+        hits = self._search(0.6)
+        self.assertIn(self.a, hits, "the seed is not in the list, so no vote can be attributed")
+        self.assertTrue(hits.get(self.b, {}).get("graph_rank"),
+                        "a typed link cast no vote")
+
+    def test_a_typed_link_is_priced_ahead_of_an_inferred_one(self):
+        """One seed, two sources: `c` is the graph's neighbour, `b` is the owner's. The typed
+        edge is the better claim, so it must carry the better rank."""
+        self._graph_file([{"source": f"ops_fact_{self.a}", "target": f"ops_fact_{self.c}",
+                           "relation": "about"}])
+        self.store.link(self.a, self.b, kind="supports")
+        hits = self._search(0.6)
+        self.assertTrue(hits.get(self.b, {}).get("graph_rank"), "the link voted nothing")
+        self.assertTrue(hits.get(self.c, {}).get("graph_rank"), "the graph voted nothing")
+        self.assertLess(hits[self.b]["graph_rank"], hits[self.c]["graph_rank"],
+                        "an inferred edge undercut the one a hand wrote")
+
+    def test_links_vote_only_inside_the_scopes_the_ask_can_see(self):
+        """A shelf is a filing drawer and a link crossing drawers is the point of the arm, but a
+        tenant's neighbours stay inside its scopes — the law `_graph_expand` already applies to
+        the graph, now applied to the link read, so a `user` fact cannot reach a project ask
+        through a link (14 active links crossed scopes on this store, measured 2026-11-24)."""
+        p = self.store.remember("The venue box keeps its own store and its own numbers.",
+                                klass="OPS", scope="project")["id"]
+        self.store.link(self.a, p, kind="about")
+        nbrs = self.store._link_neighbours([self.a], scopes=["default", "user"]).get(self.a, [])
+        self.assertNotIn(p, nbrs, "a link pulled a row in from outside the ask's scopes")
+        both = self.store._link_neighbours([self.a]).get(self.a, [])
+        self.assertIn(p, both, "the unscoped read lost the cross-scope neighbour it should see")
+
+    def test_weight_zero_leaves_the_link_signature_off(self):
+        """The default path stays byte-identical: with the arm off, a link is text on the hit
+        line, not a vote."""
+        hits = self._search(0.0)
+        self.assertNotIn("graph_rank", hits.get(self.b, {}),
+                         "the arm signed a row with the weight off")
 
 
 if __name__ == "__main__":
