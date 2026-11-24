@@ -5488,6 +5488,54 @@ class TheStandingPage(unittest.TestCase):
         self.assertEqual(self.svc.stats()["tool"]["pages"], 2, "the verb counts in the ledger")
 
 
+class TheShelvingQueue(unittest.TestCase):
+    """Item 10 (2026-11-24, agentic-graphrag's candidate queue): a new cutter is a PROPOSAL with a
+    count, and it earns the drawer at the bar the store measured (3 rows, 2026-11-02). The queue is
+    also the report the taxonomy review never had."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.svc = MemoryService(self.tmp.name)
+
+    def tearDown(self):
+        self.svc.close()
+        self.tmp.cleanup()
+
+    def test_a_new_cutter_is_proposed_and_earns_its_drawer_at_three_proposals(self):
+        r = self.svc.propose_shelf("OPS/KAFKA", note="curation-1")     # the drawer's first row
+        self.assertTrue(r["proposed"])
+        self.assertEqual(r["n"], 1, "a queue built after the shelf opens starts at its true size")
+        r = self.svc.propose_shelf("OPS/KAFKA")
+        r = self.svc.propose_shelf("OPS/KAFKA")
+        self.assertEqual(r["n"], 3)
+        self.assertEqual(r["status"], "earned", "the 3-row bar, not a mood")
+        q = self.svc.candidates()
+        self.assertEqual([x["shelf"] for x in q], ["OPS/KAFKA"])
+        self.assertEqual(q[0]["n"], 3)
+
+    def test_a_top_category_needs_no_earning(self):
+        self.assertFalse(self.svc.propose_shelf("TECH")["proposed"],
+                         "a top is a family, not a new drawer")
+        self.assertEqual(self.svc.candidates(), [], "and the queue stays clean")
+
+    def test_the_write_feeds_the_queue_so_a_hand_written_cutter_is_a_proposal_too(self):
+        self.svc.remember("the topic map is built by the consumer", scope="default",
+                          klass="STR/TOPIC")
+        q = self.svc.candidates()
+        self.assertEqual([x["shelf"] for x in q], ["STR/TOPIC"],
+                         "the queue is fed by the WRITE, not only by the clerk")
+
+    def test_the_queue_reports_worst_first_and_counts_earned_shelves(self):
+        for i in range(4):
+            self.svc.propose_shelf("POL/ARSA")
+        self.svc.propose_shelf("BIO/FLUOR")
+        q = self.svc.candidates()
+        self.assertEqual([x["shelf"] for x in q], ["POL/ARSA", "BIO/FLUOR"],
+                         "the subjects the clerk keeps hitting come first")
+        earned = self.svc.candidates(status="earned")
+        self.assertEqual([x["shelf"] for x in earned], ["POL/ARSA"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

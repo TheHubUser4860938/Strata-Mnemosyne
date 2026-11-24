@@ -111,6 +111,9 @@ RRF_K = 1.0                             # reciprocal-rank fusion constant, a mod
 LEX_CAND_CAP = 4000                     # the lexical arm's candidate ceiling (item 18: a full cap is
                                         # reported as `truncated`, not hidden behind a full list)
 _CITE_FILE_RE = re.compile(r"[\w][\w./-]*\.(?:py|md|json|jsonl|sh|ts|tsx|js|cu|cpp|hpp|txt|ino)\b")
+SHELF_BAR = 3               # rows a cutter needs to earn its drawer (the 2026-11-02 sorting: a
+                            # cutter costs a drawer, a router entry and a map line, and it pays at
+                            # three rows). One number, shared by the queue and m4_shelftidy.
 # The file tokens a DEC row NAMES (item 14). Greedy about directories, strict about the extension:
 # `serve/memory.py`, `terminal/spikes/…/PLAN-2026-11-24.md` and `BUILD.json` are what decisions
 # cite; a bare word like `Plan` is not.
@@ -1104,6 +1107,20 @@ _PG_DDL: tuple[str, ...] = (
          valid_at timestamptz,
          invalid_at timestamptz,
          primary key (a_id, b_id))""",
+    # THE SHELVING QUEUE (2026-11-24, item 10 — agentic-graphrag's candidate queue, which returns
+    # a schema PATCH instead of a new ontology per run). The clerk invents freely: this store grew
+    # to 91 shelves with 19 holding ≤3 rows, and 25 invented tops needed a roll-up pass by hand.
+    # A cutter is a CLAIM that a subject is worth its own drawer, so it goes on a queue with a
+    # count and earns the shelf at the bar the store already measured (3 rows, the 2026-11-02
+    # sorting). `status` is the state a human reviews: proposed, earned, rolled (folded into a
+    # family). The queue is also the report: it says what the clerk keeps proposing.
+    """create table if not exists candidates(
+         shelf text primary key,
+         n integer not null default 1,
+         first_seen timestamptz not null,
+         last_seen timestamptz not null,
+         status text not null default 'proposed',
+         note text not null default '')""",
     "create index if not exists links_b on links(b_id)",
     # A PAGE IS A STANDING ANSWER (2026-11-24, item 6 — Hindsight's mental models / pages). The
     # store answers a question the same way twice a day and the answer is assembled fresh from
@@ -2082,6 +2099,14 @@ class MemoryService:
             # superseded row leaves the active set, an eviction retires one, and the new row joins it.
             self._dedupe_amend(added=[(new_id, set(norm_text(text).split()))],
                                retired=([supersede] if supersede else []) + evicted)
+            # THE QUEUE IS FED BY THE WRITE, not by the clerk: a hand-written row that opens a new
+            # cutter is as much a proposal as a harvested one (item 10, 2026-11-24). Fire-and-forget
+            # by design — a proposal that fails cannot cost the write.
+            if klass and "/" in str(klass):
+                try:
+                    self.propose_shelf(str(klass), note=str(source or ""))
+                except Exception:                                   # noqa: BLE001 - a proposal
+                    pass    # cannot cost the write it rides on
             out = {"id": new_id, "deduped": False}
             if about:
                 out["about"] = about          # the relation the store recorded on its own
@@ -3370,6 +3395,69 @@ class MemoryService:
         return {"id": mid, "ok": True, "states": len(prov["scar"])}
 
     @_heals
+    @_heals
+    def propose_shelf(self, shelf: str, note: str = "") -> dict:
+        """A cutter the store has not seen is a PROPOSAL (2026-11-24, item 10). One UPSERT: the
+        count is the evidence, `earned` is the 3-row bar the 2026-11-02 sorting measured (a cutter
+        costs a drawer, a router entry and a line on the map, and it pays for them at three rows),
+        and a shelf that already exists is not a proposal at all.
+
+        This is the queue agentic-graphrag's extractor returns — a schema PATCH, not a new
+        ontology per run — and the report: `candidates()` says what the clerk keeps proposing,
+        which is the number the taxonomy review needs and never had.
+        """
+        s = str(shelf or "").strip()
+        if not s or "/" not in s:
+            return {"shelf": s, "proposed": False, "why": "a top category needs no earning"}
+        now = self._dt(time.time())
+        with self.lock, _rollback_on_error(self.conn):
+            already = self.conn.execute("select n from candidates where shelf = %s",
+                                        (s,)).fetchone()
+            if already is None:
+                # The queue is fed by the WRITE (see remember): a drawer's first row IS the
+                # proposal, so a queue built after the fact starts at the rows it can see and a
+                # shelf the store already has is proposed at its true size, not at 1.
+                n0 = self.conn.execute(
+                    "select count(*) from memories where invalid_at is null and class = %s",
+                    (s,)).fetchone()[0]
+                self.conn.execute(
+                    "insert into candidates(shelf, n, first_seen, last_seen, status, note)"
+                    " values(%s,%s,%s,%s,%s,%s)"
+                    " on conflict (shelf) do update set n = candidates.n + 1,"
+                    " last_seen = excluded.last_seen,"
+                    f" status = case when candidates.n + 1 >= {int(SHELF_BAR)} then 'earned'"
+                    " else candidates.status end,"
+                    " note = case when excluded.note <> '' then excluded.note"
+                    " else candidates.note end",
+                    (s, max(1, int(n0)), now, now,
+                     "earned" if int(n0) >= SHELF_BAR else "proposed", str(note or "")[:200]))
+            else:
+                self.conn.execute(
+                    "update candidates set n = n + 1, last_seen = %s,"
+                    # `n` on the right of an UPDATE is the OLD value, so the bar is crossed by the
+                    # row this statement writes, not the one it read: n + 1.
+                    " status = case when n + 1 >= %s then 'earned' else status end,"
+                    " note = case when %s <> '' then %s else note end where shelf = %s",
+                    (now, int(SHELF_BAR), str(note or ""), str(note or ""), s))
+            row = self.conn.execute("select n, status from candidates where shelf = %s",
+                                    (s,)).fetchone()
+            self.conn.commit()
+        return {"shelf": s, "proposed": True, "n": int(row[0]), "status": row[1]}
+
+    @_heals
+    def candidates(self, status: str = "", limit: int = 100) -> list[dict]:
+        """The queue, worst-first: the cutters with the most proposals are the subjects the clerk
+        keeps hitting and the store has no drawer for."""
+        with self.lock, _rollback_on_error(self.conn):
+            rows = self.conn.execute(
+                "select shelf, n, status, extract(epoch from last_seen), coalesce(note,'')"
+                " from candidates" + (" where status = %s" % "'%s'" % status if status else "") +
+                " order by n desc, shelf limit %s", (int(limit),)).fetchall()
+            self.conn.commit()
+        return [{"shelf": r[0], "n": int(r[1]), "status": r[2],
+                 "seen": _stamp(self._dt(float(r[3]))),      # extract(epoch) is a Decimal
+                 "note": r[4]} for r in rows]
+
     def page(self, name: str | None = None, answer: str | None = None,
              question: str = "", scope: str = DEFAULT_PROJECT,
              source: list[int] | None = None) -> dict:

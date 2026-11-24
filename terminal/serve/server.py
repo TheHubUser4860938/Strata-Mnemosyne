@@ -10505,6 +10505,17 @@ def make_handler(svc: Service):
                                     question=str(req.get("question") or ""),
                                     scope=str(req.get("scope") or "default"),
                                     source=req.get("source") or None)
+            elif op == "candidates":
+                # THE SHELVING QUEUE (2026-11-24, item 10): {} reads the queue worst-first;
+                # {"shelf", "note"?} proposes one; {"preview": true} is the dry read the taxonomy
+                # review runs before it rolls anything.
+                if req.get("shelf"):
+                    r = svc.memory.propose_shelf(str(req["shelf"]), str(req.get("note") or ""))
+                else:
+                    rows = svc.memory.candidates(status=str(req.get("status") or ""),
+                                                 limit=int(req.get("limit") or 100))
+                    r = {"candidates": rows, "count": len(rows),
+                         "earned": sum(1 for x in rows if x["status"] == "earned")}
             elif op == "curate":
                 # THE MANUAL TRIGGER (2026-10-29): drain everything pending, starting NOW, in the
                 # background. The reply must not wait on the curation any more than the curation

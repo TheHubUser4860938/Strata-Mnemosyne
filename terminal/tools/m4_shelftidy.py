@@ -96,10 +96,14 @@ def census(svc):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dir", default=str(data_dir(ROOT) / "memory-eval"))
-    ap.add_argument("--bar", type=int, default=3, help="rows a cutter needs to earn its drawer")
+    ap.add_argument("--bar", type=int, default=SHELF_BAR,
+                    help="rows a cutter needs to earn its drawer (the store's own number)")
     ap.add_argument("--tops", action="store_true", help="run the tops pass (needs the box)")
     ap.add_argument("--roll", action="store_true", help="run the 3-row-bar roll-up")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--preview", action="store_true",
+                    help="print the queue and what each rule claims, and stop: no model call, "
+                         "no writes. The taxonomy review's read (item 10, 2026-11-24).")
     ap.add_argument("--url", default="http://127.0.0.1:8005/v1/chat/completions")
     ap.add_argument("--out", default="")
     a = ap.parse_args()
@@ -108,6 +112,25 @@ def main() -> int:
 
     svc = MemoryService(a.dir)
     shelves = census(svc)
+    if a.preview:
+        # WHAT EACH RULE CLAIMS, before anything moves (item 10). The census is the roll-up's
+        # subject; the queue is the clerk's own testimony about the drawers it keeps wanting,
+        # which is the number the 2026-11-02 sorting never had. Zero model calls, zero writes.
+        below = {k: v for k, v in shelves.items() if v < a.bar}
+        queue = svc.candidates(limit=200)
+        print(json.dumps({
+            "rows": sum(shelves.values()), "shelves": len(shelves), "bar": a.bar,
+            "roll_up_would_move": {"shelves_below_bar": len(below),
+                                   "rows": sum(below.values()),
+                                   "shelves": sorted(below, key=lambda k: (-below[k], k))[:12]},
+            "queue": {"proposed": sum(1 for q in queue if q["status"] == "proposed"),
+                      "earned": sum(1 for q in queue if q["status"] == "earned"),
+                      "top": queue[:10]},
+            "tops_would_ask": sum(1 for k in shelves if "/" not in k and shelves[k] < a.bar),
+        }, indent=1))
+        svc.close()
+        return 0
+
     out = Path(a.out or str(data_dir(ROOT) / "bench" /
                             f"m4-shelftidy-{time.strftime('%Y-%m-%d')}.jsonl"))
     out.parent.mkdir(parents=True, exist_ok=True)
