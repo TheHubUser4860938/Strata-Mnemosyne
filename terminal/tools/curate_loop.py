@@ -819,13 +819,20 @@ Fact: {fact}
 SHELF_ANSWER = re.compile(r"\b([A-Z][A-Z0-9]{1,7}(?:/[A-Z0-9]{2,8})?(?:\.[A-Za-z0-9]+)*)\b")
 # The dotted tail is a legal half of a call number (CLASS_RE advertises MEM/CRG.3.431) and the
 # pattern used to stop before it, so the clerk's best answer came back truncated (audit 2026-11-07).
+VERB_TEMP = {"shelf": 0.2}     # per-verb sampling, measured on the label panel (see ask's docstring)
 
 
-def clerk_class(fact: str, ask) -> str:
+def clerk_class(fact: str, ask, budget: int = 64) -> str:
     """One fact, one shelf, from the served model. Empty string = leave it wild, which
     stays the safe home: a wrong shelf HIDES a fact from every filtered request that
     stops asking for it, a wild shelf only waits. So an answer whose top is not on the
-    menu does not move the row."""
+    menu does not move the row.
+
+    `budget` (2026-11-24) is the decode cap, and it is the clerk's whole answer: measured on
+    the label panel, 12 of 40 facts came back blank at 64 tokens, and 13 of the 16
+    disagreements were "named a shelf on one call, blank on the next" - a reply that never
+    reached the code, not a model that changed its mind. The harvest keeps 64.
+    """
     if ask is None:
         return ""
     try:
@@ -836,7 +843,7 @@ def clerk_class(fact: str, ask) -> str:
         # and dies on the same fact: 13 ticks, turns 8654..8713, zero marks, queue 505 -> 1,303
         # (tools/test_curate_clerk.py is the receipt; the ticks from 13:12 to 18:05 that day
         # looked clean because the clerk runs only on the `or` branch of the class expression).
-        ans = ask(SHELF_ONE.format(menu=SHELF_MENU, fact=fact[:400]), 64, kind="shelf")[0]
+        ans = ask(SHELF_ONE.format(menu=SHELF_MENU, fact=fact[:400]), budget, kind="shelf")[0]
     except Exception:                                   # a sweep must not stall on a label
         return ""
     codes = [c for c in SHELF_ANSWER.findall(ans or "") if c.split("/")[0] in SHELF_TOPS]
@@ -1046,10 +1053,19 @@ def main():
     CTRL_LITERALS.extend(sorted({*F.LITERAL_TAGS, *tok.control_tokens}, key=lambda x: -len(x)))
 
     def ask(text, maxtok, want_geom=None, kind=""):
-        """one muted generation; returns (answer, ptok, geom_ok) - transport failure -> (None,..)."""
+        """one muted generation; returns (answer, ptok, geom_ok) - transport failure -> (None,..).
+
+        `VERB_TEMP` (2026-11-24): the harvest ran EVERY verb at 0.8, a number chosen for the
+        extraction passes where variety helps. The shelf clerk is a different shape of question -
+        one fact, a fixed menu, one code - and at 0.8 it did not agree with itself: the label
+        panel measured AGREEMENT 0.42-0.60 (two identical asks, same fact, same menu) against
+        0.88 at 0.2 and 0.96 at temp 0. The answer RATE moved too (0.67 at 0.8 → 0.92 at 0), so
+        the blanks were never a token budget: they were sampling. 0.2 keeps a little room for a
+        fact that genuinely fits two drawers, and gives up a third of the coin-flips.
+        """
         body = {"model": model, "messages": [{"role": "user", "content": "{REASON:off}\n\n" + text}],
-                "temperature": 0.8, "reasoning_effort": "off", "max_tokens": maxtok,
-                "stream": False}
+                "temperature": VERB_TEMP.get(kind, 0.8), "reasoning_effort": "off",
+                "max_tokens": maxtok, "stream": False}
         st, r = http(url + "/v1/chat/completions", body, headers={"X-Strata-Memory": "off"})
         if st != 200:
             return None, None, False

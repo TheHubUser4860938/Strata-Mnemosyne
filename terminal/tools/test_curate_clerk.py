@@ -117,5 +117,34 @@ class LawPromptCarriesTheDates(unittest.TestCase):
             self.assertEqual(C.law_verdict(w), w)
 
 
+class TheShelfVerbIsCold(unittest.TestCase):
+    """The clerk's stability, measured 2026-11-24 on the label panel (`tools/m4_labelpanel.py`):
+    two identical asks on the same fact and the same menu agreed 0.42-0.60 of the time at temp 0.8,
+    0.88 at 0.2, 0.96 at temp 0. The blank rate moved with it (0.67 answered at 0.8, 0.92 at 0),
+    which is why the blanks were never the token budget. Two contracts keep that in place: the
+    clerk ASKS FOR the shelf kind, and the shelf kind is the cold one."""
+
+    def test_the_clerk_asks_for_the_shelf_kind_so_the_verb_temp_reaches_it(self):
+        seen = {}
+
+        def ask(text, maxtok, want_geom=None, kind=""):
+            seen["kind"] = kind
+            seen["maxtok"] = maxtok
+            return "OPS", 10, True
+
+        self.assertEqual(clerk_class("the box runs a 4090 and 125 GB of RAM", ask), "OPS")
+        self.assertEqual(seen.get("kind"), "shelf",
+                         "the clerk's call is how the shelf verb gets its temperature")
+        self.assertEqual(seen.get("maxtok"), 64, "the shipped decode cap")
+
+    def test_the_shelf_verb_is_the_cold_one(self):
+        self.assertIn("shelf", C.VERB_TEMP, "the verb has no temperature of its own: it is at 0.8")
+        self.assertLessEqual(C.VERB_TEMP["shelf"], 0.4,
+                             "measured band: agreement 0.88 at 0.2, 0.62 at 0.4, 0.42 at 0.8")
+        for other in ("extract", "law", ""):
+            self.assertEqual(C.VERB_TEMP.get(other, 0.8), 0.8,
+                             f"{other} keeps the harvest's own temperature")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

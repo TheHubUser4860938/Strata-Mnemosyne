@@ -55,10 +55,14 @@ def post(op_body, timeout=180):
 
 
 def ask_factory(model: str, temp: float):
+    """The harvest's `ask`, in miniature — including VERB_TEMP, so the panel measures the SHIPPED
+    sampling of each verb and a per-verb temperature change moves the number it reports."""
+    from curate_loop import VERB_TEMP
+
     def ask(text, maxtok, want_geom=None, kind=""):
         body = {"model": model,
                 "messages": [{"role": "user", "content": "{REASON:off}\n\n" + text}],
-                "temperature": temp, "reasoning_effort": "off",
+                "temperature": VERB_TEMP.get(kind, temp), "reasoning_effort": "off",
                 "max_tokens": maxtok, "stream": False}
         req = urllib.request.Request(URL + "/v1/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json",
@@ -113,8 +117,8 @@ def main():
     shelves = Counter()
     detail = []
     for rid, text, _klass, _src in sample:      # 4-tuple: the source names the frame
-        one = clerk_class(text, ask)          # the shipped call, the shipped budget
-        two = clerk_class(text, ask)          # the same question again
+        one = clerk_class(text, ask, budget=a.budget)     # the shipped call, budget swept
+        two = clerk_class(text, ask, budget=a.budget)     # the same question again
         same = (one or "") == (two or "")
         agree += same
         named += bool(one)
