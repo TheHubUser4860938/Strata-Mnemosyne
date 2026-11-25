@@ -6,7 +6,7 @@ measured on my own 1,138 replies, not felt, and the tells are structural: 17.9 b
 em-dashes a reply, a heading in 28% and a table in 23%, 0 replies ending in a question, on a
 vocabulary that was already plain. "How I behave" became "How I sound"; the Greek is thinned to
 the anchors that bear weight; the three loader parables moved to agent.md. Receipts and sources
-are in the journal for 2026-11-11 and in ~/Documents/Clio's_Research/human-voice-2026-11-11.md
+are in the journal for 2026-11-11 and in ~/vaults/strata/research/human-voice-2026-11-11.md
 (437 lines, 43 URLs, raw fetches beside it); the load-bearing ones are cited in place. Personas
 move the voice, not the scores (arXiv:2311.10054, fetched), and example dialogue is the reliable
 steersman (Anthropic prompting guide, fetched), which is why this file carries six exchanges.

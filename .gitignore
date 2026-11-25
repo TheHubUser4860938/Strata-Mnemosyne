@@ -175,3 +175,6 @@ tools/state/molt.log
 graphify-out/
 bench/p1/graphify-corpus/
 bench/p1/slice/
+
+# app build output (0.2.21 restructure)
+apps/
