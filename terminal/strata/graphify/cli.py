@@ -36,6 +36,7 @@ def main(argv=None) -> int:
     sub.add_parser("view", help="compact node + community payload the web page draws")
     sub.add_parser("pending", help="fact ids noted since the last pass")
     sub.add_parser("update", help="pass over the pending facts and merge")
+    sub.add_parser("floor", help="name every live row: a node and a shelf edge, no LLM call")
 
     c = sub.add_parser("cover", help="drain the store: merge passes until every row is named")
     c.add_argument("--per-file", type=int, default=10, help="facts per corpus file (10 names ~1 concept per 1.5 facts)")
@@ -79,6 +80,10 @@ def main(argv=None) -> int:
         _out(g.view())
     elif a.command == "pending":
         _out({"pending": g.pending_ids(), "due": g.due()})
+    elif a.command == "floor":
+        # The coverage floor runs alone: a box that just wants every row in the graph pays one
+        # file rewrite, not a 2-hour chunk pass (2026-11-26).
+        _out({**g.ensure_fact_nodes(), **g.summary()})
     elif a.command == "note":
         _out({"noted": g.note(a.ids)})
     elif a.command == "update":

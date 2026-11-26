@@ -207,7 +207,15 @@ class StrataGraphify:
                 for rid, _, text, created, conf in slice_:
                     body.append(f"## fact {rid}\nSaid {created} · confidence {conf}\n\n"
                                 f"{(text or '').strip()}\n")
-                suffix = f"-{part:02d}" if split else ""
+                # The part name carries the slice's row-id RANGE, not a part index (2026-11-26).
+                # A cover pass reads only the rows no node names, so index-slicing renumbers a
+                # shelf's files between passes, and graphify keys node ids by the file stem:
+                # "Replaced 835 node(s) from re-extracted source file(s)" then re-rolls names an
+                # earlier pass already earned. Measured on the 2026-11-26 drain: 516 rows named
+                # per pass against 368 lost, a plateau near 58% coverage. A range-named file is
+                # re-extracted against the same rows, so a pass's gains stick.
+                part_ids = [int(r[0]) for r in slice_]
+                suffix = f"-{min(part_ids):06d}-{max(part_ids):06d}" if split else ""
                 p = self.corpus / f"{name}{suffix}.md"
                 p.write_text("\n".join(body), encoding="utf-8")
                 out.append(p)
@@ -310,6 +318,11 @@ class StrataGraphify:
             "cohesion": {str(k): v for k, v in cohesion.items()},
             "gods": analyze.god_nodes(G, top_n=12),
         })
+        # THE FLOOR (2026-11-26): every live row gets a node and a shelf edge, free. A pass
+        # names ~1 row in 5, so without this the graph arm sees a map with holes. It runs after
+        # the export and after analysis.json, and patches both, so the page draws the floor in
+        # its shelf's community; the state block below counts the FILE, not G.
+        floor = self.ensure_fact_nodes()
         # hyperedges counts the WHOLE graph (the file just written carries the merged set), not
         # this pass's extraction: on a merge pass the extraction count is the delta, and the
         # tile read it as the total (2026-11-16 audit). watermark is the store's max id, not the
@@ -322,7 +335,10 @@ class StrataGraphify:
             # in_graph is the coverage the tile shows, recorded at build time so a sweep can
             # read it out of state.json without re-parsing the graph.
             "in_graph": self.coverage().get("in_graph", 0),
-            "nodes": G.number_of_nodes(), "edges": G.number_of_edges(),
+            # counted from the file just written: the floor adds nodes AFTER gexport, so G is
+            # the extraction's graph and the tile would understate both numbers (2026-11-26).
+            "nodes": len(whole.get("nodes") or []), "edges": len(whole.get("links") or []),
+            "floor_nodes": floor.get("added_nodes", 0),
             "hyperedges": len(whole.get("hyperedges") or []),
             "communities": len(communities),
             "tokens_in": extraction["input_tokens"], "tokens_out": extraction["output_tokens"],
@@ -580,6 +596,148 @@ class StrataGraphify:
 
     def _n_facts(self) -> int:
         return len(self._rows_meta())
+
+    # ------------------------------------------------------------------ the floor
+    def ensure_fact_nodes(self) -> dict:
+        """Give every live row a node, at no decode cost (2026-11-26, the coverage floor).
+
+        A pass names about one row in five: the model writes one concept per ~2-5 facts and
+        cites only the facts it wrote about, so the standing graph is a map of the store with
+        holes, and a row no node cites is invisible to the graph arm's vote. Measured on the
+        2026-11-26 drain — 516 named per pass against 368 lost at index-sliced part files, 63
+        against 5 once the part names were stable: the queue shrinks ~2% an hour either way,
+        which is ~70 hours to cover 4,200 rows. The LLM layer is the enrichment; this is the
+        floor. Each unnamed row gets a node keyed the way the extractor keys its own
+        (`<shelf>_fact_<id>`) and ONE edge to its shelf's hub node, so the arm reaches the row
+        through the shelf — the widest concept in the file, which the arm's tightest-first rule
+        prices LAST. That is the right price for "filed in the same drawer".
+
+        The hub is the shelf's own concept node when a pass drew one (`Shelf USR/PREF — …`),
+        so a shelf keeps one hub, not two. The community is the shelf's modal community, and
+        `analysis.json` is patched to match, so the page draws the floor beside the concepts
+        it belongs to instead of in the unassigned bucket.
+        """
+        g = self._read(self.graph_path)
+        if not (g or {}).get("nodes"):
+            return {"added_nodes": 0, "added_edges": 0}
+        named = self._named_ids()
+        todo = [r for r in self.facts(None) if r[0] not in named]
+        if not todo:
+            self._sync_state_counts()      # idempotent: a re-run still keeps the tile honest
+            return {"added_nodes": 0, "added_edges": 0, **self.summary()}
+
+        # A corpus file is named for its CLASS, sliced by part: `usr.md`, `usr-01.md` (the index
+        # rule), `usr-001512-001559.md` (the range rule, 2026-11-26). All three are the USR
+        # drawer, and the class key is `usr` — so strip the part suffix AFTER the dash→underscore
+        # conversion that graphify's node ids use, not before it (a dash-only pattern matched
+        # nothing once the dashes were gone, and 2,258 floor nodes fell into the page's
+        # unassigned bucket).
+        part = re.compile(r"_(\d{6}_\d{6}|\d{2})$")
+
+        def key_of(cls) -> str:
+            return re.sub(r"[^a-z0-9]+", "_", str(cls or "UNSHELVED").lower()).strip("_")
+
+        def shelf_of(node) -> str:
+            """The shelf a node was extracted from: its source file, minus the part suffix."""
+            for f in node.get("source_files") or []:
+                s = str(f).rsplit("/", 1)[-1]
+                if s.endswith(".md"):
+                    s = s[:-3]
+                if s:
+                    return part.sub("", s.replace("-", "_"))
+            return ""
+
+        # One hub per shelf, and one community per shelf: both read from what the graph has.
+        hub: dict[str, str] = {}
+        hub_len: dict[str, int] = {}
+        tally: dict[str, dict] = {}
+        for n in g["nodes"]:
+            k = shelf_of(n)
+            c = n.get("community")
+            if k and isinstance(c, int):
+                t = tally.setdefault(k, {})
+                t[c] = t.get(c, 0) + 1
+            lab = str(n.get("label") or "").strip().lower()
+            if lab.startswith("shelf ") and k:
+                # "Shelf USR/PREF — preference terms (long tasks, library)" names the USR/PREF
+                # drawer, whatever file the pass drew it from; the plainest label wins, so a
+                # one-line hub outranks a hub that also lists its terms.
+                hk = key_of(lab[6:].split("—")[0].split(" - ")[0].split("(")[0])
+                if hk and (hk not in hub or len(lab) < hub_len.get(hk, 1 << 30)):
+                    hub[hk] = str(n.get("id"))
+                    hub_len[hk] = len(lab)
+        modal = {k: max(t.items(), key=lambda kv: kv[1])[0] for k, t in tally.items()}
+
+        nodes, links = g["nodes"], g.setdefault("links", [])
+        have = {str(n.get("id")) for n in nodes}
+        added_nodes = added_edges = 0
+        for rid, cls, text, created, _conf in todo:
+            k = key_of(cls)
+            nid = f"{k}_fact_{rid}"
+            if nid not in have:
+                head = " ".join(str(text or "").split())
+                nodes.append({"id": nid, "label": (head[:110] or f"fact {rid}"),
+                              "type": "fact", "community": modal.get(k, -1),
+                              "_origin": "shelf-floor", "source_files": [f"{k}.md"],
+                              "entity_id": str(rid)})
+                have.add(nid)
+                added_nodes += 1
+            h = hub.get(k)
+            if h is None:
+                h = f"shelf_{k}"
+                if h not in have:
+                    nodes.append({"id": h, "label": f"Shelf {cls}", "type": "shelf",
+                                  "community": modal.get(k, -1), "_origin": "shelf-floor",
+                                  "source_files": [f"{k}.md"]})
+                    have.add(h)
+                    hub[k] = h
+                    added_nodes += 1
+            links.append({"source": nid, "target": h, "relation": "filed_on_shelf",
+                          "confidence": "EXTRACTED", "confidence_score": 1.0,
+                          "_origin": "shelf-floor"})
+            added_edges += 1
+
+        self._write(self.graph_path, g)
+        self._patch_analysis(modal)               # the page groups by analysis.json, not by node
+        self._sync_state_counts()
+        return {"added_nodes": added_nodes, "added_edges": added_edges, **self.summary()}
+
+    def _sync_state_counts(self) -> None:
+        """Keep state.json's counts equal to graph.json's.
+
+        The tile and the sweep read this file, and the floor changes the counts without an LLM
+        pass, so a pass's `nodes`/`edges` (counted from the in-memory graph before the floor was
+        written) go stale the moment the floor runs. `built` stays the last pass's stamp: the
+        floor is not a pass, it is a filing.
+        """
+        g = self._read(self.graph_path)
+        st = self._read(self.state_path)
+        if not st or not g:
+            return
+        st["nodes"] = len(g.get("nodes") or [])
+        st["edges"] = len(g.get("links") or [])
+        st["in_graph"] = self.coverage().get("in_graph", st.get("in_graph", 0))
+        st["store_facts"] = self._n_facts()
+        self._write(self.state_path, st)
+
+    def _patch_analysis(self, modal: dict) -> None:
+        """Add the floor's nodes to their shelf's community in analysis.json.
+
+        `view()` resolves a node's community from this file, so a floor node that is absent
+        lands in the page's unassigned bucket and the map grows one grey blob.
+        """
+        a = self._read(self.analysis_path)
+        if not a:
+            return
+        comms = {str(v): set(m) for v, m in (a.get("communities") or {}).items()}
+        for n in self._read(self.graph_path).get("nodes") or []:
+            if n.get("_origin") != "shelf-floor":
+                continue
+            c = str(n.get("community"))
+            if c != "-1":
+                comms.setdefault(c, set()).add(n.get("id"))
+        a["communities"] = {c: sorted(str(m) for m in ms) for c, ms in comms.items()}
+        self._write(self.analysis_path, a)
 
     def cover(self, per_file: int = 10, files_per_chunk: int = 6, max_passes: int = 12,
               on_progress=None, workers: int = 1) -> dict:

@@ -114,7 +114,14 @@ class GraphArm(unittest.TestCase):
 
     def test_cover_drains_then_plateaus(self):
         """cover() loops over the uncovered queue and stops when a pass gains nothing — the
-        plateau law, pinned with a stubbed extractor so the test costs no LLM call."""
+        plateau law, pinned with a stubbed extractor so the test costs no LLM call.
+
+        The queue drains in ONE pass since 2026-11-26: a build ends with `ensure_fact_nodes`,
+        the coverage floor, which names every live row the extractor skipped (a node keyed
+        `<shelf>_fact_<id>` plus one edge to the shelf hub). Before the floor this asserted
+        in_graph 2 after pass 1 and a second pass to earn row c; the floor is why the tile can
+        read 100% while the concept layer keeps growing pass over pass.
+        """
         from strata.graphify import StrataGraphify
         g = StrataGraphify(self.dir)
 
@@ -131,9 +138,26 @@ class GraphArm(unittest.TestCase):
         with open(os.path.join(self.dir, "strata-graphify", "graph.json"), "w") as f:
             json.dump({"nodes": [{"id": f"ops_fact_{self.a}"}], "links": [], "hyperedges": []}, f)
         s = g.cover(per_file=10, files_per_chunk=6, max_passes=5)
-        self.assertEqual(s["in_graph"], 2, "the stub names two rows, and both land in the graph")
-        self.assertEqual(s["cover_passes"], 2, "pass 2 gains nothing and stops on the plateau")
+        self.assertEqual(s["in_graph"], 3, "the stub names two rows, the floor names the third")
+        self.assertEqual(s["uncovered"], 0, "the drain's definition of done: no row left unnamed")
+        self.assertEqual(s["cover_passes"], 1, "the queue is empty, so a second pass never runs")
 
+
+    def test_a_part_file_keeps_its_name_when_its_rows_do(self):
+        """Corpus parts are named by their row-id RANGE, not a part index (2026-11-26). A cover
+        pass reads only the rows no node names, so as the queue shrinks an index name renumbers
+        the shelf's files, and graphify keys node ids by the file stem — a re-extraction then
+        re-rolls names an earlier pass had already earned. Measured on the live drain: 516 rows
+        named per pass against 368 lost, a plateau near 58% coverage."""
+        from strata.graphify import StrataGraphify
+        g = StrataGraphify(self.dir)
+        rows = [(10 + i, "OPS", f"fact {i}", "2026-11-26", 0.9) for i in range(6)]
+        self.assertEqual({p.name for p in g.write_corpus(rows, per_file=2)},
+                         {"ops-000010-000011.md", "ops-000012-000013.md", "ops-000014-000015.md"})
+        # The head slice gets named and drops out of the next queue; the parts that keep their
+        # rows keep their names, so their nodes are re-extracted against the same facts.
+        self.assertEqual({p.name for p in g.write_corpus(rows[2:], per_file=2)},
+                         {"ops-000012-000013.md", "ops-000014-000015.md"})
 
     def test_explain_path_query_walk_the_graph(self):
         """The read side: explain names a node and its scar, path reports the weakest hop,
