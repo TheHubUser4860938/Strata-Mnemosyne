@@ -13,9 +13,11 @@ itself, so every client (OpenCode, Claude Code, Codex, the web app) shares one s
 harness ever has to re-send history. The server remembers, and it remembers the same way no
 matter which app is knocking.
 
-This fork is based on upstream Strata 0.2.21 — app and Terminal at 0.2.21, Control at 0.1.67,
-and every engine family (`strata-engine`, `strata-inkling`, `strata-hy4`) at 0.1.67. Upstream's own
-headline list for this round — **Inkling 2 Mini far faster on most cards**: an RTX 4090 after a 32K
+This fork is based on upstream Strata 0.2.23 — app and Terminal at 0.2.23, Control at 0.1.70, the
+Inkling engines at 0.1.70 on every backend, the Windows and Mac Qwen engines at 0.1.70, the Linux
+and aarch64 Qwen engines at 0.1.69 and Hy4 at 0.1.67 (nothing in those two changed, so nothing
+downloads for them); this checkout builds its own Linux engine, at 0.1.70. Upstream's own
+headline list for the 0.2.21 round — **Inkling 2 Mini far faster on most cards**: an RTX 4090 after a 32K
 prompt runs **92 tok/s where 0.2.20 managed 20** (SQ-20) and 92 against 29 (UD-Q4_K_XL); an RTX 3060 Ti
 8 GB on SQ-10 **43 against 11**; an RTX 5070 12 GB **68 against 12.5**; an RX 7900 XT on UD-IQ3_XXS
 **66 against 4.9**; an RTX 5090 prefilling **9,019 tok/s** (SQ-20) and **6,967** (UD-Q4_K_XL); Apple
@@ -172,7 +174,7 @@ SQ-20 is made for a 24 GiB graphics card, SQ-15 for 16 GiB and SQ-10 for 12 GiB.
 
 <a id="the-other-sizes"></a>
 
-Version 0.2.21 (app and Terminal 0.2.21, Control 0.1.67, engine packages 0.1.67)
+Version 0.2.23 (app and Terminal 0.2.23, Control 0.1.70, engine packages 0.1.70)
 
 Two things arrive switched **on**, and everything else stays byte-identical to upstream Strata:
 
@@ -503,7 +505,7 @@ And the families this fork adds to setup's menu (`--family ...`), in the order t
 - **Turbo-Brilliance, abliterated** ([DavidAU](https://huggingface.co/DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF), `--family dau`) is the IQ3_S that answers the `{REASON:}` dial described above: 41 framings, pairs, thinking levels and an autonomous picker. It is DavidAU's build on [SC117](https://huggingface.co/SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF)'s abliterated GSQ-RCO quant — his shard sizes agree with SC117's plus the transplant's signature, so it is a derivative of that file, not the original quant. Same size and speed as IQ3_S. Apache-2.0 on DavidAU's release, Qwen Community License 1.0 underneath.
 - **Turbo-Brilliance, regular** ([DavidAU](https://huggingface.co/DavidAU/Qwen3.8-Flash-Next-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF), `--family daureg`) is his re-quant of the original IQ3_S without the refusal-shaping removal: the same dial, the same size and speed as IQ3_S, the same licenses.
 - **Huihui, abliterated** ([huihui-ai](https://huggingface.co/huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF), `--family huihui`) is their re-quant of their own abliterated model in the Unsloth Dynamic sizes (94 to 188 GB of download): it answers plainly where the original declines. The dial does not ride it — its chat template is the stock one, and the server says so with a banner at boot — but the memory system and the picture reader work as usual. Qwen Community License 1.0.
-- **Heretic, abliterated Swift 1.5** ([trubisky](https://huggingface.co/trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer), `--family heretic`) is his quantization of [jeffpeng3's heretic v2](https://huggingface.co/jeffpeng3/Swift-1.5-Qwen3.8-Flash-Next-heretic) of UkisAI's Swift 1.5: the fine-tune that thinks shorter, with the refusals ablated, in three sizes (85, 95 and 109 GB). Its bits follow the activations instead of sitting evenly — Q5_K gate/up with Q8_0 downs over the last twelve layers, IQ3_S/IQ4_XS through the middle. The dial rides it (its template carries the `reasoning_effort` branches, and the boot banner says which template it found), and setup's optional Q8_0 n-gram table applies here too: the table is one trained tensor across these trees, measured byte-identical. Swift Open License 1.0 over the Qwen Community License 1.0. Sizes, fit and the measured speed against huihui: [MODELS.md](docs/MODELS.md#heretic).
+- **Heretic, abliterated Swift 1.5** ([trubisky](https://huggingface.co/jackjusko/Swift-1.5-Flash-Next-Heretic-ReverseEngineer), `--family heretic`) is his quantization of [jeffpeng3's heretic v2](https://huggingface.co/jeffpeng3/Swift-1.5-Qwen3.8-Flash-Next-heretic) of UkisAI's Swift 1.5: the fine-tune that thinks shorter, with the refusals ablated, in three sizes (85, 95 and 109 GB). Its bits follow the activations instead of sitting evenly — Q5_K gate/up with Q8_0 downs over the last twelve layers, IQ3_S/IQ4_XS through the middle. The dial rides it (its template carries the `reasoning_effort` branches, and the boot banner says which template it found), and setup's optional Q8_0 n-gram table applies here too: the table is one trained tensor across these trees, measured byte-identical. Swift Open License 1.0 over the Qwen Community License 1.0. Sizes, fit and the measured speed against huihui: [MODELS.md](docs/MODELS.md#heretic).
 
 Every size, download and what fits where: [docs/MODELS.md](docs/MODELS.md).
 

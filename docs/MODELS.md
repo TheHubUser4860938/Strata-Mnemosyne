@@ -157,7 +157,7 @@ strata launch --family unsloth --model UD-Q5_K_XL
 
 ### Heretic: Swift 1.5, abliterated (trubisky's quants)
 
-`--family heretic` is [trubisky](https://huggingface.co/trubisky/Swift-1.5-Flash-Next-Heretic-ReverseEngineer)'s
+`--family heretic` is [trubisky](https://huggingface.co/jackjusko/Swift-1.5-Flash-Next-Heretic-ReverseEngineer)'s
 quantization of [jeffpeng3's heretic v2](https://huggingface.co/jeffpeng3/Swift-1.5-Qwen3.8-Flash-Next-heretic) of
 UkisAI's Swift 1.5: the fine-tune that thinks shorter, with the refusals ablated, so it answers plainly as well. The
 bits go where the activations say they matter rather than evenly — IQ4_NL runs IQ3_S/IQ4_XS gate/up with IQ4_NL downs
