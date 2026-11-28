@@ -573,7 +573,11 @@ daily life writes zero (the NVMe-wear law; measured: 343 MB per rotation in the 
 load-time budget retired the same night (`SOUL_BUDGET = None`; set an integer to re-arm the
 tripwire). Personal data stays out of git: `user.md` and `always.md` are box-local, generated
 from their `.example` templates like the `strata-*.json` configs; only the PII-free core is
-tracked. Stood at the 2026-10-24 19:37 boot (verified against the box, not remembered): five
+tracked. The curation state joins them as of 2026-11-28: `terminal/tools/state/` (the sweep and
+clerk logs, which carry the box's Taliscale keys) and `terminal/memory/pgdata/` (the embedded
+cluster) are untracked. Their rules are `**/`-prefixed on purpose — a root-relative pattern goes
+blind when the tree moves, and `tools/state/` stopped matching the day the 0.2.16 layout move made
+it `terminal/tools/state/`. Stood at the 2026-10-24 19:37 boot (verified against the box, not remembered): five
 sources, `MEM-CRG-22c49c0c.bin`, 237 MB on disk, 20,446 standing chars composed - soul Part A
 11,293 (the loader holds Part B back while the reason system is off) plus agent/skill/user/always
 9,145; an empty prompt on the route counts 5,635 tokens with the standing text in it (the server's
