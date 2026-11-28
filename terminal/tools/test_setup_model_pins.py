@@ -255,6 +255,9 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
                     # the Inkling-2-Mini community packs (SC117's abliterated `.strata`, Unsloth's GGUF): the source list a
                     # fetch walks, behind inkling_fetch. The stock `.strata` source stays first.
                     'out += [{"kind": "http", "base": f"https://huggingface.co/{repo}/resolve/main"} for repo in (ABLITERATED_REPO, GGUF_REPO)]',
+                    # the fork's sources_for route for SC117's packs: his repo first, so a fetch of an abliterated file
+                    # does not ask the stock source for a file only he hosts.
+                    'return [{"kind": "http", "base": f"https://huggingface.co/{ABLITERATED_REPO}/resolve/main"}] + sources(env=env, cfg=cfg, shipped=shipped)',
                     'TOKENIZER_HF_BASE = "https://huggingface.co/tencent/Hy4-flash/resolve/main"',  # hy4_family.py tokenizer_sources (used by setup/fetch behind acquisition.require)
                     '#: Unsloth Dynamic GGUF files hosted on huggingface.co/unsloth/Inkling-2-Mini-GGUF (exact byte sizes & LFS SHA-256 digests).',
                     'return f"https://huggingface.co/{repo}/resolve/{revision}"',   # inkling_family.hf_base (0.2.23): the pinned-commit addresses of the Inkling downloads, only setup.py opens them (behind acquisition.require)
