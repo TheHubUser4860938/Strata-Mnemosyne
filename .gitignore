@@ -103,6 +103,16 @@ tools/state/retro_*.jsonl
 # 2026-10-18: the whole dir is box-local ops state and can carry personal conversation
 # text (the retro labeling sheet is a .txt); nothing in it is tracked - ignore it all.
 tools/state/
+# 2026-11-28: the 0.2.16 layout move (4058aa782) put this tree under terminal/, and a
+# root-relative pattern does not reach it - so the curation state came back into the index
+# with the two Taliscale keys it carries.  Match it at any depth, and say the same for the
+# embedded Postgres cluster (the store's rows are the personal data, not the prose about it).
+**/tools/state/
+**/tools/state/curate_*.jsonl
+**/tools/state/curate_*.review.txt
+**/tools/state/curate_*.log
+**/tools/state/retro_*.jsonl
+**/memory/pgdata/
 
 # Optional MCP raster cache
 *.tool-media/
