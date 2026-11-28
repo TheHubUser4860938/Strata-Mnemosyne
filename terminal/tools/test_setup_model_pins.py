@@ -257,7 +257,11 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
                     'out += [{"kind": "http", "base": f"https://huggingface.co/{repo}/resolve/main"} for repo in (ABLITERATED_REPO, GGUF_REPO)]',
                     'TOKENIZER_HF_BASE = "https://huggingface.co/tencent/Hy4-flash/resolve/main"',  # hy4_family.py tokenizer_sources (used by setup/fetch behind acquisition.require)
                     '#: Unsloth Dynamic GGUF files hosted on huggingface.co/unsloth/Inkling-2-Mini-GGUF (exact byte sizes & LFS SHA-256 digests).',
-                    'MTP_BASE = f"https://huggingface.co/thinkingmachines/Inkling-2-Mini/resolve/{MTP_COMMIT}"',   # inkling_family.py: the pinned drafter source, only setup.py opens it (behind acquisition.require)
+                    'return f"https://huggingface.co/{repo}/resolve/{revision}"',   # inkling_family.hf_base (0.2.23): the pinned-commit addresses of the Inkling downloads, only setup.py opens them (behind acquisition.require)
+                    'DFLASH2_URL = f"https://huggingface.co/incoai/Inkling-2-Mini-DFlash2/resolve/{DFLASH2_COMMIT}/model.safetensors"',   # inkling_family.py: the pinned DFlash 2 file, only setup.py opens it (behind acquisition.require)
+                    'MTP_BASE = f"https://huggingface.co/thinkingmachines/Inkling-2-Mini/resolve/{MTP_COMMIT}"',   # inkling_family.py: the pinned DSpark drafter source an older install keeps, only setup.py opens it (behind acquisition.require)
+                    'return f"https://huggingface.co/{DFLASH2_REPO}/resolve/{DFLASH2_OWN_COMMIT}/{file}" if (DFLASH2_OWN_COMMIT and DFLASH2_OWN_COPY == kind) else ""',   # inkling_family._own_url: OUR planned DFlash 2 copy (pinned commit; empty until the upload), read by setup's and `strata drafting fetch`'s download behind acquisition.require
+                    # the fork: the HF_ENDPOINT-aware base that drafting_fetch and pictures build their download URLs from (a user's mirror, not a new host).
                     'base = (endpoint if endpoint is not None else (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or HF_DEFAULT)')
         found = []
         for folder in ("strata_cli", "serve", "strata_control"):
