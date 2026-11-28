@@ -46,7 +46,7 @@ class Addresses(unittest.TestCase):
 
     def test_the_launch_stops_before_anything_is_done(self):
         from strata_cli.launch.runner import LaunchError, Runner
-        from tests.terminal.launch_support import HW_12, Home, catalog
+        from tests.terminal.launch_support import reach, HW_12, Home, catalog
         with Home(), mock.patch.object(acc, "local_addresses", return_value=HERE):
             r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768, access="address", listen="192.168.9.9"),
                        catalog=catalog(HW_12), emit=lambda e: None)

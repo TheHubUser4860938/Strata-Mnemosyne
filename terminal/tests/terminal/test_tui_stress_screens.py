@@ -13,7 +13,7 @@ import setup
 from strata_control import folders
 from strata_cli.launch import settings as S
 from strata_cli.launch.runner import setup_failure
-from tests.terminal.launch_support import run_cli
+from tests.terminal.launch_support import reach, run_cli
 from tests.terminal.test_launch_tui import Base, FakeRunner, flat, press, text_of, typed
 
 
@@ -104,7 +104,7 @@ class FolderScreen(Base):
 
     def test_the_save_summary_shows_the_chosen_storage_path(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 7, "n", "enter")
+            await press(pilot, *reach(app, "advanced"), "n", "enter")
             t = flat(app)
             self.assertIn("Strata data", t)
             folder = Path(ctx.default_folder())
@@ -118,8 +118,8 @@ class FolderScreen(Base):
             f = app.screen.query_one("#folderpath")
             f.value = ""
             await typed(pilot, str(self.home.base / "mine"))
-            await press(pilot, *("enter",) * 5, "n", "enter")
-            self.assertIn("Step 9 of 9", flat(app))
+            await press(pilot, *("enter",) * 6, "n", "enter")
+            self.assertIn("Step 10 of 10", flat(app))
             self.assertIn("mine", flat(app))
         self.run_app(case)
 

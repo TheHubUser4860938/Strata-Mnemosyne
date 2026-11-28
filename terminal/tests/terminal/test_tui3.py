@@ -13,7 +13,7 @@ from strata_cli.launch import settings as S
 from strata_cli.launch import runner as R
 from strata_cli.launch.catalog import Catalog
 from strata_cli.launch.runner import LaunchError, Runner
-from tests.terminal.launch_support import HW_12, Home, catalog
+from tests.terminal.launch_support import reach, HW_12, Home, catalog
 
 
 class FailedStart(unittest.TestCase):
@@ -211,7 +211,7 @@ class SaveWaitsForRestartAnswer(unittest.TestCase):
                 app = LaunchApp(make_ctx())
                 async with app.run_test(size=(110, 34)) as pilot:
                     await pilot.pause(0.2)
-                    await press(pilot, *("enter",) * 7, "n", "enter")
+                    await press(pilot, *reach(app, "advanced"), "n", "enter")
                     self.assertEqual(store.list_presets(), [])           # still nothing on the Save screen
                     await press(pilot, "enter")
                     await pilot.pause(0.8)

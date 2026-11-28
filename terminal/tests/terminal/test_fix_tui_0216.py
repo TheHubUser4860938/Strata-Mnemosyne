@@ -18,7 +18,7 @@ from strata_cli.launch.app import Ctx, LaunchApp
 from strata_cli.launch.runner import DownloadPace, LaunchError, Result
 from strata_cli.launch.widgets import Glyphs, Item, Menu
 from strata_control import engine_update, runtime
-from tests.terminal.launch_support import HW_12, HW_2X16, Home, catalog, text_of
+from tests.terminal.launch_support import reach, HW_12, HW_2X16, Home, catalog, text_of
 from tests.terminal.test_launch_tui import Base, FakeRunner, flat, make_ctx, press
 from tests.terminal.test_overview import draw, metrics
 
@@ -191,7 +191,7 @@ class SmallWindow(Base):
 
     def test_the_downloads_are_listed_on_the_small_save_screen_too(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 7, "n", "enter")
+            await press(pilot, *reach(app, "advanced"), "n", "enter")
             t = text_of(app)
             self.assertIn("Save as preset, then launch", t)
             self.assertIn("Download engine, model 84 GB", t)
@@ -226,7 +226,7 @@ class T11Port(Base):
         async def case(app, pilot, ctx):
             ctx.settings.port = 8080
             with mock.patch.object(S, "next_free_port", return_value=8081):
-                await press(pilot, *("enter",) * 8, "n", "enter")
+                await press(pilot, *reach(app, "advanced"), "n", "enter")
                 await pilot.pause(0.6)
                 t = flat(app)
                 self.assertIn("Port 8080 is already in use", t)
@@ -324,7 +324,7 @@ class T16NotNow(Base):
                 return ("Download the draft layer (5.2 GB)?", "The model itself is already on this computer.")
 
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 8, "n", "enter")
+            await press(pilot, *reach(app, "advanced"), "n", "enter")
             await pilot.pause(0.3)
             t = flat(app)
             self.assertIn("Download the draft layer (5.2 GB)?", t)
@@ -350,7 +350,7 @@ class T16NotNow(Base):
                 return m
 
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 8, "n", "enter")
+            await press(pilot, *reach(app, "advanced"), "n", "enter")
             await pilot.pause(0.3)
             self.assertIn("Not now", flat(app))
             await press(pilot, "down", "enter")

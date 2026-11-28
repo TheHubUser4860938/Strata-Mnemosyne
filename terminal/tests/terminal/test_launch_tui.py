@@ -15,7 +15,7 @@ from strata_cli.launch import access, settings as S, store
 from strata_cli.launch.app import Ctx, LaunchApp, run_monitor
 from strata_cli.launch.runner import Cancelled, Event, LaunchError, Result
 from strata_cli.launch.widgets import Glyphs
-from tests.terminal.launch_support import HW_12, HW_24, HW_2X16, Home, catalog, text_of
+from tests.terminal.launch_support import HW_12, HW_24, HW_2X16, Home, catalog, reach, text_of, walk
 
 SIZE = (110, 60)      # (round 0214: the list has seven more rows (Unsloth's v3.1 sets); the tests that read the whole list need the room)
 
@@ -463,26 +463,26 @@ class ContextStep(Base):
 
 
 class PicturesParallelTuning(Base):
-    def reach_pictures(self):
-        return ("enter", "enter", "enter", "enter")
+    def reach_pictures(self, app):
+        return reach(app, "pictures")
 
     def test_pictures_default_off_and_on(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach_pictures())
+            await press(pilot, *self.reach_pictures(app))
             t = text_of(app)
             self.assertIn("No pictures", t)
             self.assertIn("Pictures are on by default", flat(app))
             self.assertIn("0.9 GB download", t)
             self.assertIn("runs on the CPU", flat(app))               # a 12 GB card: the CPU reader (the GPU one from 24 GB)
             self.assertEqual(app.screen.menu().index, 1)              # "Yes" is preselected
-            await press(pilot, "enter")
+            await press(pilot, *walk(app, "pictures", "parallel"))
             self.assertEqual(ctx.settings.vision, "cpu")
             self.assertIn("How many requests at the same time?", text_of(app))
         self.run_app(case)
 
     def test_pictures_no_is_one_key_away(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach_pictures())
+            await press(pilot, *self.reach_pictures(app))
             await press(pilot, "up", "enter")
             self.assertEqual(ctx.settings.vision, "off")
         self.run_app(case)
@@ -511,7 +511,7 @@ class PicturesParallelTuning(Base):
 
     def test_parallel_fit_to_card_and_warnings(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach_pictures(), "enter")
+            await press(pilot, *self.reach_pictures(app), *walk(app, "pictures", "parallel"))
             t = text_of(app)
             self.assertIn("Fit to my graphics card (1)", t)
             self.assertIn("may not fit: slower answers", t)
@@ -523,19 +523,19 @@ class PicturesParallelTuning(Base):
 
     def test_parallel_default_is_fit_to_card(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach_pictures(), "enter", "enter")
+            await press(pilot, *self.reach_pictures(app), *walk(app, "pictures", "tuning"))
             self.assertIsNone(ctx.settings.parallel)
         self.run_app(case)
 
     def test_bigger_card_fits_more(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach_pictures(), "enter")
+            await press(pilot, *self.reach_pictures(app), *walk(app, "pictures", "parallel"))
             self.assertIn("Fit to my graphics card (3)", text_of(app))
         self.run_app(case, ctx=make_ctx(HW_24))
 
     def test_tuning_choices_and_the_answer_changing_tick(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach_pictures(), "enter", "enter")
+            await press(pilot, *self.reach_pictures(app), *walk(app, "pictures", "tuning"))
             t = text_of(app)
             self.assertIn("Quick", t)
             self.assertIn("about 20 minutes", t)
@@ -555,13 +555,13 @@ class PicturesParallelTuning(Base):
 
     def test_tuning_skip(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach_pictures(), "enter", "enter", "enter")
+            await press(pilot, *self.reach_pictures(app), *walk(app, "pictures", "advanced"))
             self.assertEqual(ctx.settings.tune, "skip")
         self.run_app(case)
 
     def test_tuning_quick_is_one_key_up(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach_pictures(), "enter", "enter", "up", "up", "enter")
+            await press(pilot, *self.reach_pictures(app), *walk(app, "pictures", "tuning"), "up", "up", "enter")
             self.assertEqual(ctx.settings.tune, "quick")
         self.run_app(case)
 
@@ -569,8 +569,8 @@ class PicturesParallelTuning(Base):
 class AdvancedStep(Base):
     HELP = "  --prefill N          prompt chunk size (default 2048)\n  --kv fp16|int8       KV storage\n  --native-rope        experimental pinned rotary\n"
 
-    def reach(self):
-        return ("enter", "enter", "enter", "enter", "enter", "enter", "enter")
+    def reach(self, app):
+        return reach(app, "advanced")
 
     def ctx_with_engine(self):
         ctx = make_ctx()
@@ -588,7 +588,7 @@ class AdvancedStep(Base):
         ctx = self.ctx_with_engine()
 
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach())
+            await press(pilot, *self.reach(app))
             t = text_of(app)
             for col in ("Setting", "Default", "Tuned", "Yours", "What it does"):
                 self.assertIn(col, t)
@@ -605,7 +605,7 @@ class AdvancedStep(Base):
         ctx = self.ctx_with_engine()
 
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach())
+            await press(pilot, *self.reach(app))
             names = [it.key for it in app.screen.menu().items]
             idx = names.index("--prefill")
             for _ in range(idx):
@@ -626,11 +626,11 @@ class AdvancedStep(Base):
         ctx = self.ctx_with_engine()
 
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach())
-            self.assertIn("Step 7 of 9: Advanced", text_of(app))
+            await press(pilot, *self.reach(app))
+            self.assertIn("Step 8 of 10: Advanced", text_of(app))
             self.assertIn("Enter next", text_of(app))
             await press(pilot, "enter")
-            self.assertIn("Step 8 of 9: Access", text_of(app))
+            self.assertIn("Step 9 of 10: Access", text_of(app))
             self.assertEqual(ctx.settings.extra, {})                  # nothing was opened for editing
         self.run_app(case, ctx=ctx)
 
@@ -638,7 +638,7 @@ class AdvancedStep(Base):
         ctx = self.ctx_with_engine()
 
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach())
+            await press(pilot, *self.reach(app))
             await press(pilot, "a")
             await typed(pilot, "prefil=1")
             await press(pilot, "enter")
@@ -653,7 +653,7 @@ class AdvancedStep(Base):
         ctx = self.ctx_with_engine()
 
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach(), "a")
+            await press(pilot, *self.reach(app), "a")
             await typed(pilot, "STRATA_PIN_BY_NEED=1")
             await press(pilot, "enter")
             self.assertEqual(ctx.settings.extra, {"STRATA_PIN_BY_NEED": "1"})
@@ -663,7 +663,7 @@ class AdvancedStep(Base):
         ctx = self.ctx_with_engine()
 
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach(), "x")
+            await press(pilot, *self.reach(app), "x")
             keys = [it.key for it in app.screen.menu().items]
             self.assertIn("--native-rope", keys)
             self.assertNotIn("--max-context", keys)
@@ -677,7 +677,7 @@ class AdvancedStep(Base):
 
     def test_next_and_back(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach(), "n")
+            await press(pilot, *self.reach(app), "n")
             self.assertIn("Who can use it?", text_of(app))
             await press(pilot, "escape")
             self.assertIn("All settings", text_of(app))
@@ -685,7 +685,7 @@ class AdvancedStep(Base):
 
     def test_works_before_the_engine_is_installed(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach())
+            await press(pilot, *self.reach(app))
             t = text_of(app)
             self.assertIn("The engine is not installed yet", t)
             self.assertIn("Command that will run", t)
@@ -693,7 +693,7 @@ class AdvancedStep(Base):
 
     def test_copy_does_not_crash(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach(), "c")
+            await press(pilot, *self.reach(app), "c")
             self.assertTrue(any(w in text_of(app) for w in ("Copied", "does not allow copying")))
         self.run_app(case)
 
@@ -705,7 +705,7 @@ class AccessStep(Base):
         async def case(app, pilot, ctx):
             with mock.patch.object(access, "find_cloudflared", return_value=None), \
                     mock.patch.object(access, "tailscale_status", return_value={"installed": False, "running": False, "ip": None, "name": None}):
-                await press(pilot, *self.REACH[:7], "n")
+                await press(pilot, *reach(app, "advanced"), "n")
                 t = text_of(app)
             self.assertIn("This computer only", t)
             self.assertIn("http://127.0.0.1:8080", t)
@@ -716,12 +716,12 @@ class AccessStep(Base):
             self.assertIn("API key   [ off ]", t)
         self.run_app(case)
 
-    def reach(self):
-        return self.REACH[:7] + ("n",)
+    def reach(self, app):
+        return reach(app, "advanced") + ("n",)
 
     def test_lan_makes_a_key_and_keeps_the_port(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach(), "down")
+            await press(pilot, *self.reach(app), "down")
             t = text_of(app)
             self.assertTrue(ctx.settings.api_key.startswith("sk-strata-"))
             self.assertIn("API key   [ on ]", t)
@@ -734,7 +734,7 @@ class AccessStep(Base):
     def test_cloudflare_without_the_helper_says_how_to_install_it_and_does_not_block(self):
         async def case(app, pilot, ctx):
             with mock.patch.object(access, "find_cloudflared", return_value=None):
-                await press(pilot, *self.reach(), "down", "down")
+                await press(pilot, *self.reach(app), "down", "down")
                 t = text_of(app)
                 self.assertIn("cloudflared is not installed on this computer", t)
                 self.assertIn("quick tunnel", flat(app))
@@ -747,13 +747,13 @@ class AccessStep(Base):
     def test_tailscale_found(self):
         async def case(app, pilot, ctx):
             with mock.patch.object(access, "tailscale_status", return_value={"installed": True, "running": True, "ip": "100.64.0.1", "name": "pc.tail.ts.net"}):
-                await press(pilot, *self.reach(), "down", "down", "down")
+                await press(pilot, *self.reach(app), "down", "down", "down")
                 self.assertIn("http://pc.tail.ts.net:8080", text_of(app))
         self.run_app(case)
 
     def test_port_change_and_bad_port(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach(), "p")
+            await press(pilot, *self.reach(app), "p")
             app.screen.query_one("#portfield").value = ""
             await typed(pilot, "abc")
             await press(pilot, "enter")
@@ -768,7 +768,7 @@ class AccessStep(Base):
     def test_windows_firewall_line_shows_on_lan_only(self):
         async def case(app, pilot, ctx):
             with mock.patch.object(access, "WINDOWS", True):
-                await press(pilot, *self.reach())
+                await press(pilot, *self.reach(app))
                 self.assertNotIn("Windows may ask", flat(app))
                 await press(pilot, "down")
                 self.assertIn("Windows may ask whether to allow Strata", flat(app))
@@ -777,7 +777,7 @@ class AccessStep(Base):
 
     def test_key_toggle_and_new_key(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach(), "down")
+            await press(pilot, *self.reach(app), "down")
             first = ctx.settings.api_key
             await press(pilot, "k")
             self.assertNotEqual(ctx.settings.api_key, first)
@@ -792,7 +792,7 @@ class AccessStep(Base):
 
     def test_default_is_a_key_and_no_key_survives_moving_on(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach(), "down")
+            await press(pilot, *self.reach(app), "down")
             self.assertTrue(ctx.settings.api_key)                       # default: Strata makes a key
             await press(pilot, "t")                                     # one keypress: no key
             await press(pilot, "down")                                  # moving the cursor does not bring the key back
@@ -803,7 +803,7 @@ class AccessStep(Base):
 
     def test_local_never_asks_for_a_key(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach())
+            await press(pilot, *self.reach(app))
             self.assertEqual(ctx.settings.access, "local")
             self.assertIsNone(ctx.settings.api_key)
             self.assertNotIn("An API key was made", text_of(app))
@@ -811,12 +811,12 @@ class AccessStep(Base):
 
 
 class SaveAndRun(Base):
-    def reach(self):
-        return ("enter",) * 8 + ("n", "enter")
+    def reach(self, app):
+        return reach(app, "advanced") + ("n", "enter")
 
     def test_summary_and_save_then_launch(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 7, "n", "enter")
+            await press(pilot, *reach(app, "advanced"), "n", "enter")
             t = text_of(app)
             self.assertIn("Save as preset, then launch", t)
             self.assertIn("Qwen3.8-Flash-Next IQ3_S", t)
@@ -851,7 +851,7 @@ class SaveAndRun(Base):
 
     def test_the_name_can_be_typed(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 7, "n", "enter")
+            await press(pilot, *reach(app, "advanced"), "n", "enter")
             f = app.screen.query_one("#name")
             f.value = ""
             f.focus()
@@ -923,7 +923,7 @@ class CardsStep(Base):
             await press(pilot, "enter", "enter")
             t = text_of(app)
             self.assertIn("Which graphics cards should it use?", t)
-            self.assertIn("Step 2 of 10", t)
+            self.assertIn("Step 2 of 11", t)
             flat = " ".join(t.split())
             self.assertIn("[ Main ]", flat)                          # equal cards: the highest number is Main (the engine order stays [0, 1])
             self.assertIn("[ Helper ]", flat)
@@ -974,15 +974,15 @@ class CardsStep(Base):
     def test_an_integrated_chip_beside_one_card_gives_no_cards_step(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter")
-            self.assertIn("Step 1 of 9", text_of(app))
+            self.assertIn("Step 1 of 10", text_of(app))
         hw = dict(HW_2X16)
         hw["gpus"] = [dict(HW_2X16["gpus"][0]), {"index": 1, "name": "AMD Radeon Graphics", "vram_gb": 16.0, "usable": True, "integrated": True}]
         self.run_app(case, ctx=make_ctx(hw))
 
-    def test_one_card_has_nine_steps(self):
+    def test_one_card_has_ten_steps(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter")
-            self.assertIn("Step 1 of 9", text_of(app))
+            self.assertIn("Step 1 of 10", text_of(app))
         self.run_app(case)
 
 
@@ -997,7 +997,7 @@ class NarrowTerminal(Base):
                 await press(pilot, "enter")
                 t = text_of(app)
                 self.assertIn("Which model?", t)
-                self.assertIn("Step 1 of 9", t)
+                self.assertIn("Step 1 of 10", t)
                 self.assertIn("Enter next", t)
                 await press(pilot, "enter", "enter")
                 self.assertIn("How much text", text_of(app))

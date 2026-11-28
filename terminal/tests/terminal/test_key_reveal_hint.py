@@ -41,12 +41,12 @@ class ConnectSaysHowToSeeTheKey(unittest.TestCase):
 
 
 class AccessStepWords(Base):
-    def reach_access(self):
-        return ("enter",) * 7 + ("n",)
+    def reach_access(self, app):
+        return reach(app, "advanced") + ("n",)
 
     def test_a_local_launch_with_a_key_says_apps_must_send_it(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach_access())
+            await press(pilot, *self.reach_access(app))
             self.assertEqual(app.current, "access")
             ctx.settings.access, ctx.settings.api_key = "local", KEY
             app.screen.paint()
@@ -58,7 +58,7 @@ class AccessStepWords(Base):
 
     def test_a_local_launch_without_a_key_keeps_its_words(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *self.reach_access())
+            await press(pilot, *self.reach_access(app))
             ctx.settings.access, ctx.settings.api_key = "local", None
             app.screen.paint()
             await press(pilot)

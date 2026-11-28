@@ -13,7 +13,7 @@ from unittest import mock
 from strata_cli.launch import settings as S
 from strata_cli.launch.app import Ctx, LaunchApp
 from strata_cli.launch import params as P
-from tests.terminal.launch_support import HW_12, Home, text_of
+from tests.terminal.launch_support import reach, HW_12, Home, text_of
 from tests.terminal.test_launch_tui import FakeRunner, make_ctx, press, flat, typed
 
 SIZES = ((120, 40), (80, 24), (60, 20), (40, 15))
@@ -70,7 +70,7 @@ class SaveChoices(Base):
             self.assertIn("Enter:", flat(app), size)                                           # the footer says which action Enter does
 
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 7, "n", "enter")
+            await press(pilot, *reach(app, "advanced"), "n", "enter")
             for size in SIZES:
                 await pilot.resize_terminal(*size)
                 # wait for the layout to settle (a loaded machine redraws late), not for a fixed time; the checks themselves are unchanged
@@ -80,7 +80,7 @@ class SaveChoices(Base):
 
     def test_the_footer_names_the_action_enter_will_do(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 7, "n", "enter")
+            await press(pilot, *reach(app, "advanced"), "n", "enter")
             self.assertIn("Enter: Save as a preset and launch", flat(app))
             await press(pilot, "down")
             self.assertIn("Enter: Launch without saving", flat(app))
@@ -90,7 +90,7 @@ class SaveChoices(Base):
 
     def test_the_full_layout_is_kept_when_it_fits(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 7, "n", "enter")
+            await press(pilot, *reach(app, "advanced"), "n", "enter")
             shown = text_of(app)
             for part in ("Save as preset, then launch", "Context", "Pictures", "Parallel", "Tuning", "Access", "Strata data"):
                 self.assertIn(part, shown)
@@ -118,7 +118,7 @@ class StoragePath(Base):
             path = path_of(n)
 
             async def case(app, pilot, ctx, path=path, n=n):
-                await press(pilot, *("enter",) * 7, "n", "enter")
+                await press(pilot, *reach(app, "advanced"), "n", "enter")
                 ctx.settings.data_dir = path
                 app.screen.paint()
 
@@ -192,7 +192,7 @@ class AdvancedLayout(Base):
         ctx = self.ctx_with_engine(context=102400, kv="q4_0", vision="off")
 
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 7)
+            await press(pilot, *reach(app, "advanced"))
             self.assertEqual(app.current, "advanced")
             for size in SIZES:
                 await pilot.resize_terminal(*size)
@@ -210,7 +210,7 @@ class AdvancedLayout(Base):
         ctx = self.ctx_with_engine(context=102400, kv="q4_0", vision="off")
 
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 7)
+            await press(pilot, *reach(app, "advanced"))
             await pilot.resize_terminal(60, 20)
             await pilot.pause(0.3)
             await press(pilot, "tab")
@@ -234,7 +234,7 @@ class AdvancedLayout(Base):
 class HintsWrap(Base):
     def test_long_key_hints_wrap_instead_of_being_cut(self):
         async def case(app, pilot, ctx):
-            await press(pilot, *("enter",) * 7)
+            await press(pilot, *reach(app, "advanced"))
             for width in (120, 80, 60, 40):
                 await pilot.resize_terminal(width, 24)
                 await pilot.pause(0.25)
@@ -297,7 +297,7 @@ class InstalledModelFolder(Base):
             self.assertIn("Already downloaded", shown)
             self.assertIn("The model needs nothing more", shown)
             # and the final screen lists no model download (the engine is still to come in this test home)
-            await press(pilot, *("enter",) * 5, "n", "enter")
+            await press(pilot, *("enter",) * 6, "n", "enter")
             self.assertNotIn("the model, ", flat(app))
             self.assertIn("Download the engine for your graphics card", flat(app))
         self.run_app(case, ctx)
