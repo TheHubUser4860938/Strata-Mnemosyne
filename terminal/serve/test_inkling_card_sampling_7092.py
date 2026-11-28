@@ -36,9 +36,9 @@ class Tables(unittest.TestCase):
 
 
 class Recording(MockEngine):
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):   # memory-core: the fork's prefill lane, on every mock that stands in for the engine
         self.sampling = dict(sampling or {})
-        yield from super().generate(ids, max_new, sampling, cancel, embeddings)
+        yield from super().generate(ids, max_new, sampling, cancel, embeddings, prefill_only=prefill_only)
 
 
 class OverHttp(unittest.TestCase):
@@ -109,9 +109,9 @@ class OnTheInklingPath(unittest.TestCase):
         seen = []
         real = engine.generate
 
-        def generate(ids, max_new, sampling, cancel, embeddings=None):
+        def generate(ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
             seen.append(dict(sampling or {}))
-            return real(ids, max_new, sampling, cancel, embeddings)
+            return real(ids, max_new, sampling, cancel, embeddings, prefill_only=prefill_only)
 
         engine.generate = generate
         svc = Service(engine, tok, ChatTemplate(TEMPLATE))
